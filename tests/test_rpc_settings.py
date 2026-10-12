@@ -1219,6 +1219,28 @@ async def test_settings_set_blocklist_is_a_raw_list(cfg):
         await rpc_console.settings_set({"key": "skillForge.blocklist", "value": "codeword"})
 
 
+@pytest.mark.parametrize("spelling", ["skillForge", "skill_forge"])
+async def test_settings_set_blocklist_fills_a_null_section_under_its_spelling(cfg, spelling):
+    """The loader reads a null section as an absent one; the write must agree."""
+    from raven.config.raven import load_raven_config
+
+    cfg.write_text(json.dumps({spelling: None}), encoding="utf-8")
+
+    await rpc_console.settings_set({"key": "skillForge.blocklist", "value": ["codeword"]})
+
+    assert _read(cfg) == {spelling: {"blocklist": ["codeword"]}}
+    assert load_raven_config(config_path=cfg).skill_forge.blocklist == ["codeword"]
+
+
+async def test_settings_set_blocklist_refuses_a_non_object_section_and_keeps_it(cfg):
+    cfg.write_text(json.dumps({"skillForge": "codeword"}), encoding="utf-8")
+
+    with pytest.raises(ConfigValidationError, match="non-object"):
+        await rpc_console.settings_set({"key": "skillForge.blocklist", "value": ["codeword"]})
+
+    assert _read(cfg) == {"skillForge": "codeword"}
+
+
 async def test_settings_set_media_speech_selection_merges(cfg):
     await rpc_console.settings_set({"key": "tools.media.speech", "value": {"model": "tts-1", "quality": "high"}})
     await rpc_console.settings_set({"key": "tools.media.speech", "value": {"model": "tts-2", "quality": ""}})
