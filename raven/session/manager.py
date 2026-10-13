@@ -173,6 +173,12 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0  # Number of messages already consolidated to files
+    # Bumped by every truncation. A background reader that sliced this list and
+    # then awaited cannot tell from the indices alone that they now point at
+    # other messages: a cut below a cursor leaves that cursor's value alone,
+    # and messages arriving afterwards can take the length back past where it
+    # was. In process only -- a task does not outlive the process it ran in.
+    truncations: int = field(default=0, repr=False)
     # ── Personalization state ─────────────────────────────────────────────────
     # Set when the agent asked a clarifying question and is waiting for the answer.
     # Structure: {"original_message": str, "question": str, "domain": str}
@@ -277,6 +283,13 @@ class Session:
         """Clear all messages and reset session to initial state."""
         self.messages = []
         self.last_consolidated = 0
+        # The episodic cursor indexes into ``messages``; left at its old value
+        # it would swallow every turn written after the clear until the count
+        # climbed past it. Stated as zero rather than dropped, per the removal
+        # rule in ``SessionManager._metadata_to_write``: a key this copy merely
+        # omits comes back on the next save.
+        self.metadata["annotated_through"] = 0
+        self.truncations += 1
         self.updated_at = datetime.now()
 
     def undo_last_turn(self, n: int = 1) -> int:
@@ -298,6 +311,10 @@ class Session:
         cut_index = user_starts[-n] if n <= len(user_starts) else user_starts[0]
         removed = len(self.messages) - cut_index
         self.messages = self.messages[:cut_index]
+        cursor = self.metadata.get("annotated_through")
+        if isinstance(cursor, int) and cursor > cut_index:
+            self.metadata["annotated_through"] = cut_index
+        self.truncations += 1
         self.updated_at = datetime.now()
         return removed
 
@@ -870,7 +887,8 @@ class SessionManager:
         source's channel, a deep copy of the source's messages, and
         ``parent_session_id`` set to the source key (the reserved lineage slot).
         The child inherits ``last_consolidated`` (so its active-context window
-        matches the source at the fork point) and resets ``pending_clarification``
+        matches the source at the fork point), starts annotated through its
+        inherited history (see below), and resets ``pending_clarification``
         (interaction wait-state is not history). The child is persisted eagerly.
 
         Whatever the source is called, the child is called ``<title> (fork)``
@@ -914,6 +932,13 @@ class SessionManager:
             if parent_title:
                 child.set_title(_fork_title(parent_title))
         child.metadata["parent_session_id"] = source_key
+        # The fork starts annotated. Its inherited history is the parent's and
+        # is already in the workspace log if the parent annotated it, and a
+        # session's past is never back-filled -- the after-turn step seeds the
+        # same way, at the length before the first turn it sees. Without this
+        # the cursor reads 0, and ``/new`` as a fresh fork's first action hands
+        # every inherited message to the annotator a second time.
+        child.metadata["annotated_through"] = len(child.messages)
         # A fork continues its parent's conversation, so it continues on its
         # parent's model. The caller re-points the live binding, but that lives
         # in memory only -- without carrying the record too, the fork drops to
