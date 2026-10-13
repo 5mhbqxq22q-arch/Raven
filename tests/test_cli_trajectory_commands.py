@@ -1721,3 +1721,249 @@ def test_report_bug_summary_shows_semantic_decisions(state, _no_machine_secrets,
     assert confirms == ["Ship the package with the risks listed above?"]
     assert len(breport.list_reports(state)) == 1  # only the first run's report
     assert _staging_entries(state) == []
+
+
+# ── report-bug upload (RAVEN_BUGREPORT_URL) ───────────────────────────
+
+
+@pytest.fixture
+def no_proxy_env(monkeypatch):
+    from tests.bug_report_receiver_stub import clear_proxy_env
+
+    clear_proxy_env(monkeypatch)
+
+
+@pytest.fixture
+def receiver_url(tmp_path, no_proxy_env):
+    from tests.bug_report_receiver_stub import receiver_thread
+
+    with receiver_thread(tmp_path / "inbox") as url:
+        yield url
+
+
+def _dead_url():
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return f"http://127.0.0.1:{port}"
+
+
+def test_report_bug_uploads_when_a_receiver_is_configured(
+    state, _no_machine_secrets, receiver_url, monkeypatch, tmp_path
+):
+    from raven.trajectory import bugreport as breport
+
+    monkeypatch.setenv("RAVEN_BUGREPORT_URL", receiver_url)
+    _simple_log(state)
+    r = runner.invoke(trajectory_app, ["report-bug", "trace-1", "-d", "it broke", "--yes"])
+
+    assert r.exit_code == 0, r.output
+    assert f"Will upload to {receiver_url} after the package is created." in r.output
+    assert "Uploaded — receipt rc-" in r.output
+    assert "Not uploaded" not in r.output
+    ((_dir, record),) = breport.list_reports(state)
+    assert record["upload"]["state"] == "uploaded"
+    assert list((tmp_path / "inbox").glob(f"*/{record['report_id']}.tar.gz"))
+
+
+def test_report_bug_without_a_receiver_keeps_the_old_words(state, _no_machine_secrets, monkeypatch):
+    monkeypatch.delenv("RAVEN_BUGREPORT_URL", raising=False)
+    _simple_log(state)
+    r = runner.invoke(trajectory_app, ["report-bug", "trace-1", "-d", "it broke", "--yes"])
+
+    assert r.exit_code == 0, r.output
+    assert "Nothing will be uploaded" in r.output and "Not uploaded" in r.output
+
+
+@pytest.mark.parametrize(
+    "url", ["http://10.1.2.3", "https://[broken", "https://ops.example:notaport", "https://ops.example:99999"]
+)
+def test_report_bug_misconfigured_url_fails_before_side_effects(state, _no_machine_secrets, monkeypatch, url):
+    from raven.trajectory import bugreport as breport
+
+    monkeypatch.setenv("RAVEN_BUGREPORT_URL", url)
+    _simple_log(state)
+    r = runner.invoke(trajectory_app, ["report-bug", "trace-1", "-d", "it broke", "--yes"])
+
+    assert r.exit_code == 1 and "misconfigured" in r.output
+    assert not breport.bugreports_root(state).exists()
+
+
+def test_report_bug_upload_failure_keeps_the_package(state, _no_machine_secrets, monkeypatch, no_proxy_env):
+    from raven.trajectory import bugreport as breport
+
+    monkeypatch.setenv("RAVEN_BUGREPORT_URL", _dead_url())
+    _simple_log(state)
+    r = runner.invoke(trajectory_app, ["report-bug", "trace-1", "-d", "it broke", "--yes"])
+
+    assert r.exit_code == 1, r.output
+    assert "✗ Upload failed:" in r.output and "raven trajectory upload-bug-report br-" in r.output
+    ((_dir, record),) = breport.list_reports(state)
+    assert record["status"] == "local_ready"
+    assert record["upload"]["state"] == "failed" and record["upload"]["error"]
+
+
+def test_upload_bug_report_retries_and_repeats(state, _no_machine_secrets, receiver_url, monkeypatch):
+    from raven.trajectory import bugreport as breport
+
+    monkeypatch.setenv("RAVEN_BUGREPORT_URL", _dead_url())
+    _simple_log(state)
+    assert runner.invoke(trajectory_app, ["report-bug", "trace-1", "-d", "it broke", "--yes"]).exit_code == 1
+    ((_dir, record),) = breport.list_reports(state)
+
+    monkeypatch.setenv("RAVEN_BUGREPORT_URL", receiver_url)
+    r = runner.invoke(trajectory_app, ["upload-bug-report", record["report_id"]])
+    assert r.exit_code == 0, r.output
+    assert "Uploaded — receipt rc-" in r.output
+    assert breport.load_record(_dir)["upload"]["state"] == "uploaded"
+
+    r = runner.invoke(trajectory_app, ["upload-bug-report", record["report_id"]])
+    assert r.exit_code == 0 and "Already uploaded — receipt rc-" in r.output
+
+
+def test_upload_bug_report_argument_errors(state, _no_machine_secrets, receiver_url, monkeypatch):
+    monkeypatch.delenv("RAVEN_BUGREPORT_URL", raising=False)
+    r = runner.invoke(trajectory_app, ["upload-bug-report", "br-20260904-abcdef"])
+    assert r.exit_code == 2 and "No upload URL is configured" in r.output
+
+    r = runner.invoke(trajectory_app, ["upload-bug-report", "br-20260904-abcdef", "--url", receiver_url])
+    assert r.exit_code == 1 and "Unknown bug report" in r.output
+
+    r = runner.invoke(trajectory_app, ["upload-bug-report", "../x", "--url", receiver_url])
+    assert r.exit_code == 1 and "Unknown bug report" in r.output
+
+    r = runner.invoke(trajectory_app, ["upload-bug-report", "br-20260904-abcdef", "--url", "http://10.1.2.3"])
+    assert r.exit_code == 1 and "misconfigured" in r.output
+
+
+# ── receiver (run the Bug Report Receiver) ─────────────────────────────
+
+
+def _run_receiver_stub(monkeypatch, *, raise_exc=None, announce=False):
+    from raven.trajectory import receiver as trecv
+
+    calls = []
+
+    def _run(config, *, ready=None):
+        calls.append((config, ready))
+        if announce and ready is not None:
+            ready("127.0.0.1", 18795)
+        if raise_exc is not None:
+            raise raise_exc
+
+    monkeypatch.setattr(trecv, "run_receiver", _run)
+    return calls
+
+
+def test_receiver_defaults_map_to_the_config(tmp_path, monkeypatch):
+    from raven.trajectory import receiver as trecv
+
+    calls = _run_receiver_stub(monkeypatch, announce=True)
+    r = runner.invoke(trajectory_app, ["receiver", "--save-dir", str(tmp_path / "inbox")])
+
+    assert r.exit_code == 0, r.output
+    ((config, ready),) = calls
+    assert isinstance(config, trecv.ReceiverConfig)
+    assert config.save_dir == (tmp_path / "inbox").resolve()
+    assert (config.host, config.port, config.trusted_proxies) == ("127.0.0.1", 18795, ())
+    assert (config.limits.max_package_bytes, config.limits.max_unpacked_bytes) == (64 * 2**20, 256 * 2**20)
+    assert (config.max_daily_bytes, config.max_daily_count, config.min_free_bytes) == (2048 * 2**20, 500, 1024 * 2**20)
+    assert (config.rate_burst, config.rate_per_10min, config.concurrency) == (10, 30, 4)
+    assert (config.idle_timeout, config.total_timeout) == (30.0, 600.0)
+    assert ready is not None
+    assert "listening on http://127.0.0.1:18795" in r.output
+    assert "Saving packages under" in r.output and "Press Ctrl-C to stop." in r.output
+    assert "Bug report receiver stopped." in r.output
+
+
+def test_receiver_options_map_to_the_config(tmp_path, monkeypatch):
+    calls = _run_receiver_stub(monkeypatch)
+    args = [
+        "receiver",
+        "--save-dir",
+        str(tmp_path),
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "0",
+        "--trusted-proxy",
+        "10.0.0.0/8",
+        "--trusted-proxy",
+        "fd00::/8",
+        "--max-package-mib",
+        "1",
+        "--max-unpacked-mib",
+        "2",
+        "--max-daily-mib",
+        "3",
+        "--max-daily-count",
+        "4",
+        "--min-free-mib",
+        "5",
+        "--rate-burst",
+        "0",
+        "--rate-per-10min",
+        "7",
+        "--concurrency",
+        "8",
+        "--idle-timeout",
+        "1.5",
+        "--total-timeout",
+        "2.5",
+    ]
+    r = runner.invoke(trajectory_app, args)
+
+    assert r.exit_code == 0, r.output
+    ((config, _ready),) = calls
+    assert (config.host, config.port) == ("0.0.0.0", 0)
+    assert config.trusted_proxies == ("10.0.0.0/8", "fd00::/8")
+    assert (config.limits.max_package_bytes, config.limits.max_unpacked_bytes) == (2**20, 2 * 2**20)
+    assert (config.max_daily_bytes, config.max_daily_count, config.min_free_bytes) == (3 * 2**20, 4, 5 * 2**20)
+    assert (config.rate_burst, config.rate_per_10min, config.concurrency) == (0, 7, 8)
+    assert (config.idle_timeout, config.total_timeout) == (1.5, 2.5)
+
+
+@pytest.mark.parametrize(
+    "args,needle",
+    [
+        (["--trusted-proxy", "nope"], "not a CIDR network"),
+        (["--concurrency", "0"], "--concurrency"),
+        (["--port", "70000"], "--port"),
+    ],
+)
+def test_receiver_rejects_bad_options(tmp_path, monkeypatch, args, needle):
+    calls = _run_receiver_stub(monkeypatch)
+    r = runner.invoke(trajectory_app, ["receiver", "--save-dir", str(tmp_path), *args])
+    assert r.exit_code == 2, r.output
+    assert needle in r.output
+    assert calls == []
+
+
+def test_receiver_refuses_a_file_as_save_dir(tmp_path, monkeypatch):
+    calls = _run_receiver_stub(monkeypatch)
+    target = tmp_path / "file"
+    target.write_text("x", encoding="utf-8")
+    r = runner.invoke(trajectory_app, ["receiver", "--save-dir", str(target)])
+    assert r.exit_code == 1 and "is not a directory" in r.output
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "exc", [PermissionError(13, "Permission denied", "/srv/inbox"), OSError(28, "No space left on device")]
+)
+def test_receiver_reports_an_unusable_save_dir(tmp_path, monkeypatch, exc):
+    import raven.cli.trajectory_commands as tcmd
+
+    _run_receiver_stub(monkeypatch, raise_exc=exc)
+    # A narrow console and a deep path: the diagnostic has to stay one line
+    # regardless of how long the temporary directory of the host is.
+    monkeypatch.setattr(tcmd.console, "_width", 40)
+    deep = tmp_path.joinpath(*(["a-rather-long-directory-name"] * 4), "inbox")
+    r = runner.invoke(trajectory_app, ["receiver", "--save-dir", str(deep)])
+    assert r.exit_code == 1, r.output
+    (line,) = [line for line in r.output.splitlines() if "Cannot prepare" in line]
+    assert str(deep) in line and exc.strerror in line
+    assert isinstance(r.exception, SystemExit)

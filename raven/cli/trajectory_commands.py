@@ -16,7 +16,14 @@ wrappers over the trajectory layer:
   ``report``, its deliverable embeds the trajectory inside a problem-metadata
   envelope and is gated by the redaction classification: review findings are
   adjudicated per item, and shipping a review report always takes an explicit
-  risk authorization (never implied by ``--yes``).
+  risk authorization (never implied by ``--yes``). When ``RAVEN_BUGREPORT_URL``
+  names a receiver, the package is uploaded as soon as it lands
+  (:mod:`raven.trajectory.upload`).
+- ``upload-bug-report`` — send (or send again) a filed report's package to the
+  receiver; the same package twice yields the same receipt.
+- ``receiver`` — run the Bug Report Receiver itself: the HTTP service that takes
+  packages in, checks them, and stores them by day
+  (:mod:`raven.trajectory.receiver`).
 - ``replay``  — feed a bundle's recorded model replies and tool results back
   through the live harness (:func:`raven.trajectory.replay.run_replay`; no
   real tool code runs, no spans are emitted).
@@ -327,6 +334,7 @@ def trajectory_report_bug(
     """
     from raven.trajectory import bugreport as breport
     from raven.trajectory import review as treview
+    from raven.trajectory import upload as tupload
 
     description = description.strip()
     if not description:
@@ -350,6 +358,7 @@ def trajectory_report_bug(
     if not interactive and not yes:
         console.print("[red]--yes is required without a TTY; nothing was collected or pinned.[/red]")
         raise typer.Exit(code=1)
+    base_url = _resolved_upload_url()
 
     try:
         prep = breport.prepare_trajectory(id_, workspace=workspace, config_path=config)
@@ -447,7 +456,7 @@ def trajectory_report_bug(
             exit_code = 1
             return
 
-        _print_bug_cli_summary(prep)
+        _print_bug_cli_summary(prep, upload_target=tupload.upload_target(base_url) if base_url else "")
         if prep.classification == breport.CLASSIFICATION_NEEDS_REVIEW and not accept_risk:
             # The review authorization can only come from --accept-risk or
             # this risk-worded consent; --yes never grants it.
@@ -468,7 +477,7 @@ def trajectory_report_bug(
             return
 
         try:
-            _record_dir, record = breport.confirm_and_package(prep)
+            record_dir, record = breport.confirm_and_package(prep)
         except breport.StaleAttemptError:
             console.print("[red]The attempt changed while the report was being prepared — nothing was created.[/red]")
             exit_code = 1
@@ -487,7 +496,10 @@ def trajectory_report_bug(
             return
         console.print(f"[green]✓[/green] Bug report {escape(record['report_id'])} ready (local_ready)", highlight=False)
         console.print(f"  Package: [cyan]{escape(record['package']['path'])}[/cyan]", highlight=False)
-        console.print("  Not uploaded — hand the package file to a developer yourself.")
+        if base_url:
+            exit_code = _upload_and_report(record_dir, base_url)
+        else:
+            console.print("  Not uploaded — hand the package file to a developer yourself.")
     finally:
         # A no-op once the record landed; on every earlier exit it removes the
         # pre-confirmation staging state (mirrors the browser flow).
@@ -502,12 +514,169 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _print_bug_cli_summary(prep) -> None:
+def _resolved_upload_url() -> str:
+    """The receiver to upload to ("" when off), or exit before any side effect."""
+    from raven.trajectory import upload as tupload
+
+    try:
+        return tupload.resolve_upload_url()
+    except tupload.UploadConfigError as exc:
+        console.print(f"[red]✗ Bug report upload is misconfigured: {escape(str(exc))}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+
+
+def _upload_and_report(record_dir: Path, base_url: str) -> int:
+    """Upload a landed report's package and print the outcome; the exit code to use."""
+    from raven.trajectory import upload as tupload
+
+    try:
+        with console.status("Uploading the package...", spinner="dots"):
+            _record, receipt = tupload.upload_record(record_dir, base_url=base_url)
+    except tupload.UploadError as exc:
+        console.print(f"  [red]✗ Upload failed: {escape(str(exc))}[/red]", highlight=False, soft_wrap=True)
+        console.print(
+            f"  The package is kept; retry with: raven trajectory upload-bug-report {escape(record_dir.name)}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        return 1
+    verb = "Already uploaded" if receipt.duplicate else "Uploaded"
+    console.print(f"  {verb} — receipt {escape(receipt.receipt_id)}", highlight=False)
+    return 0
+
+
+@trajectory_app.command("upload-bug-report")
+def trajectory_upload_bug_report(
+    report_id: str = typer.Argument(..., metavar="REPORT_ID", help="Bug report id (br-...)"),
+    url: str | None = typer.Option(None, "--url", help="Receiver base URL (default: $RAVEN_BUGREPORT_URL)"),
+) -> None:
+    """Upload, or upload again, a filed Bug Report Package to the receiver.
+
+    The package is the one the report was created with; a package that has
+    been changed since is refused. Uploading the same package twice is safe:
+    the receiver answers with the receipt it already holds.
+    """
+    from raven.trajectory import bugreport as breport
+    from raven.trajectory import upload as tupload
+
+    try:
+        base_url = tupload.validate_upload_url(url) if url is not None else tupload.resolve_upload_url()
+    except tupload.UploadConfigError as exc:
+        console.print(f"[red]✗ Bug report upload is misconfigured: {escape(str(exc))}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    if not base_url:
+        console.print(f"[red]✗ No upload URL is configured; set {tupload.UPLOAD_URL_ENV} or pass --url.[/red]")
+        raise typer.Exit(code=2)
+    record_dir = breport.bugreports_root() / report_id
+    if not breport.is_report_id(report_id) or not (record_dir / breport.RECORD_FILE).is_file():
+        console.print(f"[red]✗ Unknown bug report {escape(report_id)}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    try:
+        breport.load_record(record_dir)
+    except ValueError as exc:
+        console.print(f"[red]✗ Bug report {escape(report_id)} is damaged: {escape(str(exc))}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=_upload_and_report(record_dir, base_url))
+
+
+def _receiver_address(host: str, port: int) -> str:
+    return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
+
+
+@trajectory_app.command("receiver")
+def trajectory_receiver(
+    save_dir: Path = typer.Option(..., "--save-dir", help="Directory that receives packages (created 0700)"),
+    host: str = typer.Option(
+        "127.0.0.1", "--host", help="Bind address; anything but loopback belongs behind a TLS proxy"
+    ),
+    port: int = typer.Option(18795, "--port", min=0, max=65535, help="TCP port; 0 picks a free one and prints it"),
+    trusted_proxy: list[str] = typer.Option(
+        [], "--trusted-proxy", help="CIDR of a proxy whose X-Forwarded-For is believed (repeatable)"
+    ),
+    max_package_mib: int = typer.Option(64, "--max-package-mib", min=1, help="Largest package accepted, in MiB"),
+    max_unpacked_mib: int = typer.Option(
+        256, "--max-unpacked-mib", min=1, help="Largest decompressed volume inspected per package, in MiB"
+    ),
+    max_daily_mib: int = typer.Option(2048, "--max-daily-mib", min=0, help="Bytes accepted per UTC day, in MiB"),
+    max_daily_count: int = typer.Option(500, "--max-daily-count", min=0, help="Packages accepted per UTC day"),
+    min_free_mib: int = typer.Option(1024, "--min-free-mib", min=0, help="Free disk space to keep, in MiB"),
+    rate_burst: int = typer.Option(
+        10, "--rate-burst", min=0, help="Uploads one address may make at once; 0 disables rate limiting"
+    ),
+    rate_per_10min: int = typer.Option(
+        30, "--rate-per-10min", min=0, help="Uploads one address regains per ten minutes"
+    ),
+    concurrency: int = typer.Option(4, "--concurrency", min=1, help="Uploads handled at the same time"),
+    idle_timeout: float = typer.Option(
+        30.0, "--idle-timeout", min=0.0, help="Seconds without body data before an upload is dropped"
+    ),
+    total_timeout: float = typer.Option(600.0, "--total-timeout", min=0.0, help="Seconds one upload may take"),
+) -> None:
+    """Run the Bug Report Receiver: accept packages into --save-dir until stopped.
+
+    The receiver authenticates nobody; who can reach it is decided by the
+    network it listens on. It binds loopback by default -- put a TLS proxy in
+    front of it for anything else, and name that proxy with --trusted-proxy
+    so uploads are rate-limited per real client. Ctrl-C or SIGTERM stops it.
+    """
+    import ipaddress
+
+    from raven.trajectory import receiver as trecv
+    from raven.trajectory.package_check import PackageLimits
+
+    for cidr in trusted_proxy:
+        try:
+            ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            raise typer.BadParameter(f"not a CIDR network: {cidr}", param_hint="--trusted-proxy")
+    save_dir = save_dir.resolve()
+    if save_dir.exists() and not save_dir.is_dir():
+        console.print(f"[red]✗ --save-dir is not a directory: {escape(str(save_dir))}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    config = trecv.ReceiverConfig(
+        save_dir=save_dir,
+        host=host,
+        port=port,
+        trusted_proxies=tuple(trusted_proxy),
+        limits=PackageLimits(max_package_bytes=max_package_mib * 2**20, max_unpacked_bytes=max_unpacked_mib * 2**20),
+        max_daily_bytes=max_daily_mib * 2**20,
+        max_daily_count=max_daily_count,
+        min_free_bytes=min_free_mib * 2**20,
+        rate_burst=rate_burst,
+        rate_per_10min=rate_per_10min,
+        concurrency=concurrency,
+        idle_timeout=idle_timeout,
+        total_timeout=total_timeout,
+    )
+
+    def _announce(bound_host: str, bound_port: int) -> None:
+        console.print(
+            f"Bug report receiver listening on {escape(_receiver_address(bound_host, bound_port))}",
+            highlight=False,
+            soft_wrap=True,
+        )
+        console.print(f"Saving packages under {escape(str(save_dir))}", highlight=False, soft_wrap=True)
+        console.print("Press Ctrl-C to stop.")
+
+    try:
+        trecv.run_receiver(config, ready=_announce)
+    except OSError as exc:
+        console.print(
+            f"[red]✗ Cannot prepare the receiver (save dir {escape(str(save_dir))}): {escape(str(exc))}[/red]",
+            highlight=False,
+            soft_wrap=True,
+        )
+        raise typer.Exit(code=1)
+    console.print("Bug report receiver stopped.")
+
+
+def _print_bug_cli_summary(prep, *, upload_target: str = "") -> None:
     """The final confirmation block, rendered from the frozen canonical metadata.
 
     Everything the package will carry must be on screen at the confirmation
     point — the optional problem fields, the externally shipped reporter
-    identity, and the full completeness reasons included.
+    identity, the full completeness reasons, and whether the package will
+    leave this machine.
     """
     from raven.trajectory import bugreport as breport
 
@@ -567,7 +736,10 @@ def _print_bug_cli_summary(prep) -> None:
         highlight=False,
     )
     console.print(f"  Will produce: bug report package {escape(prep.report_id)}.tar.gz (kept locally)")
-    console.print("  Nothing will be uploaded — the package stays on this machine.")
+    if upload_target:
+        console.print(f"  Will upload to {escape(upload_target)} after the package is created.", highlight=False)
+    else:
+        console.print("  Nothing will be uploaded — the package stays on this machine.")
 
 
 def _manifest_summary(bundle_dir: Path) -> dict[str, Any] | None:
