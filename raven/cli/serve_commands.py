@@ -411,9 +411,8 @@ async def _serve_main(port: int, open_browser: bool) -> None:
     from raven.rpc.transports.ws import WsGateway, build_app, pick_port
 
     register_console_feature()
-    # This coroutine binds a port and serves until it is killed, so no test
-    # runs it; what it schedules is pinned by source in
-    # tests/test_cli_serve_commands.py instead.
+    # Startup tests replace this background warm-up to keep provider
+    # initialization out of the serving probe.
     warm_up_in_background()  # pragma: no cover
 
     # Declared before anything can emit a span. The page runs on the terminal's
@@ -486,11 +485,9 @@ async def _serve_main(port: int, open_browser: bool) -> None:
     if stack.build_error is not None:
         typer.echo(f"warning: agent loop failed to build ({stack.build_error.message}); chat turns will error")
     if open_browser:
-        nonce = gateway.mint_nonce()
-        auth_url = f"{base_url}/auth#{nonce}"
+        auth_url = f"{base_url}/auth#{gateway.mint_nonce()}"
         typer.echo(f"opening browser: {base_url}")
-        if not webbrowser.open(auth_url):
-            typer.echo(f"could not open a browser automatically; visit: {auth_url}")
+        _open(auth_url)
 
     announcer = asyncio.create_task(_announce_updates(gateway.broadcast, stop))
 
@@ -1648,8 +1645,17 @@ def _run_foreground(port: int, dev: bool = False) -> None:
 
 
 def _open(url: str) -> None:
+    """Print the sign-in link, then hand it to a browser.
+
+    Printed every time, because ``webbrowser.open`` answers True whenever it ran
+    something: VS Code's ``browser.sh`` exits 0 whatever happened, and a machine
+    with no display hands the URL to a console browser that has no JavaScript
+    and so never redeems it. Printed first, because a console browser holds the
+    terminal until it is quit.
+    """
+    typer.echo(f"sign in with this link (it works once): {url}")
     if not webbrowser.open(url):
-        typer.echo(f"could not open a browser automatically; visit: {url}")
+        typer.echo("could not open a browser automatically; open the link above")
 
 
 def register(app: typer.Typer) -> None:
