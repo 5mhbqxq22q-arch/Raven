@@ -22,20 +22,27 @@ This module owns what only a machine needs and the node cannot own:
 - one sentence for an ssh failure, naming the machine and never its address;
   ssh's own messages, which do name it, go to an owner-only log rather than to
   the stderr the connection journals and quotes;
-- the one-shot commands the installer runs there (:func:`run`, :func:`push`).
+- the one-shot commands the installer runs there (:func:`run`, :func:`push`);
+- the tunnel an openai sub-agent's endpoint is reached through from the
+  machine, held for one turn (:func:`tunnel`).
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import os
 import re
 import shlex
+import socket
 import subprocess
-from collections.abc import Sequence
+import time
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from raven.home import MACHINE_LANE_ENV, machine_lane_enabled
 from raven.ops import connections, remote_path
@@ -53,6 +60,14 @@ DEFAULT_ROOT = remote_path.DEFAULT_ROOT
 #: The node's own heartbeat is what notices first; these are the floor under it.
 KEEPALIVE = ("-T", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
 
+#: Options for a tunnel held for one turn: no remote command, the forward
+#: refused rather than a session without it, and the keepalives a held session
+#: has (``KEEPALIVE`` without ``-T``: there is no session to give a tty to).
+TUNNEL = ("-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3")
+
+#: How long past ssh's own connect timeout a tunnel's port may take to open.
+TUNNEL_READY_S = 20.0
+
 #: The session directory every check of an agent reuses (Test, Connect, the
 #: capability record), so pressing Test leaves one directory on the machine
 #: rather than one per press.
@@ -64,7 +79,10 @@ SSH_FAILED_RC = 255
 #: What a POSIX shell exits with when it cannot find the command it was given.
 NOT_FOUND_RC = 127
 
-# The fields of a registry row that are the way onto the machine, never shown.
+# The fields of a registry row that are the way onto the machine: read to open
+# the ssh, and kept off the launch line a model, a log or a record could see.
+# The user, address and port do name a path there, written the way scp writes
+# it (:func:`shown`); the key never shows anywhere.
 _WAY_IN = frozenset({"host", "port", "user", "key"})
 _LEAF_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _LEAF_MAX = 64
@@ -81,7 +99,12 @@ class RemoteMachineError(RuntimeError):
 
 @dataclass(frozen=True)
 class Machine:
-    """A registered ssh machine. The row, with the address in it, never prints."""
+    """A registered ssh machine.
+
+    The row never prints whole: the key and the ssh line built from the row
+    reach no model, log or record, while its user, address and port name a
+    path on the machine the way scp writes it (:func:`shown`).
+    """
 
     id: str
     display_name: str
@@ -99,8 +122,9 @@ class Machine:
 
         For what a caller needs to know about the machine itself -- where a
         Raven node is kept on it (``node_dir``), the directories its owner
-        listed (``paths``). The address, port, account and key stay behind
-        :func:`ssh_command`, :func:`run` and :func:`push`.
+        listed (``paths``). The address, port, account and key open the way
+        there behind :func:`ssh_command`, :func:`run` and :func:`push`; the
+        first three also name a path there (:func:`shown`), the key never shows.
         """
         if name in _WAY_IN:
             raise KeyError(f"{name!r} is how raven reaches the machine, not a fact about it")
@@ -338,6 +362,100 @@ def push(target: Machine, command: str, data: bytes, *, timeout: float = 300.0) 
     return done.returncode, out
 
 
+@dataclass(frozen=True)
+class Forwarded:
+    """``url`` as it is reached through a tunnel: the same path, on this computer's loopback."""
+
+    url: str
+    host: str
+    """The name the far server knows itself by, the netloc as written: for the ``Host`` header, since the
+    request reaches the server from its own machine and not under that name."""
+
+
+@contextlib.asynccontextmanager
+async def tunnel(
+    target: Machine, url: str, *, ssh_log: str | os.PathLike[str], connect_timeout: int = 15
+) -> AsyncIterator[Forwarded]:
+    """``url``'s host and port, as ``target`` resolves them, reached from a port here for as long as the block runs.
+
+    How an openai sub-agent on a machine is called: ssh forwards a port on
+    this computer's loopback to the endpoint as the machine sees it, the
+    request goes through it, and the ssh ends with the block, so nothing of
+    the machine is held between turns. ``http`` only: the tunnel ends at this
+    computer's loopback, which an ``https`` certificate would not name, and
+    that refusal is one sentence given before any ssh starts. ssh's own words,
+    which name the address, go to ``ssh_log`` (:func:`ssh_log_path`), and a
+    tunnel that does not open is explained from them (:func:`explain`).
+    """
+    parts = urlsplit(url)
+    if parts.scheme != "http":
+        raise RemoteMachineError(
+            f"machine {target.label}: an endpoint reached through the machine has to be http, and this one is "
+            f"{parts.scheme or 'of no scheme'}: the tunnel ends at this computer's loopback, which a certificate "
+            "would not name"
+        )
+    if not parts.hostname:
+        raise RemoteMachineError(f"machine {target.label}: the endpoint's URL names no host to reach from it")
+    host, port, key, user = _target(target)
+    local = _free_port()
+    # An IPv6 address is bracketed in the forward as it is in the URL, which
+    # ``hostname`` gives bare; ssh refuses the bare one.
+    far = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    forward = f"127.0.0.1:{local}:{far}:{parts.port or 80}"
+    extra = TUNNEL + ("-L", forward, "-E", os.fspath(ssh_log))
+    argv = ssh_argv(host, port, key, user=user, connect_timeout=connect_timeout, extra=extra)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise RemoteMachineError(f"machine {target.label}: ssh could not be started: {exc}") from None
+    try:
+        await _tunnel_up(target, proc, local, ssh_log, within=connect_timeout + TUNNEL_READY_S)
+        yield Forwarded(url=urlunsplit(parts._replace(netloc=f"127.0.0.1:{local}")), host=parts.netloc)
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+
+
+async def _tunnel_up(target: Machine, proc: Any, local: int, log: str | os.PathLike[str], *, within: float) -> None:
+    """Wait for ssh to open the port here, or to end, whichever comes first; an end is explained."""
+    deadline = time.monotonic() + within
+    while True:
+        if proc.returncode is not None:
+            said = explain(target, proc.returncode, read_ssh_log(log))
+            raise RemoteMachineError(said or f"the tunnel to machine {target.label} ended before it was open")
+        try:
+            _reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", local), timeout=0.5)
+        except (OSError, asyncio.TimeoutError):
+            pass
+        else:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+            return
+        if time.monotonic() >= deadline:
+            raise RemoteMachineError(f"machine {target.label} did not open the tunnel within {within:.0f}s")
+        await asyncio.sleep(0.1)
+
+
+def _free_port() -> int:
+    """A port on this computer's loopback that nothing listens on now."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def explain(target: Machine, rc: int, output: str) -> str | None:
     """One sentence for a failure ssh itself caused, or None when ssh got through.
 
@@ -407,7 +525,9 @@ def shell_path(path: str) -> str:
 def shown(target: Machine, path: str) -> str:
     """``path`` on ``target`` the way scp writes it, with the registry's user, address and port.
 
-    What the file tools read back as a remote path (:mod:`raven.ops.remote_path`).
+    The one spelling a path on a machine has in a reply, a record or a note:
+    what names a file there, and what :mod:`raven.ops.remote_path` reads back
+    as one.
     """
     return remote_path.RemotePath(machine=target.id, path=path, _row=target._row).display()
 
@@ -422,9 +542,11 @@ def _target(target: Machine) -> tuple[str, int, str, str]:
 __all__ = [
     "CHECK_HANDLE",
     "DEFAULT_ROOT",
+    "Forwarded",
     "KEEPALIVE",
     "Machine",
     "RemoteMachineError",
+    "TUNNEL",
     "agent_missing",
     "explain",
     "failure",
@@ -440,4 +562,5 @@ __all__ = [
     "shown",
     "ssh_command",
     "ssh_log_path",
+    "tunnel",
 ]

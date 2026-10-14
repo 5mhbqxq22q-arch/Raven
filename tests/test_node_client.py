@@ -935,14 +935,25 @@ async def test_a_channel_endpoint_carries_frames_both_ways_and_ends_with_the_age
     endpoint.feed_frame("too late")
 
     assert link.said == [(protocol.AGENT_FRAME, {"channel": 3, "line": '{"jsonrpc":"2.0","id":1,"method":"x"}'})]
-    assert await endpoint.readline() == b'{"jsonrpc":"2.0","id":1,"result":{}}'
+    assert await endpoint.readline() == b'{"jsonrpc":"2.0","id":1,"result":{}}\n'
     assert await endpoint.readline() == b""
-    assert await endpoint.readerr() == b"agent: hello" and await endpoint.readerr() == b""
+    assert await endpoint.readerr() == b"agent: hello\n" and await endpoint.readerr() == b""
     assert endpoint.returncode == 3 and await endpoint.wait() == 3 and endpoint.ended() is None
     with pytest.raises(BrokenPipeError):
         await endpoint.write(b"{}\n")
     await endpoint.end()
     assert all(method != protocol.AGENT_CANCEL for method, *_ in link.asked), "nothing to cancel once it has exited"
+
+
+async def test_a_blank_line_is_a_frame_the_endpoint_hands_on_as_a_pipe_would():
+    endpoint = ChannelEndpoint(_Client(), 1, target=_box(), agent="cli@box")  # type: ignore[arg-type]
+    endpoint.feed_frame("a", 1)
+    endpoint.feed_frame("", 2)
+    endpoint.feed_frame("b", 3)
+    endpoint.exited(0)
+
+    assert [await endpoint.readline() for _ in range(4)] == [b"a\n", b"\n", b"b\n", b""]
+    assert endpoint.received == 3, "the blank line counts, so an attach picks up where this one stopped"
 
 
 async def test_ending_a_running_channel_is_a_cancel_on_the_link(tmp_path):
@@ -999,6 +1010,51 @@ async def test_a_file_is_fetched_from_the_machine_whole_and_checked(box, pool, t
     with pytest.raises(NodeError, match="outside allowed directories"):
         await pool.pull_file("box", f"{box.home}/elsewhere.bin", back, roots=roots)
     assert len(box.launches()) == 1, "all of it on the one link"
+
+
+@pytest.mark.slow
+async def test_a_cli_agent_s_input_travels_on_the_link_and_its_stdin_ends_when_told(box, pool):
+    box.node()
+
+    endpoint = await pool.open_channel("box", name="cat@box", command="cat", cwd="~", env={})
+    await endpoint.send_input("first line\nsecond line\n", eof=True)
+
+    lines = []
+    while raw := await endpoint.readline():
+        lines.append(raw.decode("utf-8").rstrip("\n"))
+    assert lines == ["first line", "second line"], "what went in came back, line by line"
+    assert await endpoint.wait() == 0, "its stdin closed, cat left on its own"
+    assert len(box.launches()) == 1, "on the node's ssh, like a frame"
+
+
+async def test_input_written_while_the_link_is_down_goes_out_in_order_once_it_is_back():
+    endpoint = ChannelEndpoint(_Client(), 1, target=_box(), agent="cli@box")  # type: ignore[arg-type]
+    endpoint.detach("the link went")
+    await endpoint.write(b'{"a": 1}\n')
+    await endpoint.send_input("the prompt", eof=True)
+    back = _Client()
+
+    await endpoint.reattach(back, 7)  # type: ignore[arg-type]
+
+    assert back.said == [
+        (protocol.AGENT_FRAME, {"channel": 7, "line": '{"a": 1}'}),
+        (protocol.AGENT_STDIN, {"channel": 7, "data": "the prompt", "eof": True}),
+    ], "on the new channel, in the order they were written"
+
+
+async def test_input_for_an_agent_that_has_ended_or_whose_link_just_broke_is_refused_or_held():
+    endpoint = ChannelEndpoint(_Client(), 1, target=_box(), agent="cli@box")  # type: ignore[arg-type]
+    endpoint.exited(0)
+    with pytest.raises(BrokenPipeError, match="has ended"):
+        await endpoint.send_input("late", eof=True)
+
+    class _Gone(_Client):
+        async def notify(self, method: str, params: dict[str, Any]) -> None:
+            raise AcpConnectionError("the ssh ended")
+
+    held = ChannelEndpoint(_Gone(), 1, target=_box(), agent="cli@box")  # type: ignore[arg-type]
+    await held.send_input("the prompt", eof=True)
+    assert held._pending == [(protocol.AGENT_STDIN, {"data": "the prompt", "eof": True})], "kept for the next link"
 
 
 async def test_frames_held_for_a_link_that_is_down_are_capped(tmp_path):
@@ -1126,7 +1182,9 @@ async def test_a_replay_the_link_cannot_carry_keeps_the_frames_and_every_waiting
 
     await pool._reattach("box")
 
-    assert first._pending == ["one", "two"], "nothing the link did not carry is dropped"
+    assert [params["line"] for _, params in first._pending] == ["one", "two"], (
+        "nothing the link did not carry is dropped"
+    )
     assert pool._parked["box"] == [first, second], "the one being replayed and the one not yet reached both wait"
     assert first.detached and second.detached and first.returncode is None and second.returncode is None
     assert not client.alive and "box" not in pool._nodes
