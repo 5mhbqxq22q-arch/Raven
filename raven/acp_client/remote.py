@@ -44,7 +44,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from raven.home import MACHINE_LANE_ENV, machine_lane_enabled
 from raven.ops import connections, remote_path
 from raven.ops.transport import TIMED_OUT_RC, TransportError, runner_from, ssh_argv, ssh_target
 
@@ -141,13 +140,6 @@ def machine(conn_id: str) -> Machine:
     launched on half a row fails as a network fault minutes into a dispatch.
     """
     wanted = str(conn_id or "").strip()
-    if not machine_lane_enabled():
-        # The one seam every way onto a machine passes through, so "off" is
-        # off for a dispatch, a verify, a node and a file alike.
-        raise RemoteMachineError(
-            f"machine {wanted!r}: the machine lane is debug-only and off; start raven with "
-            f"{MACHINE_LANE_ENV}=1 to use agents and files on registered machines"
-        )
     found = connections.read()
     if found.state == connections.UNREADABLE:
         raise RemoteMachineError(
@@ -216,6 +208,34 @@ def ssh_command(
     # which also parses options that follow the destination.
     argv += ["--", posix(command)]
     return argv
+
+
+# Whether this process is stopping and leaves the agents on registered machines to their daemons.
+_LEAVING = False
+
+
+def leave_agents_running() -> None:
+    """From here on, closing a link leaves the agents on the machines running: this process is stopping.
+
+    A machine's daemon owns the agent (:mod:`raven.node.server`); the link is
+    only the way to it. Said once by the host's shutdown, before the sub-agents
+    are cancelled and the pools closed, so neither a turn's cancel nor a link's
+    close reaches an agent there, and the next process picks the run up
+    (:mod:`raven.acp_client.remote_runs`).
+    """
+    global _LEAVING
+    _LEAVING = True
+
+
+def leaving() -> bool:
+    """Whether this process is stopping and leaves the agents on the machines running."""
+    return _LEAVING
+
+
+def staying() -> None:
+    """The opposite of :func:`leave_agents_running`: for a process that goes on (tests)."""
+    global _LEAVING
+    _LEAVING = False
 
 
 def failure(target: Machine, log: str | os.PathLike[str], exc: BaseException) -> str | None:
@@ -561,6 +581,9 @@ __all__ = [
     "shell_path",
     "shown",
     "ssh_command",
+    "leave_agents_running",
+    "leaving",
+    "staying",
     "ssh_log_path",
     "tunnel",
 ]

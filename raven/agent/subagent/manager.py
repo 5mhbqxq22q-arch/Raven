@@ -11,6 +11,7 @@ from typing import Any
 
 from loguru import logger
 
+from raven.acp_client import remote_runs
 from raven.agent import workdir
 from raven.agent.subagent import activity
 from raven.agent.subagent.attachments import retarget_note, with_attachment_note, with_undeliverable_note
@@ -1799,6 +1800,11 @@ class SubagentManager:
         # the same instance a direct chat talks to, and watching it there is
         # the same question.
         cancelled = False
+        left = False
+        # Whether the reply reached the conversation: only a refused announce
+        # of a run that returned says no, and the run's record on its machine
+        # then stays for the next start to report.
+        announced = True
         # The record's own id, not its directory's name: the artifacts are a
         # filename prefix in the shared node root now, so the directory names
         # the namespace rather than the call.
@@ -1863,6 +1869,10 @@ class SubagentManager:
                             ),
                             **optional_keyword(backend, "authored_task", origin.get("authored_task")),
                             **({"mcp_grant": mcp_grant} if mcp_grant is not None else {}),
+                            # The reply is announced here, below: a backend that
+                            # ran it on a machine leaves the run's record until
+                            # then, rather than removing it as it returns.
+                            **optional_keyword(backend, "reported_by_caller", True),
                             **state_kwargs,
                         )
                 if (failure := llm_error_reply(final_result)) is not None:
@@ -1876,7 +1886,7 @@ class SubagentManager:
                     origin, task_id, task_summary, "completed", call_id=call_id, ended_at=int(time.time() * 1000)
                 )
                 record.finish(status="completed", output=final_result, activity=did)
-                await self._announce_result(
+                taken = await self._announce_result(
                     task_id,
                     task_summary,
                     task,
@@ -1886,9 +1896,24 @@ class SubagentManager:
                     record_path=str(record.file("out.md")),
                     activity=did,
                 )
+                announced = taken is not False
             except asyncio.CancelledError:
                 cancelled = True
                 reason = self._cancel_reasons.pop(task_id, UNEXPLAINED_CANCEL)
+                if remote_runs.was_left(task_id):
+                    # This process is stopping and the turn goes on under the
+                    # machine's daemon: nothing is finished or announced here;
+                    # the next process picks the run up and does both
+                    # (raven.agent.subagent.resume_remote).
+                    left = True
+                    # The record the backend wrote lacks what only this side
+                    # knows and the announce after a restart shows: the
+                    # dispatch's origin (instance, node, tool call) and summary.
+                    remote_runs.annotate(task_id, origin=origin, task_summary=task_summary)
+                    logger.info(
+                        "Subagent [{}] stays running on its machine; picked up when this computer starts again", task_id
+                    )
+                    raise
                 await _write_spawn_status(session_key, agent, handle, "cancelled")
                 self._emit_status(
                     origin, task_id, task_summary, "cancelled", call_id=call_id, ended_at=int(time.time() * 1000)
@@ -1937,8 +1962,19 @@ class SubagentManager:
                 # nothing can free, so the registry has to be closed on the way
                 # out whichever branch above ran. `finish` is idempotent and has
                 # already written the record by here, so the file it reports is
-                # the one that decides `has_output`.
-                await self._finalize_node_claim(session_key, record)
+                # the one that decides `has_output`. Not for a run left on its
+                # machine: its claim stays open for the process that picks it up.
+                if not left:
+                    await self._finalize_node_claim(session_key, record)
+                    # The run's record on its machine, when the backend left
+                    # one with the reply: gone once the announce was taken. An
+                    # announce the draining scheduler refused leaves it, with
+                    # what the announce after a restart needs, for the next
+                    # start to report (raven.agent.subagent.resume_remote).
+                    if announced:
+                        remote_runs.forget_dispatch(task_id)
+                    else:
+                        remote_runs.annotate(task_id, origin=origin, task_summary=task_summary)
                 # Not for a cancelled call: this poller would be created after
                 # the cancellation sweep took its snapshot, so nothing could
                 # reap it (see cancel_all / cancel_by_session).
@@ -2078,8 +2114,12 @@ class SubagentManager:
         status: str,
         record_path: str | None = None,
         activity: Any = None,
-    ) -> None:
-        """Announce the subagent result to the main agent via the spine.
+    ) -> bool:
+        """Announce the subagent result to the main agent via the spine; whether a turn took it.
+
+        ``False`` when the scheduler is draining and no turn could carry the
+        words (``_inject``): what a caller that can report again later reads
+        (the pick-up after a restart, :mod:`raven.agent.subagent.resume_remote`).
 
         Note: this inbound system message already triggers a main-agent turn,
         so subagent completion is event-driven end-to-end. Do NOT also
@@ -2162,7 +2202,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences), and do not
         # The delivered marker draws the seam where a result re-entered its
         # conversation; a refused inject re-entered nothing, so there is none.
         if not self._inject(announce_content, origin, mark):
-            return
+            return False
         # `content` is the text that was injected, verbatim. A client draws the
         # reader-facing part of it by dropping everything outside the untrusted
         # fence -- and a client REPLAYING this turn later reads the same string
@@ -2170,6 +2210,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences), and do not
         # disagree about what was delivered.
         self._emit_delivered(origin, {**mark, "content": announce_content})
         logger.debug("Subagent [{}] announced result to {}", task_id, origin["session_key"])
+        return True
 
     async def _report_undispatched_cancel(
         self, task_id: str, task_summary: str, task: str, origin: dict[str, Any], reason: str

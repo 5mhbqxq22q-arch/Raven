@@ -129,8 +129,6 @@ class Machine:
         self.registry = root / "connections.json"
         self.rows(rows or [row()])
         monkeypatch.setenv("RAVEN_CONNECTIONS", str(self.registry))
-        # The lane is debug-only; these tests are about what it does when on.
-        monkeypatch.setenv("RAVEN_DEBUG_MACHINES", "1")
         path = f"{self.bin}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
         monkeypatch.setattr(backend_env, "_LOGIN_ENV", {**os.environ, "PATH": path})
         monkeypatch.setattr("raven.config.paths.get_logs_dir", lambda: root / "logs")
@@ -370,16 +368,13 @@ async def test_a_call_that_runs_out_of_time_closes_the_node(box, pool):
     assert pool.status("box").state == "error"
 
 
-async def test_with_the_lane_off_no_node_is_started(box, pool, monkeypatch):
+@pytest.mark.slow
+async def test_a_node_starts_without_a_debug_switch(box, pool, monkeypatch):
     box.node()
-    monkeypatch.delenv("RAVEN_DEBUG_MACHINES")
-
-    with pytest.raises(
-        NodeError, match="the machine lane is debug-only and off; start raven with RAVEN_DEBUG_MACHINES=1"
-    ):
-        await pool.hello("box")
-
-    assert box.launches() == [] and pool.live() == []
+    monkeypatch.delenv("RAVEN_DEBUG_MACHINES", raising=False)
+    hello = await pool.hello("box")
+    assert hello["protocol"] == protocol.PROTOCOL
+    assert len(box.launches()) == 1
 
 
 async def test_a_machine_that_is_not_registered_is_refused_before_any_ssh(box, pool):
@@ -660,6 +655,65 @@ async def test_closing_the_link_on_purpose_leaves_the_agent_on_the_machine_for_t
     await pool.call("box", protocol.AGENT_CANCEL, {"channel": 9})
     await _until(lambda: _gone(agent))
     await client.close()
+
+
+@pytest.mark.slow
+async def test_while_this_computer_is_leaving_the_endpoint_s_end_leaves_the_agent_with_the_machine(box, pool):
+    """The host is stopping: closing the connection ends the endpoint only, and the daemon keeps the agent."""
+    box.node()
+    endpoint = await pool.open_channel("box", name="echo@box", command=box.agent(), cwd="~", env={})
+    client = AcpClient.over(endpoint, name="echo@box")
+    assert await client.request("ping", {}, timeout=10) == {"echo": {}}
+    agent = endpoint.pid
+
+    remote.leave_agents_running()
+    try:
+        await client.close()
+    finally:
+        remote.staying()
+
+    assert endpoint.returncode == node_client.LOST_RC and "left running on task" in (endpoint.ended() or "")
+    await asyncio.sleep(0.3)
+    assert not _gone(agent), "the agent stays with the daemon"
+    assert [(row["task"], row["state"]) for row in await pool.tasks("box")] == [(endpoint.task, "running")]
+    picked, answer = await pool.attach("box", endpoint.task, name="echo@box", after=endpoint.received)
+    assert answer["pid"] == agent and answer["rc"] is None
+    await picked.end()
+    await _until(lambda: _gone(agent))
+
+
+@pytest.mark.slow
+async def test_a_task_is_picked_up_from_the_frame_last_read_and_the_watchers_hear_each_frame_dealt_with(box, pool):
+    box.node()
+    endpoint = await pool.open_channel("box", name="echo@box", command=box.agent(), cwd="~", env={})
+    heard: list[int] = []
+    endpoint.watchers.append(heard.append)
+    client = AcpClient.over(endpoint, name="echo@box")
+    await client.request("ping", {"n": 1}, timeout=10)
+    await client.request("ping", {"n": 2}, timeout=10)
+    await asyncio.sleep(0.05)
+    assert heard == [1, 2] and endpoint.received == 2
+    agent = endpoint.pid
+    await pool.close("box")
+
+    picked, answer = await pool.attach("box", endpoint.task, name="echo@box", after=2)
+
+    assert answer["pid"] == agent and answer["replayed"] == 0 and answer["rc"] is None
+    again = AcpClient.over(picked, name="echo@box")
+    again.continue_ids_from(100)
+    assert await again.request("ping", {"n": 3}, timeout=10) == {"echo": {"n": 3}}
+    assert picked.received == 3, "numbered on from the frames the first link read"
+    await again.close()
+    await _until(lambda: _gone(agent))
+    await client.close()
+
+
+@pytest.mark.slow
+async def test_picking_up_a_task_the_machine_does_not_know_is_one_sentence(box, pool):
+    box.node()
+
+    with pytest.raises(NodeError, match=r"machine 'Lab box' \(box\) no longer runs 'echo@box' \(task nothing-here\)"):
+        await pool.attach("box", "nothing-here", name="echo@box")
 
 
 # --- a live node's calls, with the connection stood in for -------------------------
@@ -1103,6 +1157,48 @@ async def test_an_attach_the_link_cannot_carry_parks_every_waiting_endpoint_agai
     assert len(client.asked) == 1, "the second was not tried on a link that had just failed"
     assert pool.status("box").state == "lost" and pool.status("box").agents == 2
     await pool.close_all()
+
+
+async def test_a_pick_up_the_machine_refuses_or_cannot_carry_is_one_sentence_each(tmp_path):
+    pool = NodePool(backoff_s=())
+    gone = AcpRemoteError(protocol.AGENT_ATTACH, protocol.UNKNOWN_TASK, "no task 't' is running or recorded")
+    _live(pool, tmp_path, "box", raises=gone)
+    with pytest.raises(NodeError, match=r"machine 'Lab box' \(box\) no longer runs 'echo@box' \(task t\): no task"):
+        await pool.attach("box", "t", name="echo@box")
+    assert pool._nodes["box"].channels == {}, "the channel opened for it is closed again"
+
+    slow = _live(pool, tmp_path, "slow", raises=AcpTimeoutError("no answer", method=protocol.AGENT_ATTACH))
+    with pytest.raises(NodeError, match=r"did not answer agent/attach"):
+        await pool.attach("slow", "t", name="echo@box")
+    assert not slow.alive, "a link that does not answer is lost"
+
+    dead = _live(pool, tmp_path, "dead", raises=AcpConnectionError("connection ended (exit 255)"))
+    with pytest.raises(NodeError, match=r"machine 'Lab box' \(dead\)"):
+        await pool.attach("dead", "t", name="echo@box")
+    assert not dead.alive
+    await pool.close_all()
+
+
+async def test_a_watcher_that_fails_is_named_and_the_frames_go_on(tmp_path):
+    from loguru import logger
+
+    endpoint = ChannelEndpoint(_Client(), 1, target=_box(), agent="echo@box")  # type: ignore[arg-type]
+    heard: list[int] = []
+
+    def bad(n: int) -> None:
+        raise RuntimeError("no disk")
+
+    endpoint.watchers.extend([bad, heard.append])
+    records: list[str] = []
+    sink = logger.add(lambda message: records.append(message.record["message"]), level="WARNING")
+    try:
+        endpoint.feed_frame('{"jsonrpc":"2.0","id":1,"result":{}}', 1)
+        assert await endpoint.readline() == b'{"jsonrpc":"2.0","id":1,"result":{}}\n'
+        endpoint.consumed()
+    finally:
+        logger.remove(sink)
+
+    assert heard == [1] and any("a watcher of task" in message and "no disk" in message for message in records)
 
 
 # --- a link replaced by an ordinary call brings its agents along ------------------------

@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from raven.acp_client import remote
+from raven.acp_client import remote, remote_runs
 from raven.acp_client.acp_dialects import AcpDialect, ToolCall, content_texts, dialect_for
 from raven.acp_client.ask_user import AskUserResponder, clarify_responder
 from raven.acp_client.capabilities import (
@@ -1536,6 +1536,11 @@ class AcpAgentBackend:
         authored_task: str | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
         media: Sequence[Media] = (),
+        # Whether the caller reports the reply itself (the manager's announce)
+        # and removes the run's record on its machine then
+        # (`remote_runs.forget_dispatch`); otherwise the record goes as this
+        # returns, as for a caller that takes the reply as its own result.
+        reported_by_caller: bool = False,
     ) -> str:
         # The parent binding is forwarded when the pooled ACP worker launches.
         # Without this, a long-lived worker keeps the provider/model captured
@@ -1658,6 +1663,23 @@ class AcpAgentBackend:
                         }
                     )
                 record_session(span, session_id=session_id, resumed=resumed)
+                # A run on a machine is remembered here while it is in flight,
+                # so a process after this one can pick it up where this one
+                # left it (remote_runs): removed when the turn ends here, kept
+                # when this process stops and leaves the agent to the machine.
+                tracker = (
+                    self._track_on_machine(
+                        client,
+                        connection,
+                        session_id=session_id,
+                        skey=skey,
+                        handle=handle,
+                        task_id=task_id,
+                        session_cwd=session_cwd,
+                    )
+                    if launched is not None
+                    else None
+                )
 
                 # Snapshotted before the prompt so the error below names what this
                 # turn ran into rather than what the connection has ever refused.
@@ -1700,6 +1722,7 @@ class AcpAgentBackend:
                     connection.responders.attach(session_id, responder)
                     if self.can_steer or steer_offered(connection.initialize):
                         activity.offer_steer(collector._run, self._steerer(client, session_id))
+                    answered = False
                     try:
                         result = await client.request(
                             "session/prompt",
@@ -1719,8 +1742,15 @@ class AcpAgentBackend:
                             },
                             timeout=_prompt_deadline(self.timeout),
                             cancel_session=session_id,
+                            sent=tracker.prompt_sent if tracker is not None else None,
                         )
+                        answered = True
                     except asyncio.CancelledError:
+                        if tracker is not None and remote.leaving():
+                            # This process is stopping: the turn goes on under
+                            # the machine's daemon, and the manager reads this
+                            # dispatch as left, not cancelled.
+                            remote_runs.mark_left(task_id)
                         # An UNSETTLED cancel means the turn outlived its cancel
                         # budget, so it is still running on the agent while this lock
                         # is about to be released -- prompting the same session again
@@ -1752,6 +1782,14 @@ class AcpAgentBackend:
                         record_frames(span, cancelled)
                         raise
                     finally:
+                        if tracker is not None:
+                            # The record goes with a turn that ended here with no
+                            # reply. It stays while this process leaves the turn
+                            # running, and with the reply for a caller that reports
+                            # it (`remote_runs.forget_dispatch`): a host that stops
+                            # between the answer and the announce has no other way
+                            # back to the run.
+                            self._untrack(client, tracker, keep=remote.leaving() or (answered and reported_by_caller))
                         activity.offer_steer(collector._run, None)
                         connection.router.detach(session_id, collector)
                         connection.elicitors.detach(session_id, elicitor)
@@ -1878,6 +1916,60 @@ class AcpAgentBackend:
                 raise AcpConnectionError(f"acp agent {self.name!r}: {exc}") from None
 
         return _OnMachine(target=target, root=root, session_cwd=session_cwd, since=since, link=link, launcher=launcher)
+
+    def _track_on_machine(
+        self,
+        client: Any,
+        connection: Any,
+        *,
+        session_id: str,
+        skey: str,
+        handle: str,
+        task_id: str,
+        session_cwd: str,
+    ) -> remote_runs.Tracker | None:
+        """The record of this turn on its machine, kept current until the prompt is out (``remote_runs.Tracker``)."""
+        endpoint = client.endpoint
+        task = getattr(endpoint, "task", None)
+        watchers = getattr(endpoint, "watchers", None)
+        if not isinstance(task, str) or watchers is None:
+            return None
+        run = remote_runs.RemoteRun(
+            machine=self.machine or "",
+            task=task,
+            agent=self.name,
+            session_key=skey,
+            handle=handle,
+            task_id=task_id,
+            session_id=session_id,
+            prompt_id=0,
+            next_id=client.next_request_id,
+            initialize=connection.initialize,
+            launch_key=connection.launch_key,
+            config_key=connection.config_key,
+            session_cwd=session_cwd,
+            stateful=self.is_stateful,
+            received=int(getattr(endpoint, "received", 0) or 0),
+        )
+        try:
+            tracker = remote_runs.Tracker(run)
+        except OSError as exc:
+            logger.warning(
+                "acp agent {!r}: the run on machine {} could not be recorded: {}", self.name, self.machine, exc
+            )
+            return None
+        watchers.append(tracker.received)
+        return tracker
+
+    @staticmethod
+    def _untrack(client: Any, tracker: remote_runs.Tracker, *, keep: bool) -> None:
+        watchers = getattr(client.endpoint, "watchers", None)
+        if watchers is not None:
+            try:
+                watchers.remove(tracker.received)
+            except ValueError:
+                pass
+        tracker.close(keep=keep)
 
     @property
     def can_steer(self) -> bool:

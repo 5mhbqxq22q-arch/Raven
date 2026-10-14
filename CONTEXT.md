@@ -401,10 +401,14 @@ of it. The entry names only the machine's id, and the entry's `env` reaches the
 agent on the link, never on a command line. Such an entry is added the way any
 preset is, with `machine` (and
 `remote_cwd`, for an `acp` or `cli` one) on `subagents.add` — from a chat through
-`raven_config`, which lists the registered machines while the lane is on; the page's
-add passes no machine yet — refused before anything is spent when the lane is off,
+`raven_config`, which lists the usable registered machines; the page's
+add passes no machine yet — refused before anything is spent when
 the id is not usable or the preset is a built-in agent, and proved by the same
 readiness ping as a local add, run on that machine.
+Registered-machine dispatch, file access and recovery are available without an
+environment switch. An entry without `machine` still runs here. Registration,
+SSH authentication, file permissions and concurrency limits govern remote work;
+listing entries and boot capability backfills do not open machine connections.
 _Avoid_: "host" / "server" / "node" (too broad, no link to the
 `ops connection` registry that supplies the rows); "GPU box" (only some are
 GPU hosts, and the term covers any registered compute destination);
@@ -439,8 +443,17 @@ named by the code's version and digest -- its install name, `bundle.install_name
 host keeps at most one live link per machine and watches it with a heartbeat
 (`raven/node/client.py`): a link silent for 15 s is lost, the agents on it wait, and the
 link is tried again on a backoff for as long as any waits; a link that comes back attaches
-each agent again by its task id. Only `--stdio` (tests, a fallback) ties the agents to the
-connection.
+each agent again by its task id. A turn running on a machine when this computer stops is
+left with the daemon (`remote.leave_agents_running()`), remembered while in flight in
+`<raven home>/machines/runs/` (`raven/acp_client/remote_runs.py`), and picked up by the
+next start (`raven/agent/subagent/resume_remote.py`): attached from the frame its prompt
+went out after, so the turn is read again whole (a cli entry's command from its first line,
+its whole output being the reply), its reply read off the machine and announced into the
+conversation that asked -- the task quoted as the model wrote it, the record removed only
+once the announce was taken. A turn that returned here keeps its record the same way until
+the manager's announce of the reply was taken (`remote_runs.forget_dispatch`), so a host
+that stops between the two reads the reply again. Only
+`--stdio` (tests, a fallback) ties the agents to the connection.
 _Avoid_: "node" alone (a DAG node is a `run_subagent_dag` step, and the Machine
 entry already rules the bare word out for a computer); "node id" for the install
 name (a **Node id** is a delegated task's address); "agent" or "server" (it
