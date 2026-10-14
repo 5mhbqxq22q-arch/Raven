@@ -4057,12 +4057,30 @@ class FsReadResult(_Strict):
 class FsUploadParams(_Strict):
     name: str
     content_b64: str
-    session: str | None = None
+    session: str | None = Field(
+        None, description="An existing session key, or a channel prefix such as tui: for a draft."
+    )
+    workdir: str | None = Field(
+        None, description="A draft's selected working directory, used only to avoid attachment name collisions."
+    )
 
 
 class FsUploadResult(_Strict):
-    path: str = Field(..., description="Workspace-relative path to hand the agent; uploads never return bytes.")
-    abs_path: str
+    path: str = Field(
+        ...,
+        description=(
+            "The file relative to agent home (uploads/<name>). turn.send looks for a relative path under the "
+            "conversation's own working directory first, so a same-named file there answers for it; uploads "
+            "never return bytes."
+        ),
+    )
+    abs_path: str = Field(
+        ...,
+        description=(
+            "The file the upload wrote, and the path to hand turn.send: it names the upload whatever the "
+            "conversation's own directory holds."
+        ),
+    )
     size: int
 
 
@@ -4101,6 +4119,12 @@ class DeckTemplatesPagesResult(_Strict):
 
 class DeckTemplatesPickParams(_Strict):
     name: str = Field(..., description="A row's name from deck.templates.list.")
+    session: str | None = Field(
+        None, description="An existing session key, or a channel prefix such as tui: for a draft."
+    )
+    workdir: str | None = Field(
+        None, description="A draft's selected working directory, used only to avoid attachment name collisions."
+    )
 
 
 class FsRevealParams(_Strict):
