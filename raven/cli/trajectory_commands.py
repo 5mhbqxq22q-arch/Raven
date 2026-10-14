@@ -16,9 +16,14 @@ wrappers over the trajectory layer:
   ``report``, its deliverable embeds the trajectory inside a problem-metadata
   envelope and is gated by the redaction classification: review findings are
   adjudicated per item, and shipping a review report always takes an explicit
-  risk authorization (never implied by ``--yes``). When ``RAVEN_BUGREPORT_URL``
+  risk authorization (never implied by ``--yes``); decisions remembered from
+  earlier reviews are replayed (:mod:`raven.trajectory.redaction_history`).
+  When ``RAVEN_BUGREPORT_URL``
   names a receiver, the package is uploaded as soon as it lands
   (:mod:`raven.trajectory.upload`).
+- ``redaction-history`` — ``list`` / ``forget`` / ``clear`` the keep/replace
+  decisions the bug report review remembers
+  (:mod:`raven.trajectory.redaction_history`).
 - ``upload-bug-report`` — send (or send again) a filed report's package to the
   receiver; the same package twice yields the same receipt.
 - ``receiver`` — run the Bug Report Receiver itself: the HTTP service that takes
@@ -72,6 +77,8 @@ console = Console()
 
 trajectory_app = typer.Typer(help="Package, label, and protect agent trajectories.")
 trajectory_app.add_typer(regression_app, name="regression")
+redaction_history_app = typer.Typer(help="Inspect and edit the remembered redaction review decisions.")
+trajectory_app.add_typer(redaction_history_app, name="redaction-history")
 
 
 @trajectory_app.callback(invoke_without_command=True)
@@ -293,6 +300,76 @@ def _report_attempt(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _print_review_failure(
+    items: list, undecided: list, reasons: list[str], missing: list[str], resolution: Any
+) -> None:
+    from raven.cli import trajectory_browse as tbrowse
+
+    if undecided:
+        console.print(f"[red]The redaction needs review; {len(undecided)} item(s) require your decision:[/red]")
+    else:
+        console.print("[red]The redaction needs review:[/red]")
+    console.print(f"  {tbrowse._REVIEW_PATHS_NOTE}", highlight=False)
+    for warning in tbrowse._review_warnings(reasons):
+        console.print(f"  [yellow]! {escape(warning)}[/yellow]", highlight=False)
+    tbrowse._print_history_decisions(resolution, items)
+    index_by_id = {item.id: index for index, item in enumerate(items, 1)}
+    for item in undecided:
+        tbrowse._print_review_item(item, index_by_id[item.id], len(items), index_by_id)
+    console.print(f"[red]Pass: {'; '.join(missing)} (--yes does not imply them).[/red]")
+
+
+def _decide_without_tty(
+    items: list,
+    reasons: list[str],
+    *,
+    keep_findings: bool,
+    redact_findings: bool,
+    accept_risk: bool,
+    history: Any,
+) -> list:
+    """``report-bug``'s decisions with no TTY: flags, then remembered decisions.
+
+    ``history`` is None when replay is off. Missing flags are judged before
+    any decision application and before any history write: otherwise a run
+    whose items are all covered but that lacks --accept-risk would keep
+    exporting and fail late without the item listing (a redact run would even
+    rewrite the context before failing). Exits 1 listing every undecided item
+    and every missing flag at once.
+    """
+    from raven.cli import trajectory_browse as tbrowse
+    from raven.trajectory import review as treview
+
+    flagged = keep_findings or redact_findings
+    resolution = None
+    if history is not None and not flagged:
+        resolution, history_warnings = tbrowse._resolve_history(history, items)
+        tbrowse._print_history_warnings(history_warnings)
+    replayed = {decision.item_id: decision.action for decision in resolution.auto} if resolution else {}
+    undecided = [item for item in items if item.id not in replayed]
+    missing = []
+    if any(item.kind == treview.KIND_SUSPECTED for item in undecided) and not flagged:
+        missing.append("--keep-findings or --redact-findings")
+    if not accept_risk:
+        missing.append("--accept-risk")
+    if missing:
+        _print_review_failure(items, undecided, reasons, missing, resolution)
+        raise typer.Exit(code=1)
+    tbrowse._print_history_decisions(resolution, items)
+    flag_action = treview.ACTION_REDACTED if redact_findings else treview.ACTION_KEPT
+    decisions = []
+    for item in items:
+        if item.id in replayed:
+            decisions.append(treview.ReviewDecision(item.id, replayed[item.id]))
+        elif item.kind == treview.KIND_CONFIRMED:
+            decisions.append(treview.ReviewDecision(item.id, treview.ACTION_ACKNOWLEDGED))
+        else:
+            decisions.append(treview.ReviewDecision(item.id, flag_action))
+    if resolution is not None and replayed:
+        tbrowse._remember_decisions(history, items, decisions, source="cli", replayed=resolution.replayed)
+    return decisions
+
+
 @trajectory_app.command("report-bug")
 def trajectory_report_bug(
     id_: str = typer.Argument(..., metavar="ID", help="Attempt id or trace id"),
@@ -315,6 +392,12 @@ def trajectory_report_bug(
     redact_findings: bool = typer.Option(
         False, "--redact-findings", help="Replace every suspected finding with [REDACTED:user-confirmed]"
     ),
+    review_all: bool = typer.Option(
+        False,
+        "--review-all",
+        help="Ignore remembered redaction decisions for this run and decide every item again"
+        " (new answers replace the remembered ones)",
+    ),
     workspace: Path | None = typer.Option(
         None, "--workspace", "-w", help="Workspace holding the session records (default: the configured workspace)"
     ),
@@ -331,6 +414,12 @@ def trajectory_report_bug(
     need --keep-findings or --redact-findings, and every review report needs
     --accept-risk — a run missing flags fails listing all items and every
     missing flag at once, producing nothing.
+
+    Decisions remembered from earlier reviews are replayed first and listed
+    (with or without a TTY), so only the other items need an answer or a
+    flag; --review-all ignores them for one run. The blanket keep/redact
+    flags neither read nor write the history, and
+    RAVEN_BUGREPORT_REDACTION_HISTORY=off turns it off.
     """
     from raven.trajectory import bugreport as breport
     from raven.trajectory import review as treview
@@ -378,54 +467,47 @@ def trajectory_report_bug(
         for reason in reasons:
             console.print(f"  - {escape(reason)}", highlight=False)
 
-    def _print_review_failure(items: list, reasons: list[str], missing: list[str]) -> None:
-        from raven.cli import trajectory_browse as tbrowse
+    from raven.trajectory import redaction_history as thistory
 
-        console.print(f"[red]The redaction needs review; {len(items)} item(s) require your decision:[/red]")
-        console.print(f"  {tbrowse._REVIEW_PATHS_NOTE}", highlight=False)
-        for warning in tbrowse._review_warnings(reasons):
-            console.print(f"  [yellow]! {escape(warning)}[/yellow]", highlight=False)
-        index_by_id = {item.id: index for index, item in enumerate(items, 1)}
-        for index, item in enumerate(items, 1):
-            tbrowse._print_review_item(item, index, len(items), index_by_id)
-        console.print(f"[red]Pass: {'; '.join(missing)} (--yes does not imply them).[/red]")
+    history = thistory.RedactionHistory() if thistory.enabled() else None
+    replay = history is not None and not review_all
 
     def _decide(items: list, reasons: list[str]) -> list:
+        from raven.cli import trajectory_browse as tbrowse
+
+        flagged = keep_findings or redact_findings
         if not interactive:
-            # Missing flags are judged on the ORIGINAL items, before any
-            # early return or decision application: otherwise a run whose
-            # items are all flag-covered but that lacks --accept-risk would
-            # keep exporting and fail late without the item listing (a
-            # redact run would even rewrite the context before failing).
-            missing = []
-            if any(item.kind == treview.KIND_SUSPECTED for item in items) and not (keep_findings or redact_findings):
-                missing.append("--keep-findings or --redact-findings")
-            if not accept_risk:
-                missing.append("--accept-risk")
-            if missing:
-                _print_review_failure(items, reasons, missing)
-                raise typer.Exit(code=1)
+            return _decide_without_tty(
+                items,
+                reasons,
+                keep_findings=keep_findings,
+                redact_findings=redact_findings,
+                accept_risk=accept_risk,
+                history=history if replay else None,
+            )
         flag_decisions: list = []
         remaining: list = []
         for item in items:
             if item.kind == treview.KIND_CONFIRMED and accept_risk:
                 flag_decisions.append(treview.ReviewDecision(item.id, treview.ACTION_ACKNOWLEDGED))
-            elif item.kind == treview.KIND_SUSPECTED and (keep_findings or redact_findings):
+            elif item.kind == treview.KIND_SUSPECTED and flagged:
                 action = treview.ACTION_REDACTED if redact_findings else treview.ACTION_KEPT
                 flag_decisions.append(treview.ReviewDecision(item.id, action))
             else:
                 remaining.append(item)
         if not remaining:
             return flag_decisions
-        # Only reachable on a TTY (without one, missing flags exited above
-        # and complete flags leave nothing remaining). Linked groups exist
-        # only among suspected items and the flags cover a kind whole, so a
-        # group is never split between flags and interaction.
-        from raven.cli import trajectory_browse as tbrowse
+        # Linked groups exist only among suspected items and the flags cover
+        # a kind whole, so a group is never split between flags and
+        # interaction; history replays whole linked groups, so it never
+        # splits one either.
         from raven.cli._styles import RAVEN_STYLE
 
         try:
-            decided = tbrowse.make_review_decider(tbrowse._require_questionary(), RAVEN_STYLE)(remaining, reasons)
+            decide = tbrowse.make_review_decider(
+                tbrowse._require_questionary(), RAVEN_STYLE, history=history, replay=replay, source="cli"
+            )
+            decided = decide(remaining, reasons)
         except (tbrowse._ActionCancelledError, tbrowse._CancelledError) as exc:
             # Esc/Ctrl-C during adjudication: the CLI has no outer screen
             # to unwind to, so both mean "cancel this report".
@@ -994,6 +1076,105 @@ def trajectory_split(
     )
     for member in members:
         console.print(f"  [dim]{escape(member)}[/dim]")
+
+
+@redaction_history_app.command("list")
+def redaction_history_list() -> None:
+    """List the remembered redaction decisions, newest first."""
+    from raven.trajectory import redaction_history as thistory
+    from raven.trajectory import review as treview
+
+    history = thistory.RedactionHistory()
+    try:
+        snapshot = history.read()
+    except thistory.HistoryStorageError as exc:
+        console.print(f"[red]✗ {escape(str(exc))}[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    if snapshot.corrupt:
+        console.print(
+            f"[red]✗ The redaction history at {escape(str(history.path))} could not be read"
+            f" ({escape(snapshot.corrupt)}); it is backed up on the next save.[/red]",
+            highlight=False,
+        )
+        raise typer.Exit(code=1)
+    if not thistory.enabled():
+        console.print(
+            "[yellow]! RAVEN_BUGREPORT_REDACTION_HISTORY is off: bug reports neither replay nor record"
+            " these decisions.[/yellow]",
+            highlight=False,
+        )
+    if not snapshot.entries:
+        console.print("No remembered redaction decisions.", highlight=False)
+        return
+    table = Table()
+    table.add_column("ID", style="cyan", overflow="fold")
+    table.add_column("Token")
+    table.add_column("Category")
+    table.add_column("Action")
+    table.add_column("Decided")
+    table.add_column("Reused", justify="right")
+    for entry in snapshot.entries:
+        table.add_row(
+            escape(entry.id),
+            escape(entry.masked),
+            escape(entry.category),
+            "kept" if entry.action == treview.ACTION_KEPT else "replaced",
+            escape(entry.decided_at[:10]),
+            str(entry.applied),
+        )
+    console.print(table)
+    console.print(f"{len(snapshot.entries)} remembered decision(s) in {escape(str(history.path))}.", highlight=False)
+
+
+@redaction_history_app.command("forget")
+def redaction_history_forget(
+    ids: list[str] = typer.Argument(..., metavar="ID...", help="Decision id from 'list' (12 to 64 hex digits)"),
+) -> None:
+    """Forget remembered decisions by id; nothing is removed unless every id matches exactly one."""
+    from raven.trajectory import redaction_history as thistory
+
+    try:
+        result = thistory.RedactionHistory().forget(ids)
+    except thistory.HistoryStorageError as exc:
+        console.print(f"[red]✗ {escape(str(exc))}; nothing was forgotten.[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    if result.unknown or result.ambiguous:
+        for item_id in result.unknown:
+            console.print(f"[red]✗ No remembered decision matches {escape(item_id)}.[/red]", highlight=False)
+        for item_id in result.ambiguous:
+            console.print(
+                f"[red]✗ {escape(item_id)} matches more than one decision; give more digits.[/red]", highlight=False
+            )
+        console.print("[red]Nothing was forgotten.[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    for item_id in result.removed:
+        console.print(f"Forgot {escape(item_id)}.", highlight=False)
+    if result.backup is not None:
+        console.print(f"Backed up the unreadable redaction history to {escape(str(result.backup))}.", highlight=False)
+
+
+@redaction_history_app.command("clear")
+def redaction_history_clear(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation (required without a TTY)"),
+) -> None:
+    """Forget every remembered redaction decision."""
+    from raven.trajectory import redaction_history as thistory
+
+    if not yes:
+        if not _stdin_is_tty():
+            console.print("[red]✗ --yes is required without a TTY; nothing was cleared.[/red]", highlight=False)
+            raise typer.Exit(code=1)
+        if not typer.confirm("Forget every remembered redaction decision?", default=False):
+            console.print("Cancelled — nothing was cleared.", highlight=False)
+            raise typer.Exit(code=1)
+    try:
+        result = thistory.RedactionHistory().clear()
+    except thistory.HistoryStorageError as exc:
+        console.print(f"[red]✗ {escape(str(exc))}; nothing was cleared.[/red]", highlight=False)
+        raise typer.Exit(code=1)
+    console.print(f"Removed {result.removed} remembered decision(s).", highlight=False)
+    if result.backup is not None:
+        console.print(f"Backed up the unreadable redaction history to {escape(str(result.backup))}.", highlight=False)
 
 
 @trajectory_app.command("list")
