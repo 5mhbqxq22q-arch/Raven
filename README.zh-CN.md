@@ -14,6 +14,12 @@
 
 </div>
 
+<p align="center"><b>🏆 Raven 技术报告陆续登顶 Hugging Face Daily Papers 日榜、周榜、月榜。</b></p>
+
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/06ca7020-f205-4878-ba66-8b418076eb9f"><img src="https://github.com/user-attachments/assets/06ca7020-f205-4878-ba66-8b418076eb9f" alt="Raven's technical report on Hugging Face Daily Papers: daily #1 on 2026-09-30, weekly #1 on 2026-10-04, and monthly #1 on 2026-10-10, each point beside its leaderboard screenshot" width="100%"></a>
+</p>
+
 <br>
 
 # Raven 是什么
