@@ -12262,6 +12262,422 @@
     "gui.settings.cloud.chip_probing": {
       "en": "Checking",
       "zh": "检查中"
+    },
+    "gui.export.more": {
+      "en": "More",
+      "zh": "更多"
+    },
+    "gui.export.menu_export": {
+      "en": "Export",
+      "zh": "导出"
+    },
+    "gui.export.dialog": {
+      "en": "Export conversation",
+      "zh": "导出会话"
+    },
+    "gui.export.close": {
+      "en": "Close",
+      "zh": "关闭"
+    },
+    "gui.export.title_export": {
+      "en": "Export conversation",
+      "zh": "导出会话"
+    },
+    "gui.export.step_turns": {
+      "en": "Turns",
+      "zh": "选择轮次"
+    },
+    "gui.export.step_export": {
+      "en": "Export",
+      "zh": "导出"
+    },
+    "gui.export.turns_hint": {
+      "en": "Choose the turns to include. A turn brings the sub-agents it started with it.",
+      "zh": "选择要包含的轮次。一轮会连同它派发的子代理一起导出。"
+    },
+    "gui.export.select_all": {
+      "en": "Select all",
+      "zh": "全选"
+    },
+    "gui.export.selected_count": {
+      "en": "{n} selected",
+      "zh": "已选 {n} 轮"
+    },
+    "gui.export.turn_number": {
+      "en": "Turn {n}",
+      "zh": "第 {n} 轮"
+    },
+    "gui.export.in_progress": {
+      "en": "In progress",
+      "zh": "进行中"
+    },
+    "gui.export.why_in_progress": {
+      "en": "Still running; it cannot be exported yet",
+      "zh": "仍在进行，暂不能导出"
+    },
+    "gui.export.why_not_in_session": {
+      "en": "No longer in this conversation",
+      "zh": "已不在该会话中"
+    },
+    "gui.export.selection_changed": {
+      "en": "Some turns changed. Check the selection and try again.",
+      "zh": "部分轮次已变化，请检查选择后重试。"
+    },
+    "gui.export.no_turns": {
+      "en": "This conversation has no turns to export yet.",
+      "zh": "该会话还没有可导出的轮次。"
+    },
+    "gui.export.loading": {
+      "en": "Loading the turns...",
+      "zh": "正在加载轮次…"
+    },
+    "gui.export.load_failed": {
+      "en": "Could not load the turns: {error}",
+      "zh": "无法加载轮次：{error}"
+    },
+    "gui.export.file_name": {
+      "en": "File name",
+      "zh": "文件名"
+    },
+    "gui.export.unredacted": {
+      "en": "The package is not redacted and may contain keys, tokens or other secrets. Keep it private.",
+      "zh": "导出包未脱敏，可能含密钥、令牌等敏感信息，请妥善保管。"
+    },
+    "gui.export.starting": {
+      "en": "Starting the export...",
+      "zh": "正在启动导出…"
+    },
+    "gui.export.phase_collecting": {
+      "en": "Collecting the trace...",
+      "zh": "正在收集轨迹…"
+    },
+    "gui.export.phase_writing": {
+      "en": "Writing the package...",
+      "zh": "正在写入导出包…"
+    },
+    "gui.export.done": {
+      "en": "Exported {size}: {spans} spans, {artifacts} artifacts, {messages} messages.",
+      "zh": "已导出 {size}：{spans} 条 span、{artifacts} 个 artifact、{messages} 条消息。"
+    },
+    "gui.export.download_again": {
+      "en": "Download again",
+      "zh": "重新下载"
+    },
+    "gui.export.failed": {
+      "en": "The export failed: {error}",
+      "zh": "导出失败：{error}"
+    },
+    "gui.export.cancelled": {
+      "en": "The export was cancelled.",
+      "zh": "导出已取消。"
+    },
+    "gui.export.limit": {
+      "en": "Too many exports are running. Try again shortly.",
+      "zh": "正在进行的导出过多，请稍后再试。"
+    },
+    "gui.export.disabled": {
+      "en": "The trajectory view is switched off on this gateway.",
+      "zh": "该网关已关闭轨迹视图。"
+    },
+    "gui.export.gone": {
+      "en": "The export is no longer on the gateway. Export again.",
+      "zh": "导出任务已不存在，请重新导出。"
+    },
+    "gui.export.lost": {
+      "en": "Could not get the progress ({error}); trying again.",
+      "zh": "无法获取进度（{error}），正在重试。"
+    },
+    "gui.export.retry_status": {
+      "en": "Check now",
+      "zh": "重试查询"
+    },
+    "gui.export.back": {
+      "en": "Back",
+      "zh": "上一步"
+    },
+    "gui.export.next": {
+      "en": "Next",
+      "zh": "下一步"
+    },
+    "gui.export.start": {
+      "en": "Export",
+      "zh": "导出"
+    },
+    "gui.export.retry": {
+      "en": "Try again",
+      "zh": "重试"
+    },
+    "gui.export.finish": {
+      "en": "Done",
+      "zh": "完成"
+    },
+    "gui.export.stop_title": {
+      "en": "Stop the export?",
+      "zh": "停止导出？"
+    },
+    "gui.export.stop_body": {
+      "en": "The package being written will be discarded.",
+      "zh": "正在写入的导出包将被丢弃。"
+    },
+    "gui.export.stop_label": {
+      "en": "Stop",
+      "zh": "停止"
+    },
+    "gui.export.refused_turns": {
+      "en": "These turns can no longer be exported:",
+      "zh": "以下轮次已无法导出："
+    },
+    "gui.export.menu_report": {
+      "en": "Report a problem",
+      "zh": "问题报告"
+    },
+    "gui.export.title_report": {
+      "en": "Report a problem",
+      "zh": "问题报告"
+    },
+    "gui.export.step_problem": {
+      "en": "Problem",
+      "zh": "问题信息"
+    },
+    "gui.export.step_decide": {
+      "en": "Decisions",
+      "zh": "脱敏决策"
+    },
+    "gui.export.step_upload": {
+      "en": "Upload",
+      "zh": "上传"
+    },
+    "gui.export.description": {
+      "en": "What went wrong (required)",
+      "zh": "问题描述（必填）"
+    },
+    "gui.export.description_hint": {
+      "en": "The selected turns, their sub-agents and this description are collected and redacted before anything is sent.",
+      "zh": "所选轮次、它们派发的子代理和这段描述会先被收集并脱敏，然后才会发送。"
+    },
+    "gui.export.severity": {
+      "en": "Severity",
+      "zh": "严重程度"
+    },
+    "gui.export.severity_low": {
+      "en": "Low",
+      "zh": "低"
+    },
+    "gui.export.severity_medium": {
+      "en": "Medium",
+      "zh": "中"
+    },
+    "gui.export.severity_high": {
+      "en": "High",
+      "zh": "高"
+    },
+    "gui.export.severity_critical": {
+      "en": "Critical",
+      "zh": "严重"
+    },
+    "gui.export.expected": {
+      "en": "Expected behaviour",
+      "zh": "期望行为"
+    },
+    "gui.export.actual": {
+      "en": "Actual behaviour",
+      "zh": "实际行为"
+    },
+    "gui.export.steps": {
+      "en": "Steps to reproduce",
+      "zh": "复现步骤"
+    },
+    "gui.export.reporter": {
+      "en": "Reporter",
+      "zh": "报告人"
+    },
+    "gui.export.collecting": {
+      "en": "Collecting and redacting the snapshot...",
+      "zh": "正在收集并脱敏…"
+    },
+    "gui.export.restart": {
+      "en": "Start again",
+      "zh": "重新开始"
+    },
+    "gui.export.unavailable": {
+      "en": "No bug report receiver is configured on this gateway.",
+      "zh": "该网关没有配置问题报告服务器。"
+    },
+    "gui.export.report_limit": {
+      "en": "Too many bug reports are in progress. Finish or cancel one first.",
+      "zh": "进行中的问题报告过多，请先完成或取消一个。"
+    },
+    "gui.export.report_failed": {
+      "en": "The bug report failed: {error}",
+      "zh": "问题报告失败：{error}"
+    },
+    "gui.export.report_cancelled": {
+      "en": "This bug report was cancelled.",
+      "zh": "这份问题报告已被取消。"
+    },
+    "gui.export.report_gone": {
+      "en": "The bug report is no longer on the gateway. Start again.",
+      "zh": "问题报告已不存在，请重新开始。"
+    },
+    "gui.export.history_auto": {
+      "en": "The redaction history decided {n} value(s) on its own ({kept} kept, {redacted} redacted).",
+      "zh": "按历史自动处理了 {n} 个（保持 {kept} / 脱敏 {redacted}）。"
+    },
+    "gui.export.history_off": {
+      "en": "The redaction history is off; these decisions will not be remembered.",
+      "zh": "脱敏历史已关闭，本次决定不会被记住。"
+    },
+    "gui.export.keep_all": {
+      "en": "Keep all",
+      "zh": "全部保持"
+    },
+    "gui.export.redact_all": {
+      "en": "Redact all",
+      "zh": "全部脱敏"
+    },
+    "gui.export.keep": {
+      "en": "Keep",
+      "zh": "保持"
+    },
+    "gui.export.redact": {
+      "en": "Redact",
+      "zh": "脱敏"
+    },
+    "gui.export.kept": {
+      "en": "kept",
+      "zh": "保持"
+    },
+    "gui.export.redacted": {
+      "en": "redacted",
+      "zh": "脱敏"
+    },
+    "gui.export.count": {
+      "en": "{n}x",
+      "zh": "{n} 次"
+    },
+    "gui.export.linked": {
+      "en": "linked to {n}",
+      "zh": "关联 {n} 项"
+    },
+    "gui.export.confirmed": {
+      "en": "Confirmed secret, already replaced",
+      "zh": "已确认敏感，已替换"
+    },
+    "gui.export.acknowledge": {
+      "en": "I understand",
+      "zh": "我已知悉"
+    },
+    "gui.export.occurrences": {
+      "en": "{n} place(s)",
+      "zh": "{n} 处"
+    },
+    "gui.export.contexts_more": {
+      "en": "{total} contexts in all; the first {shown} are shown.",
+      "zh": "共 {total} 组上下文，仅显示前 {shown} 组。"
+    },
+    "gui.export.pick_item": {
+      "en": "Pick a value to see where it was found.",
+      "zh": "选择一个关键词查看它的上下文。"
+    },
+    "gui.export.page_of": {
+      "en": "Page {page} of {pages}",
+      "zh": "第 {page} / {pages} 页"
+    },
+    "gui.export.prev": {
+      "en": "Previous",
+      "zh": "上一页"
+    },
+    "gui.export.next_page": {
+      "en": "Next page",
+      "zh": "下一页"
+    },
+    "gui.export.applying": {
+      "en": "Applying...",
+      "zh": "正在应用…"
+    },
+    "gui.export.cancel": {
+      "en": "Cancel",
+      "zh": "取消"
+    },
+    "gui.export.conflict": {
+      "en": "Linked values must share one decision.",
+      "zh": "关联项的决定不一致。"
+    },
+    "gui.export.not_acknowledged": {
+      "en": "Acknowledge every confirmed secret first.",
+      "zh": "请先确认每一个已确认敏感项。"
+    },
+    "gui.export.undecided": {
+      "en": "Some values have no decision yet.",
+      "zh": "还有关键词没有决定。"
+    },
+    "gui.export.finishing": {
+      "en": "Freezing the report...",
+      "zh": "正在冻结报告…"
+    },
+    "gui.export.summary_id": {
+      "en": "Report",
+      "zh": "报告编号"
+    },
+    "gui.export.summary_size": {
+      "en": "Package size",
+      "zh": "包大小"
+    },
+    "gui.export.summary_redaction": {
+      "en": "Redaction",
+      "zh": "脱敏"
+    },
+    "gui.export.summary_counts": {
+      "en": "{auto} replaced automatically, {kept} kept, {redacted} redacted, {acknowledged} acknowledged",
+      "zh": "自动替换 {auto} 个，保持 {kept} 个，脱敏 {redacted} 个，已知悉 {acknowledged} 个"
+    },
+    "gui.export.completeness": {
+      "en": "Completeness",
+      "zh": "完整性"
+    },
+    "gui.export.risk": {
+      "en": "I have reviewed what is kept and accept sending it.",
+      "zh": "我已检查过保留的内容，确认上传。"
+    },
+    "gui.export.risk_needed": {
+      "en": "Accept the risk before uploading.",
+      "zh": "上传前请先确认风险。"
+    },
+    "gui.export.upload": {
+      "en": "Upload",
+      "zh": "确认上传"
+    },
+    "gui.export.uploading": {
+      "en": "Uploading...",
+      "zh": "正在上传…"
+    },
+    "gui.export.uploaded": {
+      "en": "Report sent. Receipt {receipt}.",
+      "zh": "报告已提交，回执号 {receipt}。"
+    },
+    "gui.export.duplicate": {
+      "en": "The receiver already had this report.",
+      "zh": "接收端已有这份报告。"
+    },
+    "gui.export.upload_failed": {
+      "en": "The upload failed: {error}",
+      "zh": "上传失败：{error}"
+    },
+    "gui.export.kept_local": {
+      "en": "The report is kept at {dir}. Send it later with: raven trajectory upload-bug-report {id}",
+      "zh": "报告已保存在 {dir}，可稍后用 raven trajectory upload-bug-report {id} 上传。"
+    },
+    "gui.export.stop_report_title": {
+      "en": "Discard this bug report?",
+      "zh": "放弃这份问题报告？"
+    },
+    "gui.export.stop_report_body": {
+      "en": "Your decisions are lost. A report already saved on this machine stays there.",
+      "zh": "你的决定将会丢失；已保存到本机的报告会保留。"
+    },
+    "gui.export.stop_report_label": {
+      "en": "Discard",
+      "zh": "放弃"
     }
   }
 }

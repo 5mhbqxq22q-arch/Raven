@@ -265,8 +265,8 @@ class WsGateway:
                 "service": "raven-serve",
                 "server_version": SERVER_VERSION,
                 "schema_version": SCHEMA_VERSION,
-                # What a relauncher needs to know before attaching: whether this
-                # process serves the trajectory view (``raven --dev``).
+                # Whether this process serves the trajectory view; on unless
+                # the trajectory policy's source was replaced with one that is off.
                 "trajectory_view": trajectory_policy.current().enabled(),
             }
         )
@@ -744,6 +744,51 @@ async def handle_oauth_callback(request: web.Request) -> web.Response:
     )
 
 
+def _mount_trajectory_exports(app: web.Application, guard: Callable[[web.Request], None]) -> None:
+    """The export download route, plus the registry's file sweep at startup and cleanup at shutdown.
+
+    Both touch the disk, so both run in a worker thread; a sweep that fails is
+    only logged, since a stale package costs disk space, not the page.
+    """
+    from raven.rpc.transports.trajectory_downloads import add_export_routes
+    from raven.trajectory import export_jobs
+
+    add_export_routes(app, lambda: export_jobs.JOBS, guard=guard)
+
+    async def sweep(_app: web.Application) -> None:
+        try:
+            await asyncio.to_thread(export_jobs.JOBS.sweep_stale_files)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.opt(exception=True).warning("trajectory exports: the startup sweep failed")
+
+    async def release(_app: web.Application) -> None:
+        await asyncio.to_thread(export_jobs.JOBS.shutdown)
+
+    app.on_startup.append(sweep)
+    app.on_shutdown.append(release)
+
+
+def _mount_bug_report_sessions(app: web.Application) -> None:
+    """Sweep bug report staging an earlier process left, and cancel the reports in progress with the app.
+
+    Both touch the disk, so both run in a worker thread; a sweep that fails is
+    only logged.
+    """
+    from raven.trajectory import bugreport, report_session
+
+    async def sweep(_app: web.Application) -> None:
+        try:
+            await asyncio.to_thread(bugreport.cleanup_stale_staging)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.opt(exception=True).warning("bug reports: the stale staging sweep failed")
+
+    async def release(_app: web.Application) -> None:
+        await asyncio.to_thread(report_session.REPORTS.shutdown)
+
+    app.on_startup.append(sweep)
+    app.on_shutdown.append(release)
+
+
 def build_app(
     gateway: WsGateway,
     static_dir: Path | None,
@@ -783,6 +828,8 @@ def build_app(
             raise web.HTTPUnauthorized(reason="missing or invalid session")
 
     add_files_routes(app, deliverables, guard=guard_delivery)
+    _mount_trajectory_exports(app, guard_delivery)
+    _mount_bug_report_sessions(app)
 
     if static_dir is not None and (static_dir / "index.html").exists():
 
