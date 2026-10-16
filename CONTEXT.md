@@ -454,9 +454,14 @@ next start (`raven/agent/subagent/resume_remote.py`): attached from the frame it
 went out after, so the turn is read again whole (a cli entry's command from its first line,
 its whole output being the reply), its reply read off the machine and announced into the
 conversation that asked -- the task quoted as the model wrote it, the record removed only
-once the announce was taken. A turn that returned here keeps its record the same way until
-the manager's announce of the reply was taken (`remote_runs.forget_dispatch`), so a host
-that stops between the two reads the reply again. An MCP server the
+once the announce was taken. A turn that returned here, or whose prompt went out and failed,
+keeps its record the same way until the manager's announce of the reply or the failure was
+taken (`remote_runs.forget_dispatch`), so a host that stops between the two reads the outcome
+again; a record that is not JSON, or not UTF-8, is set aside once under a name that says so,
+and never stops the other records from being read. A daemon killed
+outright ends what it leaves behind at its next start (`Daemon.recover`; on Linux the agent
+also goes with the daemon, `PR_SET_PDEATHSIG`) and says so on the task's exit (`reason`),
+which the host hands on in place of a bare exit code. An MCP server the
 host lends an agent there is carried on the same link: the agent runs the install's bridge
 (`python -I -m raven.node --mcp`) as a stdio server, the daemon relays its frames as a stream
 (`mcp/open`, `mcp/frame`, `mcp/close`; which task a bridge is, the daemon tells by the process
