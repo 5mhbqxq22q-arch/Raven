@@ -764,3 +764,112 @@ def test_the_intake_contract_states_when_it_runs() -> None:
     when = participant_function_guide()["intake"]["when"]
     assert "EVERY inbound user text" in when
     assert "return None" in when
+
+
+# --- A Persona's own soul and rules ---------------------------------------
+#
+# Three things are worth holding: the two lists are offered to the coordinator
+# and to no other seat, they survive the trip into the charter the turn binds,
+# and the model is told which rules do NOT belong in them.
+
+
+def _persona_args(**coordinator):
+    return {
+        "artifactName": "ai-brief",
+        "description": "A daily brief",
+        "coordinator": {"brief": "Own the conversation", **coordinator},
+        "workers": [{"as": "research", "agent": "Raven", "brief": "Verify sources"}],
+    }
+
+
+def test_soul_and_rules_are_offered_to_the_coordinator_alone() -> None:
+    """A worker is one of the Persona's hands, not a second person."""
+    from raven.playbook.agent_generator import persona_tool
+
+    parameters = persona_tool(["Raven"], ["web_search"])[0]["function"]["parameters"]
+    coordinator = parameters["properties"]["coordinator"]["properties"]
+    worker = parameters["properties"]["workers"]["items"]["properties"]
+
+    assert "soul" in coordinator and "rules" in coordinator
+    assert "soul" not in worker and "rules" not in worker
+
+
+def test_a_worker_that_sends_soul_is_told_it_is_not_allowed() -> None:
+    """Named rather than dropped: the tool never offered the field."""
+    from raven.playbook.agent_generator import _persona_spec_from_args
+
+    args = _persona_args()
+    args["workers"][0]["soul"] = ["Curious and warm"]
+    with pytest.raises(ValueError, match=r"worker field\(s\) not allowed: soul"):
+        _persona_spec_from_args(args, {"Raven"}, {"web_search"})
+
+
+def test_soul_lines_are_cleaned_rather_than_taken_as_written() -> None:
+    """Blanks, repeats and stray spacing are the model's habits, not intent."""
+    from raven.playbook.agent_generator import _persona_spec_from_args
+
+    spec, _ = _persona_spec_from_args(
+        _persona_args(soul=["  Patient researcher  ", "Patient researcher", "", "Shows sources first"]),
+        {"Raven"},
+        {"web_search"},
+    )
+    assert spec.coordinator.playbook.soul == ["Patient researcher", "Shows sources first"]
+
+
+def test_an_essay_in_one_soul_line_is_refused() -> None:
+    """The cap exists so a maker surface can still render the list."""
+    from raven.playbook.agent_generator import MAX_LINE_CHARS, _persona_spec_from_args
+
+    with pytest.raises(ValueError):
+        _persona_spec_from_args(_persona_args(soul=["x" * (MAX_LINE_CHARS + 1)]), {"Raven"}, {"web_search"})
+
+
+def test_soul_as_a_paragraph_is_refused_with_the_shape_it_wanted() -> None:
+    """The field is a list; a model that sends one string is told so."""
+    from raven.playbook.agent_generator import _persona_spec_from_args
+
+    with pytest.raises(ValueError, match="soul must be an array of strings"):
+        _persona_spec_from_args(_persona_args(soul="One long paragraph"), {"Raven"}, {"web_search"})
+
+
+def test_soul_and_rules_reach_the_charter_the_turn_binds() -> None:
+    """Character only ever reaches a seat as instructions; this is that step."""
+    from raven.playbook.agent_generator import _persona_spec_from_args, build_coordinator_charter
+
+    spec, _ = _persona_spec_from_args(
+        _persona_args(soul=["Patient researcher"], rules=["Cites a source for every number"]),
+        {"Raven"},
+        {"web_search"},
+    )
+    charter = build_coordinator_charter(spec)
+
+    assert charter is not None
+    assert "Patient researcher" in charter.instruction_addendum
+    assert "Cites a source for every number" in charter.instruction_addendum
+    assert "Who you are" in charter.instruction_addendum
+    assert "Rules you follow" in charter.instruction_addendum
+
+
+def test_a_persona_without_soul_or_rules_still_builds() -> None:
+    """Every Persona written before these fields keeps loading."""
+    from raven.playbook.agent_generator import _persona_spec_from_args, build_coordinator_charter
+
+    spec, _ = _persona_spec_from_args(_persona_args(), {"Raven"}, {"web_search"})
+
+    assert spec.coordinator.playbook is None or spec.coordinator.playbook.soul == []
+    build_coordinator_charter(spec)
+
+
+def test_the_prompt_says_which_rules_do_not_belong_in_rules() -> None:
+    """Without this line the generator writes enforceable bounds as prose.
+
+    The fields are the easy half. A model handed a ``rules`` list will put a
+    tool-argument boundary in it, where nothing enforces it, unless the prompt
+    sends that boundary to checks by name.
+    """
+    from raven.playbook.agent_generator import PERSONA_SYSTEM_PROMPT
+
+    assert "one trait per line" in PERSONA_SYSTEM_PROMPT
+    assert "one rule per line" in PERSONA_SYSTEM_PROMPT
+    assert "belongs in checks" in PERSONA_SYSTEM_PROMPT
+    assert "enforced by nothing" in PERSONA_SYSTEM_PROMPT

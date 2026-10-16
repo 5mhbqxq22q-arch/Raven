@@ -28,6 +28,8 @@ def _disabled_document(tmp_path, monkeypatch):
     for module, name in (
         ("memory", "systemPrompt"),
         ("memory", "stopWhen"),
+        ("memory", "soul"),
+        ("memory", "rules"),
         ("capability", "tools"),
         ("action", "checks"),
     ):
@@ -444,3 +446,37 @@ def test_disabling_one_function_removes_rejects_and_drops_only_that_function(tmp
     )
     assert charter is not None
     assert set(dict(charter.functions)) == {"intake", "salvage"}
+
+
+def test_the_coordinator_identity_follows_the_same_switches(tmp_path, monkeypatch) -> None:
+    """soul and rules are parameters like any other, off as well as on.
+
+    They are the only fields that live on one seat rather than all of them, and
+    a field offered where the switch says no is the failure the table exists to
+    prevent -- so the off state is checked where it is visible: the tool.
+    """
+    from raven.playbook.agent_generator import persona_parameter_guide, persona_tool
+
+    enabled = persona_tool(["worker"], ["read_file"])[0]["function"]["parameters"]["properties"]["coordinator"][
+        "properties"
+    ]
+    assert {"soul", "rules"} <= enabled.keys()
+    assert {"soul", "rules"} <= persona_parameter_guide().keys()
+
+    _disabled_document(tmp_path, monkeypatch)
+
+    disabled = persona_tool(["worker"], ["read_file"])[0]["function"]["parameters"]["properties"]["coordinator"][
+        "properties"
+    ]
+    assert "soul" not in disabled and "rules" not in disabled
+    assert "soul" not in persona_parameter_guide() and "rules" not in persona_parameter_guide()
+
+
+def test_a_disabled_identity_field_is_refused_on_the_spec(tmp_path, monkeypatch) -> None:
+    """The schema is what a model sees; the validator is what a stored spec meets."""
+    from raven.playbook.agent_spec import CoordinatorPlaybook
+
+    _disabled_document(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="memory.soul"):
+        CoordinatorPlaybook(soul=["Patient researcher"])

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from raven.agent.harness_capabilities import function_enabled, parameter_enabled
 from raven.playbook.base import CamelBase
@@ -44,6 +44,14 @@ NAME_RE = r"^[a-z0-9][a-z0-9-]*$"
 LABEL_RE = r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
 """A label may carry a roster name unchanged (``Raven-PPT``) or be a local
 alias (``research-a``), so it admits the character set of both."""
+
+
+MAX_SOUL_LINES = 12
+MAX_RULE_LINES = 20
+MAX_LINE_CHARS = 300
+"""Caps on a Persona's own description. A maker surface shows these as a list
+and a reader skims them, so the useful failure is refusing the essay a model
+would otherwise paste into one line."""
 
 
 class CheckRule(CamelBase):
@@ -160,6 +168,11 @@ class _SeatPlaybook(CamelBase):
             disabled.append("memory.systemPrompt")
         if "stop_when" in self.model_fields_set and not parameter_enabled("memory", "stopWhen"):
             disabled.append("memory.stopWhen")
+        for identity_field in ("soul", "rules"):
+            # Only the coordinator carries these; the check sits on the shared
+            # base so a seat that somehow grew one is still refused here.
+            if identity_field in self.model_fields_set and not parameter_enabled("memory", identity_field):
+                disabled.append(f"memory.{identity_field}")
         if "tools" in self.capability.model_fields_set and not parameter_enabled("capability", "tools"):
             disabled.append("capability.tools")
         if self.action.checks:
@@ -191,6 +204,38 @@ class CoordinatorPlaybook(_SeatPlaybook):
     """The main Raven's turn-scoped charter for one Persona."""
 
     role: Literal["coordinator"] = "coordinator"
+
+    soul: list[str] = Field(default_factory=list, max_length=MAX_SOUL_LINES)
+    """Who this Persona is, one trait per line.
+
+    On the coordinator alone. A Persona is a single identity the user talks to,
+    and a worker is one of its hands: giving every seat its own character would
+    describe several people wearing one name. Lines rather than a paragraph
+    because a maker surface edits them one at a time."""
+
+    rules: list[str] = Field(default_factory=list, max_length=MAX_RULE_LINES)
+    """Standing conduct, one rule per line.
+
+    Prose, so a model that is argued with can still be argued out of these. A
+    boundary that must hold whatever the conversation does belongs in
+    ``action.checks`` or a generated ``judge`` instead, and the generator is
+    told so; these two carry the rules that only ever needed saying."""
+
+    @field_validator("soul", "rules", mode="after")
+    @classmethod
+    def _clean_lines(cls, value: list[str]) -> list[str]:
+        """Drop blanks and duplicates, keep order, refuse an essay in one line."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in value:
+            line = " ".join(str(raw).split())
+            if not line or line in seen:
+                continue
+            if len(line) > MAX_LINE_CHARS:
+                raise ValueError(f"a soul/rules line is capped at {MAX_LINE_CHARS} characters: {line[:40]!r}...")
+            seen.add(line)
+            out.append(line)
+        return out
 
 
 class SubPlaybook(_SeatPlaybook):

@@ -20,13 +20,18 @@ from loguru import logger
 from raven.agent.harness_capabilities import function_enabled, parameter_enabled
 from raven.agent.subagent.delegate import DelegateTable, Worker
 from raven.observability.purpose import purpose as _llm_purpose
-from raven.playbook.agent_spec import AgentPlaybookSpec
+from raven.playbook.agent_spec import (
+    MAX_LINE_CHARS,
+    MAX_RULE_LINES,
+    MAX_SOUL_LINES,
+    AgentPlaybookSpec,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from raven.agent.subagent.charter import Charter
-    from raven.playbook.agent_spec import SubPlaybook
+    from raven.playbook.agent_spec import CoordinatorPlaybook, SubPlaybook
 
 if TYPE_CHECKING:
     from raven.providers.base import LLMProvider
@@ -93,6 +98,13 @@ PERSONA_SYSTEM_PROMPT = (
     "missing when it is asked to do the work, and raises missing inputs at no other time. Write that as the "
     "coordinator's own instructions. When it must collect more inputs than ask_user accepts in one call, say to "
     "gather them over several turns.\n\n"
+    "Give the coordinator a soul and rules. soul says who the Persona is -- character, voice, how it "
+    "approaches work -- one trait per line. rules are the standing conduct it follows, one rule per line. "
+    "Write both for the Persona, in its own terms, and keep the request's wording out of them: a line that "
+    "only makes sense to whoever asked for the Persona will not make sense to the person talking to it. "
+    "rules hold what prose can hold. A boundary that depends on tool-call arguments, or that has to survive "
+    "a user arguing against it, is not conduct and belongs in checks on the seat making the call -- writing it "
+    "as a rule instead leaves it enforced by nothing.\n\n"
     "Generate participant functions only for rules ordinary instructions cannot enforce -- a boundary that depends "
     "on tool-call arguments belongs in judge on the seat making the call, and a limit that must hold even when the "
     "model is argued out of it belongs in a function rather than in prose. An input requirement is neither: a "
@@ -134,6 +146,44 @@ the dataclass would carry the field names without the reason for any of them.
 The two are held together by :func:`_persona_spec_from_args`, which validates what
 comes back against the real model.
 """
+
+_IDENTITY_PROPERTIES: dict[str, Any] = {
+    "soul": {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1, "maxLength": MAX_LINE_CHARS},
+        "maxItems": MAX_SOUL_LINES,
+        "description": (
+            "Who this Persona is: character, voice, and how it approaches work. "
+            "One trait per line, in the Persona's own terms, written to last."
+        ),
+    },
+    "rules": {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1, "maxLength": MAX_LINE_CHARS},
+        "maxItems": MAX_RULE_LINES,
+        "description": (
+            "Standing conduct, one rule per line. These are instructions the Persona follows, "
+            "so write here only what prose can hold. A boundary that depends on tool-call "
+            "arguments, or that must survive being argued with, belongs in checks instead."
+        ),
+    },
+}
+"""The coordinator's identity, offered as two flat lists.
+
+Separate from ``systemPrompt`` because the maker surface edits soul and rules
+as their own lists, and because a model told to write a paragraph writes a
+paragraph: asking for lines is what gets lines back.
+"""
+
+
+def _identity_properties() -> dict[str, Any]:
+    """The identity fields this install still offers, by the same switches.
+
+    Dropped from the tool rather than refused after: a model cannot write a
+    field it was never shown, which is how every other parameter here behaves.
+    """
+    return {name: schema for name, schema in _IDENTITY_PROPERTIES.items() if parameter_enabled("memory", name)}
+
 
 FUNCTION_REFERENCE_IMPLEMENTATIONS: dict[str, str] = {
     "intake": "def intake(text, step):\n    return None",
@@ -600,7 +650,10 @@ def persona_tool(
                 "artifactName": artifact_name,
                 "coordinator": {
                     "type": "object",
-                    "properties": seat_properties,
+                    # Soul and rules sit here and nowhere else: a Persona is one
+                    # identity, and a worker carrying its own character would read
+                    # as a second person wearing the same name.
+                    "properties": {**seat_properties, **_identity_properties()},
                     "required": ["brief"],
                     "additionalProperties": False,
                     "description": "The main Raven identity that owns the conversation and dispatches delegates.",
@@ -645,7 +698,18 @@ def render_charter(brief: str, system_prompt: str, stop_when: str, tools: list[s
     return f"Your brief for this task:\n{body}\n\nThe task follows.\n\n"
 
 
-def build_payload(brief: str, spec: "SubPlaybook | None") -> dict[str, Any] | None:
+def _identity_block(heading: str, lines: "list[str] | None") -> str:
+    """One Persona identity list, rendered for the seat's instructions."""
+    # Already normalized by CoordinatorPlaybook; the guard is for a spec built
+    # in code rather than parsed, which skips validators on ``model_construct``.
+    kept = [str(line).strip() for line in (lines or []) if str(line).strip()]
+    if not kept:
+        return ""
+    body = "\n".join(f"- {line}" for line in kept)
+    return f"{heading}:\n{body}"
+
+
+def build_payload(brief: str, spec: "SubPlaybook | CoordinatorPlaybook | None") -> dict[str, Any] | None:
     """The charter in the shape a Raven worker binds, or ``None`` for none.
 
     The same brief the preamble renders, minus the rendering: a worker that can
@@ -656,6 +720,21 @@ def build_payload(brief: str, spec: "SubPlaybook | None") -> dict[str, Any] | No
     instruction_addendum = (
         (spec.memory.system_prompt if spec else "") if parameter_enabled("memory", "systemPrompt") else ""
     )
+    # Soul and rules reach the seat the only way a character ever can -- as
+    # instructions. They are kept in their own fields so a maker surface can
+    # edit each line, and joined here so the turn reads one voice rather than
+    # three sections. Coordinator-only, hence getattr: a SubPlaybook has
+    # neither field and must not grow them by accident.
+    identity = "\n\n".join(
+        part
+        for part in (
+            _identity_block("Who you are", getattr(spec, "soul", []) if spec else []),
+            _identity_block("Rules you follow", getattr(spec, "rules", []) if spec else []),
+        )
+        if part
+    )
+    if identity:
+        instruction_addendum = "\n\n".join(part for part in (identity, instruction_addendum.strip()) if part)
     tools = spec.capability.tools if spec and parameter_enabled("capability", "tools") else None
     checks = spec.action.checks if spec and spec.action.checks else None
     stop_when = spec.stop_when if spec and parameter_enabled("memory", "stopWhen") else ""
@@ -855,7 +934,12 @@ def _persona_spec_from_args(
             "functions",
             "timeoutSeconds",
         }
-        if not is_coordinator:
+        if is_coordinator:
+            # Identity belongs to the one seat the user talks to. A worker that
+            # sent these is not a shape the tool offered, so it is named as such
+            # rather than quietly dropped.
+            allowed.update({"soul", "rules"})
+        else:
             allowed.update({"as", "agent"})
         unexpected = sorted(set(row) - allowed)
         if unexpected:
@@ -953,6 +1037,16 @@ def _persona_spec_from_args(
             checks["rules"] = raw_checks
         if checks:
             sub.setdefault("action", {})["checks"] = checks
+        for identity_field in ("soul", "rules"):
+            raw_identity = row.get(identity_field)
+            if identity_field not in row:
+                continue
+            if not isinstance(raw_identity, list) or not all(isinstance(x, str) for x in raw_identity):
+                errors.append(f"{index}. {identity_field} must be an array of strings")
+                continue
+            # Blanks, duplicates and the over-long line are the model's habits,
+            # not the author's intent; CoordinatorPlaybook normalizes them.
+            sub[identity_field] = raw_identity
         timeout = row.get("timeoutSeconds")
         if "timeoutSeconds" in row:
             if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
@@ -998,6 +1092,8 @@ def persona_parameter_guide() -> dict[str, str]:
         "brief": "The worker's durable responsibility.",
         "systemPrompt": "Long-lived behavior and style appended to the worker identity.",
         "stopWhen": "What means this worker is finished.",
+        "soul": "Who the Persona is, one trait per line; coordinator only.",
+        "rules": "The Persona's standing conduct, one rule per line; coordinator only.",
         "tools": "Suggested tools for this role; guidance, not permission.",
         "checks": "Declarative rules evaluated before worker tool calls.",
         "functions": "Generated Participant runtime functions.",
@@ -1006,6 +1102,8 @@ def persona_parameter_guide() -> dict[str, str]:
     switches = {
         "systemPrompt": parameter_enabled("memory", "systemPrompt"),
         "stopWhen": parameter_enabled("memory", "stopWhen"),
+        "soul": parameter_enabled("memory", "soul"),
+        "rules": parameter_enabled("memory", "rules"),
         "tools": parameter_enabled("capability", "tools"),
         "checks": parameter_enabled("action", "checks"),
     }

@@ -14,6 +14,8 @@ _CONNECTED_PARAMETERS = frozenset(
     {
         ("memory", "systemPrompt"),
         ("memory", "stopWhen"),
+        ("memory", "soul"),
+        ("memory", "rules"),
         ("capability", "tools"),
         ("action", "checks"),
     }
