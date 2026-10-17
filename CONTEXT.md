@@ -277,6 +277,14 @@ A background agent task spawned by `SubagentManager`. Runs with its own tool set
 re-enters the session as a `SUBAGENT`-origin `TurnRequest` via Spine submit. Bounded by
 `max_concurrent` (default 8) and a per-session hourly rate limit, both shared with the
 nodes of a DAG run — every sub-agent dispatch draws on the one allowance.
+Content received from another agent keeps that agent's redaction policy: Raven does not
+replace token-shaped text or values matching its own configured credentials in replies,
+questions, permission requests, errors, transcripts, or run records. `Tool.agent_output`
+marks tools that return agent content; the admitted tool spec and `ToolOutput` carry that
+fact through `tool_call`, context assembly, live ACP updates and stored-session replay.
+Untrusted-content fencing and output limits
+still apply. The ACP journal protects Raven's outgoing credentials without rewriting
+incoming frames or stderr.
 _Avoid_: conflating with a Turn — a Subagent lives outside the main turn and re-enters via Spine.
 
 **Sub-agent role** (`RAVEN_SUBAGENT` → `agent/subagent/role.py`):
@@ -2730,7 +2738,10 @@ unpinned `npx -y` would silently change which shim build a user runs. The **agen
 never fetched; its preset names the bare executable (`opencode acp`, `hermes acp`), so the
 build that answers is the one the user installed, at the version they chose, holding the login
 they already granted. `SHIM_LAUNCHED_PRESETS` declares that split per preset and a test holds
-every acp command to it.
+every acp command to it. A **bundled shim** (`BUNDLED_SHIM_PRESETS`) is one Raven ships rather
+than fetches: `raven.acp.mirasim` serves an agent Mirasim runs, over `mirasim ui-cli`, launched
+on Raven's own interpreter (`{PYTHON}`, expanded when the preset is read), so there is no pin;
+the executable its probe asks after is `mirasim` (`SHIM_REQUIRED_EXECUTABLES`).
 _Avoid_: inferring it from the command shape. An agent whose own CLI happens to ship on npm
 (`opencode-ai`) is not a shim, and fetching it would run a second copy beside the user's
 install and report the agent as present on a machine that does not have it - `_probe_acp`

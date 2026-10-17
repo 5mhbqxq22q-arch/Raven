@@ -114,8 +114,8 @@ if TYPE_CHECKING:
     from raven.spine.turn import TurnRequest
 
 
-def _scrubbed_result(arguments: Any, text: str) -> str:
-    """A tool result with the credentials it could carry taken out.
+def _scrubbed_result(arguments: Any, text: str, *, agent_output: bool = False) -> str:
+    """Preserve agent content and scrub credentials from local tool results.
 
     A read of a dotfile config under home loses its key values, and any value
     Raven itself holds is replaced by where it is kept. Applied where the result
@@ -124,14 +124,14 @@ def _scrubbed_result(arguments: Any, text: str) -> str:
     """
     from raven.config.held_secrets import scrub_tool_output
 
-    return scrub_tool_output(arguments, text)
+    return text if agent_output else scrub_tool_output(arguments, text)
 
 
-def _scrubbed_blocks(arguments: Any, blocks: Any) -> Any:
+def _scrubbed_blocks(arguments: Any, blocks: Any, *, agent_output: bool = False) -> Any:
     """The image-bearing form of a result, its text parts scrubbed like :func:`_scrubbed_result`."""
     from raven.config.held_secrets import scrub_tool_blocks
 
-    return scrub_tool_blocks(arguments, blocks)
+    return blocks if agent_output else scrub_tool_blocks(arguments, blocks)
 
 
 def _llm_failure_detail(content: str | None, verdict: ErrorClassification | None) -> str:
@@ -1469,7 +1469,9 @@ class TurnPathMixin:
                             watch_state,
                             tool_call.name,
                             tool_call.arguments,
-                            _scrubbed_result(tool_call.arguments, str(result)),
+                            _scrubbed_result(
+                                tool_call.arguments, str(result), agent_output=getattr(result, "agent_output", False)
+                            ),
                             watch_request,
                             reasoning_effort=policy.reasoning_effort,
                         )
@@ -1477,12 +1479,14 @@ class TurnPathMixin:
                     # the model-facing text, with the optional display string
                     # riding along on it (ToolOutput). The model always gets the
                     # model text; the UI preview prefers the display string.
-                    # Scrubbed before anything reads it -- the log line, the UI
-                    # event and the model message alike -- so a key a command
-                    # printed reaches none of them.
-                    model_text = _scrubbed_result(tool_call.arguments, str(result))
+                    agent_output = getattr(result, "agent_output", False)
+                    model_text = _scrubbed_result(tool_call.arguments, str(result), agent_output=agent_output)
                     display_text = getattr(result, "display_text", None)
-                    display_src = _scrubbed_result(tool_call.arguments, display_text) if display_text else model_text
+                    display_src = (
+                        _scrubbed_result(tool_call.arguments, display_text, agent_output=agent_output)
+                        if display_text
+                        else model_text
+                    )
                     # The log stays one line; the UI event keeps newlines so a
                     # tool that reports several items (e.g. ask_user's
                     # question -> answer pairs) renders one row each.
@@ -1493,13 +1497,24 @@ class TurnPathMixin:
                     # reader to guess the rest. The cap is what a card can show
                     # without becoming a file viewer, not what a row can.
                     preview = display_src[:_TOOL_PREVIEW_MAX_CHARS]
-                    logger.info(
+                    logger.bind(agent_output=agent_output).info(
                         "Tool result: {} duration={}ms result={}",
                         tool_call.name,
                         duration_ms,
                         preview.replace("\n", " ")[:200],
                     )
                     tool_metadata = self.tools.take_metadata(tool_call.name, tool_call.arguments)
+                    if agent_output:
+                        # Overwritten, not merged: the key is derived from the
+                        # result's own provenance and the spec it ran under, and
+                        # a tool answering its own ``take_metadata`` with a
+                        # different value is answering about the payload it
+                        # hands the UI, not about whose words the result holds.
+                        # Merging would let a tool's own dict unscrub the
+                        # preview; the derivation stays the only writer.
+                        tool_metadata = {**(tool_metadata or {}), "agent_output": True}
+                    elif isinstance(tool_metadata, dict) and "agent_output" in tool_metadata:
+                        tool_metadata = {key: value for key, value in tool_metadata.items() if key != "agent_output"}
                     # What the tool saw go, plus what this turn wrote and can no
                     # longer find. Settled before this call's own write is noted,
                     # so the file it just wrote is not stat'ed to say it exists.
@@ -1538,7 +1553,9 @@ class TurnPathMixin:
                     # misses the whole class (builtin guides in particular).
                     if tool_call.name in ("read_skill", "use_skill") and not model_text.startswith("Error"):
                         await self._report_skill_read(session_key or "", tool_call.name, tool_call.arguments)
-                    result_blocks = _scrubbed_blocks(tool_call.arguments, getattr(result, "blocks", None))
+                    result_blocks = _scrubbed_blocks(
+                        tool_call.arguments, getattr(result, "blocks", None), agent_output=agent_output
+                    )
                     model_text, blocks, attach_blocks = self._route_result_images(
                         model_text, result_blocks, call_model or effective_model
                     )
@@ -1546,9 +1563,16 @@ class TurnPathMixin:
                     # round and the captions are all still in one place. The
                     # window reads it back when it withdraws them.
                     sources = image_sources(tool_call.name, result_blocks or [], iteration) if result_blocks else []
+                    provenance = {"agent_output": True} if agent_output else {}
                     if blocks:
                         messages = self.context.add_tool_result(
-                            messages, tool_call.id, tool_call.name, model_text, blocks, trusted_note=watch_note
+                            messages,
+                            tool_call.id,
+                            tool_call.name,
+                            model_text,
+                            blocks,
+                            trusted_note=watch_note,
+                            **provenance,
                         )
                         if sources:
                             messages[-1][IMAGE_SOURCES_KEY] = sources
@@ -1556,7 +1580,7 @@ class TurnPathMixin:
                         # Keep the long-standing 4-arg call for text results so no
                         # existing caller or test double sees a signature change.
                         messages = self.context.add_tool_result(
-                            messages, tool_call.id, tool_call.name, model_text, trusted_note=watch_note
+                            messages, tool_call.id, tool_call.name, model_text, trusted_note=watch_note, **provenance
                         )
                     if messages:
                         # Dispatch to result, on the entry that answers the call.
