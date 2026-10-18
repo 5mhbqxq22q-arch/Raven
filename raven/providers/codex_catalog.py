@@ -18,9 +18,20 @@ from typing import Any
 
 CATALOG_URL = "https://chatgpt.com/backend-api/codex/models"
 
-#: Sent because the endpoint takes it; a live account answered with its models for
-#: this value. What it does with an unknown one, or with none, is not established.
-CLIENT_VERSION = "0.0.0"
+#: A client newer than any release, so the catalogue answers with every model the
+#: account is offered. The backend filters the catalogue by each model's own
+#: minimum client version, so a release hides every model gated above it: at
+#: `0.0.0` an account was offered 4 of its 7 models; `gpt-6-sol` / `gpt-6-luna`
+#: appear from `0.155.0`, `gpt-6.1-sol` from `0.159.0` (a live account, 2026-10-16).
+#: `0.163.0` and `99.0.0` both returned all 7; leaving the parameter out is a 400. `99.0.0` also answered 200 for two accounts on 2026-10-08
+#: (NousResearch/hermes-agent#135024), and opencodex discovers with it.
+#:
+#: Not a real release, deliberately: even the newest one would miss a model gated
+#: above it until the next ships. The cost is that the list can name a model that
+#: generation, which sends a real release (`codex_client_version`), cannot reach
+#: until that release ships. The risk is the backend starting to refuse versions
+#: newer than any release, at which point this has to become a real one again.
+DISCOVERY_CLIENT_VERSION = "99.0.0"
 
 _CACHE_TTL_SECONDS = 300
 
@@ -111,7 +122,7 @@ def _fetch(*, timeout: float) -> tuple[str, ...]:
 
     response = httpx.get(
         CATALOG_URL,
-        params={"client_version": CLIENT_VERSION},
+        params={"client_version": DISCOVERY_CLIENT_VERSION},
         headers=headers,
         timeout=timeout,
     )
