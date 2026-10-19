@@ -2103,6 +2103,7 @@ class ModelOptionProvider(_Strict):
 
 class ModelOptionsParams(_Strict):
     session_id: str | None = None
+    include_providers: bool = True
 
 
 class ModelOptionsResult(_Strict):

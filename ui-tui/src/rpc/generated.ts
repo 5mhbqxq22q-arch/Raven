@@ -3802,6 +3802,7 @@ export interface SkillUnpinResult {
  */
 export interface ModelOptionsParams {
   session_id?: string;
+  include_providers?: boolean;
 }
 /**
  * This interface was referenced by `RavenRpcRoot`'s JSON-Schema
