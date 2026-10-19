@@ -189,6 +189,30 @@ elicitation 发出，由你或 Raven 的提问自动作答回答。不支持表�
 
 手写集成需要对所有适用层级分别检查。
 
+### Codex 桌面历史记录 { #codex-desktop-history }
+
+Codex CLI 和 Codex 桌面 App 使用同一个现有 `codex` 子 Agent。其 ACP 适配器启动
+Codex App Server，创建原生 Codex 会话。适配器自带兼容的 Codex 可执行文件；该预设
+需要 Node.js 和 `npx`，无需另行在 `PATH` 中安装 `codex`。
+
+在桌面 App 中查看 Raven 委派给 Codex 的对话：
+
+1. Raven 和 App 使用同一个系统用户、同一个 `CODEX_HOME`（通常是 `~/.codex`）。
+   若 Raven 的运行环境不同，在已有 Codex Agent 条目的 `env.CODEX_HOME` 中填写
+   App 所用 Codex 主目录的绝对路径，并保留条目中的其他环境设置。
+2. 在 App 中打开与 Raven 任务工作目录相同的项目目录。App 会按项目筛选历史；
+   Agent 条目的启动 `cwd` 不会覆盖任务本身的工作目录。
+3. 等 Raven 这一轮结束后，再到 App 中打开并继续该对话。这里保存的是该 Codex
+   子 Agent 的对话，而不是 Raven 全部编排过程的记录。
+
+不同的 `CODEX_HOME`、系统用户、容器、WSL 环境或远程机器可能使用独立的历史存储。
+仅登录同一个账号不会使这些本地存储自动成为同一份。找不到会话时，先检查主目录、
+项目目录和 Codex 版本。
+
+历史互通不会让 Raven 接管桌面窗口中正在执行的任务，也不会协调两端同时发起的
+执行轮次。Raven 仍通过现有 ACP 会话加载流程继续自己的子 Agent instance。
+会话历史和恢复行为见 OpenAI 的 [App Server 文档](https://learn.chatgpt.com/docs/app-server)。
+
 ## 接入与验证 { #connect-and-verify }
 
 1. 按外部 Agent 对应版本安装并认证，确保其可执行文件在常驻 Raven 进程的 `PATH` 中。

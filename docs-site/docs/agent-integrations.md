@@ -222,6 +222,37 @@ Distinguish three claims when assessing compatibility:
 
 Hand-written integrations need their own checks at all three applicable levels.
 
+### Codex desktop history { #codex-desktop-history }
+
+Use the existing `codex` sub-agent for Codex CLI and the Codex desktop App.
+Its ACP adapter starts Codex App Server and creates native Codex threads. The
+adapter includes a compatible Codex executable; the preset needs Node.js and
+`npx`, but does not require a separate `codex` installation on `PATH`.
+
+To view a Raven-delegated Codex conversation in the desktop App:
+
+1. Run Raven and the App as the same OS user, with the same `CODEX_HOME`
+   (normally `~/.codex`). If Raven uses a different environment, set
+   `env.CODEX_HOME` on its existing Codex agent entry to the App's absolute
+   Codex home path. Preserve the entry's other environment settings.
+2. Open the same project directory in the App as the working directory of the
+   Raven task. The App filters history by project; an agent entry's launch
+   `cwd` does not override the task's working directory.
+3. Let the Raven turn finish before opening and continuing that conversation
+   in the App. It contains that Codex sub-agent's conversation, rather than
+   Raven's entire orchestration transcript.
+
+A different `CODEX_HOME`, OS user, container, WSL environment, or remote machine
+can have a separate history store. Using the same account alone does not make
+those local stores the same. If a thread is missing, check the home directory,
+project directory, and Codex versions first.
+
+History sharing does not attach Raven to the desktop window's running task or
+coordinate simultaneous turns from both clients. Raven continues its existing
+sub-agent instances through the same ACP session-loading path. See OpenAI's
+[App Server documentation](https://learn.chatgpt.com/docs/app-server) for thread
+history and resume behavior.
+
 ## Connect and verify
 
 1. Install and authenticate the external agent according to its own version.
