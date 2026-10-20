@@ -32,8 +32,11 @@ from raven.providers.base import LLMProvider, LLMResponse
 
 @pytest.fixture
 def workspace():
+    """A working directory with room beside it for an agent home of its own."""
     with tempfile.TemporaryDirectory() as td:
-        yield Path(td)
+        work = Path(td) / "work"
+        work.mkdir()
+        yield work
 
 
 async def _run_turn_body(agent: AgentLoop, workspace: Path):
@@ -199,10 +202,16 @@ class _NoopProvider(LLMProvider):
         return "stub"
 
 
+def _agent_home(workspace: Path) -> Path:
+    """An agent home apart from the turn's working directory, as every entrance
+    requires: the checkpoint refuses a root that is agent home itself."""
+    return workspace.parent / "agent-home"
+
+
 def _agent_with_checkpoint(workspace: Path) -> AgentLoop:
     return AgentLoop(
         provider=_NoopProvider(),
-        workspace=workspace,
+        workspace=_agent_home(workspace),
         model="stub",
         # These checkpoint tests use a no-op model only as a "turn ends" stub;
         # empty-recovery is an orthogonal feature they don't exercise, so
@@ -336,7 +345,7 @@ async def test_d2_loop_unaffected_when_shadow_blocked(workspace):
 def _agent(workspace: Path, *, policy: str, interactive: bool) -> AgentLoop:
     return AgentLoop(
         provider=_NoopProvider(),
-        workspace=workspace,
+        workspace=_agent_home(workspace),
         model="stub",
         # These checkpoint tests use a no-op model only as a "turn ends" stub;
         # empty-recovery is an orthogonal feature they don't exercise, so

@@ -1247,10 +1247,10 @@ class AcpMethods:
         """The client's working directory, checked the way raven checks its own.
 
         ``validate_override`` refuses a relative path, agent home, any ancestor
-        of it, and the memory / skills / sessions subtrees -- the last because
-        the per-turn checkpoint runs ``add -A`` over the working directory, so a
-        session rooted at ``~`` would commit provider keys into a shadow git
-        repo. Its refusals arrive as ``ValueError``; a bare Python exception is
+        of it or of Raven's home, the memory / skills / sessions subtrees, and
+        the state directories under Raven's home -- because the per-turn
+        checkpoint runs ``add -A`` over the working directory, so a session
+        rooted at ``~`` would commit provider keys into a shadow git repo. Its refusals arrive as ``ValueError``; a bare Python exception is
         not an acceptable handshake failure, so each becomes -32602 with the
         reason attached.
         """

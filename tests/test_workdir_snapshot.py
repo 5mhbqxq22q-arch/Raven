@@ -145,3 +145,18 @@ def test_a_tool_whose_files_land_on_another_machine_gets_no_listing(tmp_path: Pa
 def test_a_tool_that_cannot_say_runs_where_the_lane_does(tmp_path: Path) -> None:
     assert snapshot.root_for(object(), {"command": "make"}, tmp_path) == tmp_path
     assert snapshot.root_for(None, {"command": "make"}, str(tmp_path)) == tmp_path
+
+
+def test_a_skipped_path_is_left_out_with_everything_under_it(tmp_path: Path) -> None:
+    """A skipped directory is not walked, so Raven's own state under a root
+    neither shows up as written nor counts toward the walk's ceiling."""
+    root = tmp_path.resolve()
+    (root / "state" / "sessions").mkdir(parents=True)
+    (root / "state" / "sessions" / "a.jsonl").write_text("{}\n")
+    (root / "config.json").write_text("{}")
+    (root / "notes.md").write_text("n")
+
+    listing = snapshot.take(root, skip={str(root / "state"), str(root / "config.json")})
+
+    assert listing is not None
+    assert sorted(listing) == [str(root / "notes.md")]

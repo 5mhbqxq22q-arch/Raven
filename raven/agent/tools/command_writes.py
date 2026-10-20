@@ -25,6 +25,7 @@ from typing import Callable, Collection, Mapping, Protocol
 
 from loguru import logger
 
+from raven.agent import workdir
 from raven.agent.tools import snapshot
 from raven.contracts.tool import FileRemoval, FileWrite
 
@@ -88,9 +89,11 @@ class Before:
     shadow: ShadowTree | None = None
     #: What it staged just before the command, or ``None`` where that failed.
     tree: str | None = None
+    #: Raven's own state under ``root``, which neither listing walks.
+    skip: frozenset[str] = frozenset()
 
 
-async def before(root: Path, shadow_for: ShadowFor | None) -> Before:
+async def before(root: Path, shadow_for: ShadowFor | None, *, agent_home: Path | None = None) -> Before:
     """Look at ``root`` just before a command runs in it.
 
     A tree that could not be staged, or did not finish staging within its wait,
@@ -101,8 +104,13 @@ async def before(root: Path, shadow_for: ShadowFor | None) -> Before:
 
     Off the event loop: the walk is tens of milliseconds of a turn, and every
     other session on this process waits behind whatever the loop does.
+
+    Raven's own state under ``root`` (``workdir.state_within``) is not walked:
+    a launch from the user's home keeps that directory, and the session's own
+    transcript would otherwise come back as a file every command wrote.
     """
-    listing = await asyncio.to_thread(snapshot.take, root)
+    skip = frozenset(str(path) for path in workdir.state_within(root, agent_home))
+    listing = await asyncio.to_thread(snapshot.take, root, skip=skip)
     shadow = shadow_for(root) if listing is not None and shadow_for is not None else None
     try:
         tree = await shadow.stage_tree() if shadow is not None else None
@@ -118,7 +126,7 @@ async def before(root: Path, shadow_for: ShadowFor | None) -> Before:
             logger.warning("exec measured without a diff: the shadow repo could not stage {}", root)
     # The repo is kept without a tree: what a file held needs the tree, but
     # whether its text may be shown is the repo's rules, which need none.
-    return Before(root, listing, shadow, tree)
+    return Before(root, listing, shadow, tree, skip)
 
 
 async def after(
@@ -157,7 +165,7 @@ async def after(
 async def _after(
     start: Before, named: tuple[FileRemoval, ...]
 ) -> tuple[tuple[FileWrite, ...], tuple[FileRemoval, ...]]:
-    listing = await asyncio.to_thread(snapshot.take, start.root)
+    listing = await asyncio.to_thread(snapshot.take, start.root, skip=start.skip)
     accounted = {os.path.realpath(removal.path) for removal in named}
     created, modified, deleted = (
         [path for path in paths if os.path.realpath(path) not in accounted]

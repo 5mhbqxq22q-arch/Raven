@@ -43,6 +43,8 @@ from typing import Any, Collection
 
 from loguru import logger
 
+from raven.agent import workdir
+
 # Committer identity baked into the shadow repo so commits don't depend on the
 # user's global git config (and never touch it).
 _GIT_IDENT = (
@@ -201,6 +203,13 @@ async def _within(staging: "concurrent.futures.Future[str | None]", deadline: fl
     return bool(done)
 
 
+def _ignore_literal(rel: str) -> str:
+    """``rel`` spelled as an ignore pattern that matches exactly that path."""
+    escaped = "".join(f"\\{char}" if char in "\\*?[" else char for char in rel)
+    stripped = escaped.rstrip(" ")
+    return stripped + "\\ " * (len(escaped) - len(stripped))
+
+
 def _precomposed(name: str) -> str:
     """``name`` as git on macOS spells it before matching an ignore rule.
 
@@ -229,7 +238,9 @@ def _precomposed(name: str) -> str:
 class CheckpointService:
     """Shadow-git working-tree snapshots, one commit per turn."""
 
-    def __init__(self, workspace: Path, shadow_dir: str = ".raven/shadow.git") -> None:
+    def __init__(
+        self, workspace: Path, shadow_dir: str = ".raven/shadow.git", *, agent_home: Path | None = None
+    ) -> None:
         self._workspace = Path(workspace).expanduser().resolve()
         # The working directory is the launch directory now, so a user can
         # aim this at their home directory just by running `raven tui` from
@@ -246,6 +257,26 @@ class CheckpointService:
                 "directory or an ancestor of it. Run raven from a project "
                 "directory, or set runtime.checkpoint.policy=never."
             )
+        # Raven's own state is refused here as well as at every entrance that
+        # picks a working directory: this is the one place that writes history,
+        # and history outlives a rotated key. State inside the tree is left out
+        # by its absolute place, so an instance not named `.raven`, or a config
+        # passed with --config, is not left to the name-based excludes above.
+        reason = workdir.state_refusal(self._workspace, agent_home)
+        if reason is not None:
+            raise ValueError(f"refusing to checkpoint {self._workspace} -- {reason}")
+        within = workdir.state_within(self._workspace, agent_home)
+        state = [rel for rel in (path.relative_to(self._workspace).as_posix() for path in within) if "\n" not in rel]
+        self._state_excludes = "".join(f"/{_ignore_literal(rel)}\n" for rel in state)
+        # A repo made before a path was excluded may already track it, and
+        # `add -A` keeps updating a tracked file whatever the excludes say, so
+        # it is dropped from the index first. Its earlier commits stay as they are.
+        self._untrack: tuple[str, ...] = (
+            ("rm", "-r", "--cached", "--ignore-unmatch", "-q", "--", *(f":(literal){rel}" for rel in state))
+            if state
+            else ()
+        )
+        self._state_rels = tuple(state)
         candidate = (self._workspace / shadow_dir).resolve()
         # Containment is a load-bearing invariant: per-workspace recovery
         # isolation breaks if the shadow git lands outside its
@@ -266,6 +297,10 @@ class CheckpointService:
         self._stage_pruned = False
         self._warmed = False
         self._initializing: concurrent.futures.Future[bool] | None = None
+
+    def _is_state(self, rel: str) -> bool:
+        """Whether ``rel`` (relative to the work-tree) is Raven state left out of the snapshot."""
+        return any(rel == state or rel.startswith(f"{state}/") for state in self._state_rels)
 
     def covers(self, path: Path | str) -> bool:
         """Whether ``path`` lies in the work-tree this repo snapshots."""
@@ -401,7 +436,7 @@ class CheckpointService:
             # files (.env, secrets.yml) out of any snapshot.
             exclude = self._git_dir / "info" / "exclude"
             exclude.parent.mkdir(parents=True, exist_ok=True)
-            exclude.write_text(_DEFAULT_EXCLUDES, encoding="utf-8")
+            exclude.write_text(_DEFAULT_EXCLUDES + self._state_excludes, encoding="utf-8")
             # gc.auto: git's own threshold for "objects/refs are getting
             # crufty, fire a real GC". Setting it once at init lets every
             # subsequent ``git gc --auto`` consult the same threshold without
@@ -429,13 +464,15 @@ class CheckpointService:
         if not await self._ensure_init():
             return None, []
         try:
+            if self._untrack:
+                await self._git(*self._untrack)
             rc, _, err = await self._git("add", "-A")
             if rc != 0:
                 logger.debug("checkpoint add failed: {}", err.strip())
                 return None, []
             # Files staged this turn = this turn's changes. Capture before commit.
             rc, out, _ = await self._git("diff", "--cached", "--name-only")
-            changed = [ln for ln in out.splitlines() if ln.strip()]
+            changed = [ln for ln in out.splitlines() if ln.strip() and not self._is_state(ln)]
             if not changed:
                 return None, []  # nothing to snapshot
             rc, _, err = await self._git(*_GIT_IDENT, "commit", "-m", label)
@@ -571,6 +608,8 @@ class CheckpointService:
         """
         try:
             with _STAGE_LOCKS.setdefault(index, threading.Lock()):
+                if self._untrack and self._stage_step(self._untrack, index) is None:
+                    return
                 if self._stage_step(("add", "-A"), index, timeout=_STAGE_ADD_TIMEOUT_SECONDS) is None:
                     return
                 tree = self._stage_step(("write-tree",), index)

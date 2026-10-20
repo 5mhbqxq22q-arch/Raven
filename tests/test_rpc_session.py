@@ -393,6 +393,26 @@ async def test_opening_a_session_warms_the_directory_it_will_work_in(
     assert warmed == [pinned.resolve()]
 
 
+async def test_a_session_workdir_in_ravens_own_state_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from raven.home import raven_home
+    from raven.rpc.errors import ConfigValidationError
+
+    cfg = load_config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+    monkeypatch.setattr(session_module, "load_config", lambda: cfg)
+    oauth = raven_home() / "oauth"
+    oauth.mkdir(parents=True, exist_ok=True)
+    loop = _warming_loop(tmp_path, [])
+    monkeypatch.setattr(session_module, "manager_for", lambda *_: loop.sessions)
+
+    with pytest.raises(ConfigValidationError, match="Raven's own state") as exc:
+        await session_create({"workdir": str(oauth)}, agent_loop_factory=lambda: loop)
+
+    assert exc.value.data == {"field": "workdir"}
+
+
 async def test_resuming_a_session_warms_its_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = load_config()
     cfg.agents.defaults.workspace = str(tmp_path)

@@ -1205,6 +1205,7 @@ class WiringMixin:
                 extra_allowed_dirs=(self.workspace,),
                 record_writes=True,
                 shadow=self._command_shadow,
+                agent_home=self.workspace,
             )
         )
         # The registry writer beside exec's machine channel, for the products

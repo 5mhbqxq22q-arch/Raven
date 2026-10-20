@@ -28,9 +28,11 @@
 
 本地命令（`raven tui`、`raven serve`、`raven agent`、`raven a2a serve`）通常使用
 启动时所在的目录。如果从 Agent home 本身、其记忆、技能或 transcript 子树，
-或既包含 Agent home、又不是用户主目录及其更高层的目录启动，会输出警告并改用
+`<instance>` 中 Raven 自身的状态目录（如 `oauth/`、`credentials/`、`cron/`），
+或既包含这些目录、又不是用户主目录及其更高层的目录启动，会输出警告并改用
 `<instance>/tmp/<channel>`。合法的 `--workspace` 覆盖优先；显式指定受保护目录
-则会报错。当用户主目录或更高层是 Agent home 的上级目录时，从那里启动仍使用
+则会报错。无论实例目录叫什么名字，checkpoint 和 shell 命令的文件列表都会把这些
+状态排除在外。当用户主目录或更高层是 Agent home 的上级目录时，从那里启动仍使用
 原目录，该范围不会启用 checkpoint。
 
 单次任务示例：

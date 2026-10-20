@@ -402,6 +402,7 @@ class TurnPathMixin:
                 self._checkpoints[target] = CheckpointService(
                     target,
                     shadow_dir=self.runtime_config.checkpoint.shadow_dir,
+                    agent_home=self.workspace,
                 )
             except ValueError as exc:
                 logger.warning("runtime.checkpoint disabled for {} -- {}", target, exc)

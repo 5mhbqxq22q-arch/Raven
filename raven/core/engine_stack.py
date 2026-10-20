@@ -102,7 +102,13 @@ def build_local_sessions(config, *, workspace: str | None) -> "tuple[SessionMana
     (``ValueError`` when it is not allowed). A protected launch directory
     falls back to the gateway's per-channel directories.
     """
-    from raven.agent.workdir import WorkdirPolicy, WorkdirResolver, default_channel_root, validate_override
+    from raven.agent.workdir import (
+        WorkdirPolicy,
+        WorkdirResolver,
+        default_channel_root,
+        state_refusal,
+        validate_override,
+    )
     from raven.session.manager import SessionManager
     from raven.utils.paths import project_slug
 
@@ -116,9 +122,11 @@ def build_local_sessions(config, *, workspace: str | None) -> "tuple[SessionMana
         except ValueError as exc:
             user_home = Path.home().resolve()
             resolved_launch = launch_dir.resolve()
-            # CheckpointService already refuses the user's home and wider roots.
-            wide_ancestor = resolved_launch in agent_home.resolve().parents and (
-                resolved_launch == user_home or resolved_launch in user_home.parents
+            # Only containing Raven's state, not being part of it: CheckpointService
+            # already refuses the user's home and wider roots, and the exec listing
+            # leaves the state inside them out.
+            wide_ancestor = (resolved_launch == user_home or resolved_launch in user_home.parents) and (
+                state_refusal(resolved_launch, agent_home) is None
             )
             if not wide_ancestor:
                 policy = WorkdirPolicy.PER_CHANNEL

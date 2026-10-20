@@ -191,7 +191,7 @@ async def test_a_tool_not_asked_to_record_writes_does_not_list_or_stage(tmp_path
     """A sub-agent's runner lists every call itself, so its ``exec`` does not
     walk the directory a second time around each command."""
     roots: list[Any] = []
-    monkeypatch.setattr(snapshot, "take", lambda root: roots.append(root))
+    monkeypatch.setattr(snapshot, "take", lambda root, **_: roots.append(root))
     shadow = _Shadow(tmp_path)
 
     result = await _tool(tmp_path, shadow, record_writes=False).execute(command="echo x > made.txt")
@@ -204,7 +204,7 @@ async def test_a_background_command_takes_no_listing(tmp_path, monkeypatch):
     """Its files land after the call has returned, so a listing either side of
     the start would describe nothing it did."""
     roots: list[Any] = []
-    monkeypatch.setattr(snapshot, "take", lambda root: roots.append(root))
+    monkeypatch.setattr(snapshot, "take", lambda root, **_: roots.append(root))
 
     await _tool(tmp_path, _Shadow(tmp_path)).execute(command="true", run_in_background=True)
 
@@ -213,7 +213,7 @@ async def test_a_background_command_takes_no_listing(tmp_path, monkeypatch):
 
 async def test_a_directory_too_large_to_list_is_not_staged(tmp_path, monkeypatch):
     """No listing means nothing to report, so a staging would be paid for nothing."""
-    monkeypatch.setattr(snapshot, "take", lambda root: None)
+    monkeypatch.setattr(snapshot, "take", lambda root, **_: None)
     shadow = _Shadow(tmp_path)
 
     result = await _tool(tmp_path, shadow).execute(command="echo x > made.txt")
@@ -334,13 +334,13 @@ async def test_measuring_that_runs_past_its_bound_still_returns_the_commands_out
     real_take = snapshot.take
     walks: list[int] = []
 
-    def _slow_second_walk(root: Any) -> Any:
+    def _slow_second_walk(root: Any, **kwargs: Any) -> Any:
         walks.append(1)
         if len(walks) == 2:
             import time
 
             time.sleep(1.0)
-        return real_take(root)
+        return real_take(root, **kwargs)
 
     monkeypatch.setattr(snapshot, "take", _slow_second_walk)
 

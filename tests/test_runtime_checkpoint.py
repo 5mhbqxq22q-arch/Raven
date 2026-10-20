@@ -32,8 +32,11 @@ from raven.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
 @pytest.fixture
 def workspace():
+    """A working directory with room beside it for an agent home of its own."""
     with tempfile.TemporaryDirectory() as td:
-        yield Path(td)
+        work = Path(td) / "work"
+        work.mkdir()
+        yield work
 
 
 async def _run_turn_body(agent: AgentLoop, workspace: Path):
@@ -791,10 +794,16 @@ class _ToolLoopProvider(LLMProvider):
         return "stub"
 
 
+def _agent_home(workspace: Path) -> Path:
+    """An agent home apart from the turn's working directory, as every entrance
+    requires: the checkpoint refuses a root that is agent home itself."""
+    return workspace.parent / "agent-home"
+
+
 def _loop_agent(workspace: Path, *, checkpoint_enabled: bool) -> AgentLoop:
     return AgentLoop(
         provider=_ToolLoopProvider(),
-        workspace=workspace,
+        workspace=_agent_home(workspace),
         model="stub",
         policy=TurnPolicy(max_iterations=2),
         tools=ToolWiring(restrict_to_workspace=True),
@@ -908,7 +917,7 @@ class _ErrorProvider(LLMProvider):
 async def test_completed_status_and_snapshot(workspace):
     agent = AgentLoop(
         provider=_WriteThenStopProvider(),
-        workspace=workspace,
+        workspace=_agent_home(workspace),
         model="stub",
         policy=TurnPolicy(max_iterations=5),
         tools=ToolWiring(restrict_to_workspace=True),
@@ -1203,6 +1212,144 @@ async def test_protected_local_launch_excludes_runtime_data_from_checkpoint_and_
     assert tracked.splitlines() == ["notes.md"]
     assert not (instance / ".raven" / "shadow.git").exists()
     assert not (agent_home / ".raven" / "shadow.git").exists()
+
+
+def _instance(tmp_path, monkeypatch, root):
+    """Point ``RAVEN_HOME`` at ``root``, a directory deliberately not named ``.raven``."""
+    (root / "workspace" / "sessions" / "tui").mkdir(parents=True)
+    (root / "oauth").mkdir()
+    (root / "oauth" / "codex.json").write_text('{"token": "fake-oauth-token"}', encoding="utf-8")
+    (root / "config.json").write_text('{"apiKey": "fake-config-key"}', encoding="utf-8")
+    monkeypatch.setenv("RAVEN_HOME", str(root))
+    return root
+
+
+def test_checkpoint_refuses_a_root_inside_raven_state(tmp_path, monkeypatch):
+    """Constructed directly, the service still refuses Raven's own state: the
+    entrances validate a working directory, but the checkpoint is what writes
+    history, so it does not rely on every one of them having done so."""
+    instance = _instance(tmp_path, monkeypatch, tmp_path / "raven-data")
+    agent_home = instance / "workspace"
+
+    for refused, home in (
+        (instance, None),
+        (instance / "oauth", None),
+        (agent_home, None),
+        (agent_home / "sessions" / "tui", None),
+        (tmp_path / "agent", tmp_path / "agent"),
+    ):
+        refused.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(ValueError, match="Raven's|agent home|agent's"):
+            CheckpointService(refused, agent_home=home)
+    (instance / "tmp" / "web").mkdir(parents=True)
+    assert CheckpointService(instance / "tmp" / "web").covers(instance / "tmp" / "web")
+
+
+async def test_checkpoint_leaves_raven_state_inside_its_root_out(tmp_path, monkeypatch):
+    """State that sits inside the snapshotted tree -- an instance under a
+    project, a config file passed with ``--config`` -- is excluded by its
+    absolute place, not by being named ``.raven``."""
+    from raven.home import set_config_path
+
+    project = tmp_path / "project"
+    _instance(tmp_path, monkeypatch, project / "state")
+    (project / "main.py").write_text("print(1)\n", encoding="utf-8")
+    config = project / "raven.json"
+    config.write_text('{"apiKey": "fake-passed-config-key"}', encoding="utf-8")
+    set_config_path(config)
+    agent_home = tmp_path / "agent"
+    agent_home.mkdir()
+
+    svc = CheckpointService(project, agent_home=agent_home)
+    cid, changed = await svc.commit_turn("turn")
+    rc, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+    shown = await svc.trackable(
+        [str(project / "main.py"), str(config), str(project / "state" / "oauth" / "codex.json")]
+    )
+
+    assert cid is not None
+    assert changed == ["main.py"]
+    assert rc == 0
+    assert tracked.splitlines() == ["main.py"]
+    assert shown == {str(project / "main.py")}
+
+
+async def test_state_tracked_before_the_rule_takes_no_new_content(tmp_path, monkeypatch):
+    """A shadow repo made before the rule may already track a state file. The
+    rule cannot take it out of that history, but no later turn adds to it."""
+    from raven.home import set_config_path
+
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / "raven.json"
+    config.write_text('{"apiKey": "fake-key-before"}', encoding="utf-8")
+    (project / "main.py").write_text("print(1)\n", encoding="utf-8")
+    first = CheckpointService(project)
+    assert (await first.commit_turn("before"))[0] is not None
+
+    set_config_path(config)
+    config.write_text('{"apiKey": "fake-key-after"}', encoding="utf-8")
+    (project / "main.py").write_text("print(2)\n", encoding="utf-8")
+    second = CheckpointService(project)
+    cid, changed = await second.commit_turn("after")
+    _, history, _ = await second._git("log", "-p", "--all")
+
+    assert cid is not None
+    assert changed == ["main.py"]
+    assert "fake-key-after" not in history
+
+
+async def test_exec_listing_leaves_raven_state_out_of_a_home_launch(tmp_path, monkeypatch):
+    """A launch from the user's home keeps that directory and runs without a
+    checkpoint there, but the command's file listing still walks it: Raven's
+    own transcript and tokens must not come back as files the command wrote,
+    whatever the instance directory is called and wherever agent home is."""
+    from raven.agent.tools import command_writes
+
+    home = tmp_path / "home"
+    instance = _instance(tmp_path, monkeypatch, home / "raven-data")
+    agent_home = home / "agent"
+    (agent_home / "sessions" / "tui").mkdir(parents=True)
+    transcripts = (instance / "workspace" / "sessions" / "tui" / "a.jsonl", agent_home / "sessions" / "tui" / "b.jsonl")
+    for transcript in transcripts:
+        transcript.write_text("{}\n", encoding="utf-8")
+
+    before = await command_writes.before(home, None, agent_home=agent_home)
+    (home / "notes.md").write_text("The command's own output.\n", encoding="utf-8")
+    for transcript in transcripts:
+        with transcript.open("a", encoding="utf-8") as handle:
+            handle.write("{}\n")
+    (instance / "oauth" / "codex.json").write_text('{"token": "fake-rotated"}', encoding="utf-8")
+    writes, removals = await command_writes.after(before)
+
+    assert {Path(row.path).resolve() for row in writes} == {(home / "notes.md").resolve()}
+    assert removals == ()
+
+
+async def test_the_loop_tells_the_checkpoint_and_the_command_listing_where_agent_home_is(tmp_path):
+    """Agent home kept outside Raven's home is protected only if the loop says
+    where it is: a turn bound to it gets no checkpoint, and a command run from
+    a directory holding it does not report the session's transcript."""
+    root = tmp_path / "root"
+    agent_home = root / "agent"
+    (agent_home / "sessions" / "tui").mkdir(parents=True)
+    transcript = agent_home / "sessions" / "tui" / "a.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    agent = AgentLoop(
+        provider=_ToolLoopProvider(),
+        workspace=agent_home,
+        model="stub",
+        engine=EngineWiring(runtime_config=RuntimeConfig(checkpoint=CheckpointConfig(policy="always"))),
+    )
+
+    with workdir.bind(agent_home):
+        assert agent._turn_checkpoint() is None
+    with workdir.bind(root):
+        assert agent._turn_checkpoint() is not None
+        result = await agent.tools.get("exec").execute(command=f"echo x >> '{transcript}' && echo y > notes.md")
+
+    assert transcript.read_text(encoding="utf-8") == "{}\nx\n", "the command must have run"
+    assert [Path(row.path).name for row in result.written] == ["notes.md"]
 
 
 async def test_loop_runs_the_turn_when_the_root_is_refused(tmp_path, monkeypatch):

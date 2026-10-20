@@ -369,6 +369,19 @@ class TestSessionNew:
         assert response["error"]["data"]["field"] == "cwd"
         assert "absolute" in response["error"]["message"]
 
+    async def test_a_cwd_in_ravens_own_state_is_refused(self, rig):
+        """The session cwd is a working directory like any other: provider
+        tokens beside agent home are refused here as well."""
+        from raven.home import raven_home
+
+        oauth = raven_home() / "oauth"
+        oauth.mkdir(parents=True, exist_ok=True)
+        await rig.handshake()
+        response = await rig.call("session/new", {"cwd": str(oauth), "mcpServers": []})
+
+        assert response["error"]["code"] == protocol.INVALID_PARAMS
+        assert "Raven's own state" in response["error"]["message"]
+
     async def test_a_missing_cwd_is_refused(self, rig):
         await rig.handshake()
         for params in ({"mcpServers": []}, {"cwd": "", "mcpServers": []}, {"cwd": 5, "mcpServers": []}):

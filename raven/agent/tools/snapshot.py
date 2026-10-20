@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, Collection
 
 #: Directories a walk never enters. Machinery rather than work: a run that
 #: installs a dependency or lands a commit would otherwise report thousands of
@@ -51,14 +51,15 @@ MAX_ENTRIES = 20000
 Snapshot = dict[str, tuple[int, int]]
 
 
-def take(root: Path | str) -> Snapshot | None:
+def take(root: Path | str, *, skip: Collection[str] = ()) -> Snapshot | None:
     """List ``root``'s regular files with what would change if one were written.
 
     ``None`` means no listing: the tree is past :data:`MAX_ENTRIES`, or the root
     is not a directory this process can walk. Not an empty one -- an empty
     listing compared against a real one reports every file in the tree as
     created. Symlinks are skipped on both counts: a link is not a file this run
-    wrote, and following one leaves the tree being described.
+    wrote, and following one leaves the tree being described. ``skip`` names
+    absolute paths left out with everything under them.
     """
     try:
         start = Path(root).resolve()
@@ -68,9 +69,11 @@ def take(root: Path | str) -> Snapshot | None:
         return None
     entries: Snapshot = {}
     for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS and os.path.join(dirpath, name) not in skip]
         for name in filenames:
             path = os.path.join(dirpath, name)
+            if path in skip:
+                continue
             try:
                 info = os.stat(path, follow_symlinks=False)
             except OSError:

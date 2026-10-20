@@ -3427,10 +3427,17 @@ and every Subagent it spawns, and resolved per turn by `WorkdirResolver.resolve(
 Local surfaces (`raven tui`, `raven serve`, `raven agent`, and standalone `raven a2a`)
 use the process launch directory, so the agent works in the checkout you started it from
 (Workdir policy `LAUNCH_DIR`). If that launch directory is Agent home, one of its
-memory/skills/transcript subtrees, or an ancestor narrower than the user's home,
-assembly warns and selects `PER_CHANNEL` instead, with the gateway's default root.
-An explicit working-directory override still takes precedence. Launching from the
-user's home or above retains that directory; checkpointing already refuses those roots.
+memory/skills/transcript subtrees, Raven's **Home** itself or one of the state
+directories Raven keeps there (`oauth/`, `credentials/`, `keys/`, `cron/`, the engines'
+`subagent_sessions/`, ...; the list is `workdir._STATE_ENTRIES`, and a test fails when the
+code starts writing a directory there that the list lacks), or an ancestor of either
+narrower than the user's home, assembly warns and selects
+`PER_CHANNEL` instead, with the gateway's default root. An explicit working-directory
+override still takes precedence, and is refused by the same rule (`validate_override`).
+Launching from the user's home or above retains that directory; checkpointing already
+refuses those roots. The checkpoint applies the rule again on its own: it refuses a root
+inside that state and leaves state inside its root out by absolute path, as `exec`'s
+file listing does, so neither depends on the directory being named `.raven`.
 The Project slug still names the original launch directory. Intermediate artifacts it
 produces there go under that directory's `.raven/` (the shadow-git repo lives at
 `.raven/shadow.git`). `raven gateway` gives each channel one directory (Workdir policy

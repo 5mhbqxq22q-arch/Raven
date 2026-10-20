@@ -77,6 +77,7 @@ class ExecTool(Tool):
         follow_binding: bool = True,
         record_writes: bool = False,
         shadow: command_writes.ShadowFor | None = None,
+        agent_home: Path | None = None,
     ):
         self._timeout = timeout
         self.working_dir = working_dir
@@ -93,6 +94,7 @@ class ExecTool(Tool):
         self.follow_binding = follow_binding
         self.record_writes = False
         self._shadow: command_writes.ShadowFor | None = None
+        self._agent_home = agent_home
         if record_writes:
             self.measure_writes(shadow)
         self.path_append = path_append
@@ -375,7 +377,7 @@ class ExecTool(Tool):
         watched = self._removal_watch(command, cwd)
         start: command_writes.Before | None = None
         if self.record_writes:
-            start = await command_writes.before(Path(cwd), self._shadow)
+            start = await command_writes.before(Path(cwd), self._shadow, agent_home=self._agent_home)
 
         env: dict[str, str] | None = None
         if self.path_append:

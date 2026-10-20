@@ -1,5 +1,7 @@
 """Unit tests for the session working-directory resolver."""
 
+import ast
+import importlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -294,3 +296,184 @@ def test_default_channel_root_never_lands_in_the_system_tmp(tmp_path: Path) -> N
     # The shape everyone actually runs is unchanged.
     assert default_channel_root(Path("/root/.raven/workspace")) == Path("/root/.raven/tmp")
     assert default_channel_root(tmp_path / "a" / "home") == tmp_path / "a" / "tmp"
+
+
+@pytest.fixture
+def instance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An instance directory deliberately not named `.raven`, selected through `RAVEN_HOME`."""
+    root = tmp_path / "raven-data"
+    (root / "workspace").mkdir(parents=True)
+    monkeypatch.setenv("RAVEN_HOME", str(root))
+    return root
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["oauth", "cron/jobs", "credentials/mcp", "logs", "plugins/demo", "agents/raven-code", "subagent_sessions/x/acp"],
+)
+def test_override_cannot_point_into_instance_state(instance: Path, entry: str) -> None:
+    """Agent home's three subtrees are not the whole of Raven's state: the
+    instance directory beside it holds provider tokens, MCP credentials, cron
+    jobs and the engines' homes, and a checkpoint rooted in any of them would
+    commit what it holds."""
+    target = instance / entry
+    target.mkdir(parents=True)
+    with pytest.raises(ValueError, match="Raven's"):
+        validate_override(target, instance / "workspace")
+
+
+@pytest.mark.parametrize("entry", ["tmp", "tmp/web", "workspace/projects/demo", "my-projects/demo"])
+def test_instance_work_areas_stay_usable(instance: Path, entry: str) -> None:
+    """The per-channel scratch root and agent home's own work areas live in
+    the instance directory too, and are what the gateway hands out; a
+    directory of the user's own there is not Raven's state either."""
+    target = instance / entry
+    target.mkdir(parents=True)
+    assert validate_override(target, instance / "workspace") == target.resolve()
+
+
+def test_a_configured_agent_home_inside_the_instance_keeps_its_work_areas(instance: Path) -> None:
+    home = instance / "homes" / "main"
+    project = instance / "homes" / "tmp" / "web"
+    project.mkdir(parents=True)
+    home.mkdir(parents=True)
+    assert validate_override(project, home) == project.resolve()
+    with pytest.raises(ValueError, match="Raven's"):
+        validate_override(instance / "oauth", home)
+
+
+def test_override_cannot_contain_the_instance_when_agent_home_lives_elsewhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With agent home moved out, only the instance rule stands between a
+    project that holds `RAVEN_HOME` and a checkpoint of its tokens."""
+    project = tmp_path / "project"
+    state = project / ".state"
+    (state / "oauth").mkdir(parents=True)
+    home = tmp_path / "agent"
+    home.mkdir()
+    monkeypatch.setenv("RAVEN_HOME", str(state))
+
+    for refused in (project, state, state / "oauth"):
+        with pytest.raises(ValueError, match="Raven's"):
+            validate_override(refused, home)
+    assert validate_override(tmp_path / "agent-sibling", home) == (tmp_path / "agent-sibling").resolve()
+
+
+def test_instance_state_is_judged_through_symlinks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = tmp_path / "real-instance"
+    (real / "workspace").mkdir(parents=True)
+    (real / "oauth").mkdir()
+    alias = tmp_path / "alias-instance"
+    alias.symlink_to(real, target_is_directory=True)
+    link = tmp_path / "project-link"
+    link.symlink_to(real / "oauth", target_is_directory=True)
+    monkeypatch.setenv("RAVEN_HOME", str(alias))
+
+    with pytest.raises(ValueError, match="Raven's"):
+        validate_override(real / "oauth", alias / "workspace")
+    with pytest.raises(ValueError, match="Raven's"):
+        validate_override(link, alias / "workspace")
+
+
+def test_a_channel_workspace_in_instance_state_falls_back(instance: Path) -> None:
+    resolver = WorkdirResolver(
+        WorkdirPolicy.PER_CHANNEL,
+        agent_home=instance / "workspace",
+        channel_workspaces={"qq": str(instance / "oauth"), "web": str(instance / "channels" / "web")},
+    )
+
+    assert resolver.resolve("qq:1", create=False) == instance / "tmp" / "qq"
+    assert resolver.resolve("web:1", create=False) == (instance / "channels" / "web").resolve()
+
+
+# Entries directly under Raven's home that are files, or that hold work rather
+# than state; every other entry the code creates there must be a state entry.
+_HOME_FILES = {
+    "beta.json",
+    "config.json",
+    "connections.json",
+    "env",
+    "gateway.lock",
+    "import_state.json",
+    "redaction_history.json",
+    "serve.json",
+    "upgrade.json",
+    "web.json",
+    "web.log",
+}
+_HOME_WORK = {"workspace"}
+
+
+def _module_strings(tree: ast.Module) -> dict[str, object]:
+    """A module's literal constants, and the ones it imports from another module."""
+    values: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            try:
+                values[node.targets[0].id] = ast.literal_eval(node.value)
+            except ValueError:
+                continue
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("raven.contracts"):
+            module = importlib.import_module(node.module)
+            for alias in node.names:
+                values[alias.asname or alias.name] = getattr(module, alias.name, None)
+    return values
+
+
+def _entries_created_under_the_home() -> dict[str, set[str]]:
+    """Every top-level name the runtime puts under ``raven_home()`` / the data dir."""
+    found: dict[str, set[str]] = {}
+    for path in sorted(Path("raven").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        constants = _module_strings(tree)
+        params = {
+            arg.arg
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for arg in node.args.args
+        }
+
+        def name_of(expr: ast.expr) -> str:
+            try:
+                value = ast.literal_eval(expr)
+            except ValueError:
+                value = None
+                if isinstance(expr, ast.Name):
+                    value = constants.get(expr.id)
+                elif isinstance(expr, ast.Subscript) and isinstance(expr.value, ast.Name):
+                    held = constants.get(expr.value.id)
+                    index = ast.literal_eval(expr.slice)
+                    value = held[index] if isinstance(held, tuple) else None
+            return value if isinstance(value, str) else f"<unresolved {ast.unparse(expr)}>"
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and isinstance(node.left, ast.Call):
+                func = node.left.func
+                called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+                own_parameter = isinstance(node.right, ast.Name) and node.right.id in params
+                if called in {"raven_home", "get_data_dir"} and not node.left.args and not own_parameter:
+                    found.setdefault(name_of(node.right), set()).add(f"{path}:{node.lineno}")
+            if isinstance(node, ast.Call) and node.args:
+                func = node.func
+                called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+                argument = node.args[0]
+                if called == "get_runtime_subdir" and not (isinstance(argument, ast.Name) and argument.id in params):
+                    found.setdefault(name_of(argument), set()).add(f"{path}:{node.lineno}")
+    return found
+
+
+def test_every_directory_raven_creates_in_its_home_is_known_state() -> None:
+    """The state list is the boundary, so a directory the runtime starts
+    writing under its home must be named in it, or chosen as a file or work
+    area here; and an entry nothing creates any more must leave the list."""
+    from raven.agent.workdir import _STATE_ENTRIES
+
+    found = _entries_created_under_the_home()
+
+    unclassified = {
+        name: sorted(sites) for name, sites in found.items() if name not in _STATE_ENTRIES | _HOME_FILES | _HOME_WORK
+    }
+    assert unclassified == {}
+    assert _STATE_ENTRIES - found.keys() == set()
+    assert _STATE_ENTRIES.isdisjoint(_HOME_FILES | _HOME_WORK)

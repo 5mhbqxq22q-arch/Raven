@@ -22,6 +22,46 @@ from raven.utils.paths import safe_path_segment
 # own directory there (raven/agent/subagent/history.py).
 _PROTECTED_SUBTREES = ("user_memory", "skills", "sessions")
 
+# Directories Raven keeps its own state in, directly under its home: provider
+# tokens, MCP credentials, machine passwords, cron jobs, channel sessions, the
+# engines' homes, installed agents and plugins. Matched under the resolved home,
+# so a home not named `.raven` and one reached through a symlink are covered
+# alike. Agent home (`workspace`) has its own rules above and the per-channel
+# root (`tmp`) is where work happens, so neither is here, and a directory of
+# the user's own beside them stays usable. A test walks raven/ for every
+# directory created under the home, so a new one cannot be left off unnoticed.
+_STATE_ENTRIES = frozenset(
+    {
+        "acp-launches",
+        "agents",
+        "background",
+        "bridge",
+        "cache",
+        "credentials",
+        "cron",
+        "deliverables",
+        "everos",
+        "imports",
+        "keys",
+        "knowledge",
+        "logs",
+        "matrix-store",
+        "media",
+        "mochat",
+        "oauth",
+        "plugins",
+        "runtime",
+        "sandbox",
+        "sentinel",
+        "subagent_sessions",
+        "subagents",
+        "telemetry",
+        "traces",
+        "weixin",
+        "whatsapp-auth",
+    }
+)
+
 _CURRENT: ContextVar[Path | None] = ContextVar("raven_session_workdir", default=None)
 
 
@@ -93,6 +133,38 @@ def is_within(path: Path, root: Path) -> bool:
     return path.resolve().is_relative_to(root.resolve())
 
 
+def _raven_home() -> Path:
+    """Raven's **Home** (``RAVEN_HOME``, by default ``~/.raven``), resolved."""
+    from raven.home import raven_home
+
+    return raven_home().expanduser().resolve()
+
+
+def _inside_state(path: Path, homes: tuple[Path, ...], raven_root: Path) -> str | None:
+    """Why ``path`` (resolved) lies in Raven's own state, or ``None`` when it does not.
+
+    Containing that state is a separate question: a checkpoint can leave a
+    contained tree out, but a root inside one has nothing else to snapshot.
+    """
+    for home in homes:
+        # Agent home itself is rejected for the same reason its subtrees are, and
+        # more strongly: from there every protected subtree is one relative path
+        # away, so an ordinary relative write lands on the agent's own memory.
+        if path == home:
+            return f"working directory must not be the agent home directory itself ({home})"
+        for subtree in _PROTECTED_SUBTREES:
+            candidate = home / subtree
+            if path == candidate or candidate in path.parents:
+                return f"working directory must not be inside the agent's {subtree} tree ({candidate})"
+    if path == raven_root:
+        return f"working directory must not be Raven's home directory itself ({raven_root})"
+    if raven_root in path.parents:
+        entry = path.relative_to(raven_root).parts[0]
+        if entry in _STATE_ENTRIES:
+            return f"working directory must not be inside Raven's own state ({raven_root / entry})"
+    return None
+
+
 def validate_override(value: str | Path, agent_home: Path) -> Path:
     """Check a user-supplied working directory, returning it resolved."""
     path = Path(value).expanduser()
@@ -100,11 +172,7 @@ def validate_override(value: str | Path, agent_home: Path) -> Path:
         raise ValueError(f"working directory must be an absolute path, got {value!r}")
     resolved = path.resolve()
     home = Path(agent_home).expanduser().resolve()
-    # Agent home itself is rejected for the same reason its subtrees are, and
-    # more strongly: from there every protected subtree is one relative path
-    # away, so an ordinary relative write lands on the agent's own memory.
-    if resolved == home:
-        raise ValueError(f"working directory must not be the agent home directory itself ({home})")
+    raven_root = _raven_home()
     # An ancestor is worse still. `~/.raven` is not merely agent home's parent,
     # it is the instance data directory -- config.json (provider keys), oauth/
     # (provider tokens), cron/, sentinel/, logs/. The per-turn checkpoint runs
@@ -113,11 +181,44 @@ def validate_override(value: str | Path, agent_home: Path) -> Path:
     # here would commit every credential into a shadow git repo.
     if resolved in home.parents:
         raise ValueError(f"working directory must not contain the agent home directory ({home})")
-    for subtree in _PROTECTED_SUBTREES:
-        candidate = home / subtree
-        if resolved == candidate or candidate in resolved.parents:
-            raise ValueError(f"working directory must not be inside the agent's {subtree} tree ({candidate})")
+    if resolved in raven_root.parents:
+        raise ValueError(f"working directory must not contain Raven's home directory ({raven_root})")
+    reason = _inside_state(resolved, (home,), raven_root)
+    if reason is not None:
+        raise ValueError(reason)
     return resolved
+
+
+def state_refusal(root: Path, agent_home: Path | None = None) -> str | None:
+    """Why a snapshot must not be rooted at ``root``, or ``None`` when it may be.
+
+    Judged on its own rather than through ``validate_override``: whatever
+    entrance chose ``root``, a snapshot of it is history that outlives a
+    rotated key. The default agent home is held to the same rule as the
+    configured one, since a process homed elsewhere can still be handed it.
+    """
+    from raven.config.paths import default_workspace
+
+    homes = tuple(dict.fromkeys(Path(h).expanduser().resolve() for h in (agent_home, default_workspace()) if h))
+    return _inside_state(Path(root).expanduser().resolve(), homes, _raven_home())
+
+
+def state_within(root: Path, agent_home: Path | None = None) -> tuple[Path, ...]:
+    """Raven's own state lying strictly inside ``root``, as resolved paths.
+
+    What a snapshot or a listing of ``root`` leaves out: Raven's home, agent
+    home and the configuration file in use, matched by where they are rather
+    than by being named ``.raven``. A path inside another of them is folded
+    into it.
+    """
+    from raven.home import get_config_path
+
+    root = Path(root).expanduser().resolve()
+    candidates = [_raven_home(), Path(get_config_path()).expanduser().resolve()]
+    if agent_home is not None:
+        candidates.append(Path(agent_home).expanduser().resolve())
+    inside = {path for path in candidates if root in path.parents}
+    return tuple(sorted(path for path in inside if not any(other in path.parents for other in inside)))
 
 
 class WorkdirResolver:
