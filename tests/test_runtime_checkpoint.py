@@ -1214,6 +1214,12 @@ async def test_protected_local_launch_excludes_runtime_data_from_checkpoint_and_
     assert not (agent_home / ".raven" / "shadow.git").exists()
 
 
+async def _object_store(svc) -> str:
+    """Every object the shadow repository holds, reachable or not."""
+    _, out, _ = await svc._git("cat-file", "--batch-all-objects", "--batch")
+    return out
+
+
 def _instance(tmp_path, monkeypatch, root):
     """Point ``RAVEN_HOME`` at ``root``, a directory deliberately not named ``.raven``."""
     (root / "workspace" / "sessions" / "tui").mkdir(parents=True)
@@ -1306,6 +1312,9 @@ async def test_a_work_tree_gitignore_cannot_put_raven_state_back(tmp_path, monke
     assert sorted(tracked.splitlines()) == [".gitignore", "main.py"]
     assert sorted(staged.splitlines()) == [".gitignore", "main.py"]
     assert shown == {str(project / "main.py")}
+    # Not hashed either: an unreachable object a later turn writes again is
+    # touched each time and never ages into a prune.
+    assert "fake-negated-key" not in await _object_store(svc)
 
 
 async def test_state_tracked_before_the_rule_takes_no_new_content(tmp_path, monkeypatch):
@@ -1331,6 +1340,23 @@ async def test_state_tracked_before_the_rule_takes_no_new_content(tmp_path, monk
     assert cid is not None
     assert changed == ["main.py"]
     assert "fake-key-after" not in history
+    assert "fake-key-after" not in await _object_store(second)
+
+
+async def test_a_custom_shadow_dir_does_not_snapshot_itself(workspace):
+    """The shadow repository is excluded by where it is, not by sitting under
+    `.raven/`: a `shadow_dir` elsewhere in the tree would otherwise commit its
+    own objects every turn."""
+    (workspace / "main.py").write_text("print(1)\n", encoding="utf-8")
+    svc = CheckpointService(workspace, shadow_dir="shadow.git")
+    assert (await svc.commit_turn("one"))[0] is not None
+    (workspace / "main.py").write_text("print(2)\n", encoding="utf-8")
+    cid, changed = await svc.commit_turn("two")
+    _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+
+    assert cid is not None
+    assert changed == ["main.py"]
+    assert not [path for path in tracked.splitlines() if path.startswith("shadow.git")]
 
 
 async def test_exec_listing_leaves_raven_state_out_of_a_home_launch(tmp_path, monkeypatch):

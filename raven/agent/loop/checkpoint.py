@@ -20,11 +20,13 @@ want stored):
 2. The work-tree's own ``.gitignore`` files are honored automatically by git
    (standard ``add -A`` semantics) — so anything the user marked private in
    their own repo stays out of the shadow as well.
-3. Raven's own state (its home, agent home, the config file in use) is judged
-   by absolute path, not by name: a root inside it is refused, and state
-   inside a root is excluded and untracked (``workdir.state_refusal`` /
-   ``workdir.state_within``). The name-based excludes above cannot see a home
-   that is not called ``.raven``.
+3. Raven's own state (its home, agent home, the config file in use and what
+   Raven keeps beside it) and the shadow repository itself are judged by
+   absolute path, not by name: a root inside that state is refused, and state
+   inside a root is excluded by pathspec before anything is hashed and dropped
+   from the index (``workdir.state_refusal`` / ``workdir.state_within``). The
+   name-based excludes above cannot see a home that is not called ``.raven``,
+   and a work-tree ``.gitignore`` outranks them.
 4. ``gc.auto`` is configured so a periodic ``git gc --auto`` keeps long-lived
    sessions from accumulating loose objects forever.
 
@@ -270,19 +272,6 @@ class CheckpointService:
         reason = workdir.state_refusal(self._workspace, agent_home)
         if reason is not None:
             raise ValueError(f"refusing to checkpoint {self._workspace} -- {reason}")
-        within = workdir.state_within(self._workspace, agent_home)
-        state = [rel for rel in (path.relative_to(self._workspace).as_posix() for path in within) if "\n" not in rel]
-        self._state_excludes = "".join(f"/{_ignore_literal(rel)}\n" for rel in state)
-        # The excludes are not the guard: a work-tree `.gitignore` outranks
-        # info/exclude and can re-include a path, and a repo made before the
-        # rule may already track it. So every `add -A` is followed by dropping
-        # these paths from the index; their earlier commits stay as they are.
-        self._untrack: tuple[str, ...] = (
-            ("rm", "-r", "--cached", "--ignore-unmatch", "-q", "--", *(f":(literal){rel}" for rel in state))
-            if state
-            else ()
-        )
-        self._state_rels = tuple(state)
         candidate = (self._workspace / shadow_dir).resolve()
         # Containment is a load-bearing invariant: per-workspace recovery
         # isolation breaks if the shadow git lands outside its
@@ -298,11 +287,58 @@ class CheckpointService:
             )
         self._git_dir = candidate
         self._shadow_rel = shadow_dir
+        within = list(workdir.state_within(self._workspace, agent_home))
+        # The shadow repository is left out by where it is as well: the default
+        # sits under `.raven/`, which the excludes above cover, but a
+        # `shadow_dir` elsewhere would commit its own objects every turn.
+        if not candidate.is_relative_to(self._workspace / ".raven"):
+            within.append(candidate)
+        state = [rel for rel in (path.relative_to(self._workspace).as_posix() for path in within) if "\n" not in rel]
+        self._state_excludes = "".join(f"/{_ignore_literal(rel)}\n" for rel in state)
+        # The excludes are not the guard: a work-tree `.gitignore` outranks
+        # info/exclude and can re-include a path, and a repo made before the
+        # rule may already track it. So every staging drops these paths from
+        # the index, adds with each one the ignore rules do not hold excluded
+        # by pathspec -- its bytes are then never hashed into the object store,
+        # where an unreachable blob written again every turn never ages into a
+        # prune -- and drops them once more. Earlier commits stay as they are.
+        self._untrack: tuple[str, ...] = (
+            ("rm", "-r", "--cached", "--ignore-unmatch", "-q", "--", *(f":(literal){rel}" for rel in state))
+            if state
+            else ()
+        )
+        self._state_rels = tuple(state)
         self._ready = False
         self._commit_count = 0
         self._stage_pruned = False
         self._warmed = False
         self._initializing: concurrent.futures.Future[bool] | None = None
+
+    def _add_args(self) -> tuple[str, ...]:
+        """``add -A``, with every state path the ignore rules do not hold excluded by pathspec.
+
+        Only those: git (2.34) refuses an add whose exclude pathspec names a
+        path it already ignores, as if the add had asked for an ignored file.
+        A path re-included by a `.gitignore`, or one nothing ignores, is named.
+        When git cannot say, every path is named, and an add it then refuses
+        leaves the turn without a snapshot rather than with the state in one.
+        """
+        if not self._state_rels:
+            return ("add", "-A")
+        cmd, env = self._command(("check-ignore", "--no-index", "-z", "--stdin"), None)
+        query = "".join(f"{rel}\0" for rel in self._state_rels).encode(errors="surrogateescape")
+        try:
+            done = subprocess.run(
+                cmd, cwd=str(self._workspace), env=env, input=query, capture_output=True, timeout=_GIT_TIMEOUT_SECONDS
+            )
+            answered = done.returncode in (0, 1)
+        except (OSError, subprocess.TimeoutExpired):
+            answered = False
+        ignored = set(done.stdout.decode(errors="surrogateescape").split("\0")) if answered else set()
+        named = [rel for rel in self._state_rels if rel not in ignored]
+        if not named:
+            return ("add", "-A")
+        return ("add", "-A", "--", ".", *(f":(exclude,literal){rel}" for rel in named))
 
     def _is_state(self, rel: str) -> bool:
         """Whether ``rel`` (relative to the work-tree) is Raven state left out of the snapshot."""
@@ -470,7 +506,9 @@ class CheckpointService:
         if not await self._ensure_init():
             return None, []
         try:
-            rc, _, err = await self._git("add", "-A")
+            if self._untrack:
+                await self._git(*self._untrack)
+            rc, _, err = await self._git(*await asyncio.to_thread(self._add_args))
             if rc != 0:
                 logger.debug("checkpoint add failed: {}", err.strip())
                 return None, []
@@ -617,7 +655,9 @@ class CheckpointService:
         """
         try:
             with _STAGE_LOCKS.setdefault(index, threading.Lock()):
-                if self._stage_step(("add", "-A"), index, timeout=_STAGE_ADD_TIMEOUT_SECONDS) is None:
+                if self._untrack and self._stage_step(self._untrack, index) is None:
+                    return
+                if self._stage_step(self._add_args(), index, timeout=_STAGE_ADD_TIMEOUT_SECONDS) is None:
                     return
                 if self._untrack and self._stage_step(self._untrack, index) is None:
                     return
