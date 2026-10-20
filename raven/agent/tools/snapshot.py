@@ -51,7 +51,7 @@ MAX_ENTRIES = 20000
 Snapshot = dict[str, tuple[int, int]]
 
 
-def take(root: Path | str, *, skip: Collection[str] = ()) -> Snapshot | None:
+def take(root: Path | str, *, skip: Collection[str] | None = None) -> Snapshot | None:
     """List ``root``'s regular files with what would change if one were written.
 
     ``None`` means no listing: the tree is past :data:`MAX_ENTRIES`, or the root
@@ -59,7 +59,10 @@ def take(root: Path | str, *, skip: Collection[str] = ()) -> Snapshot | None:
     listing compared against a real one reports every file in the tree as
     created. Symlinks are skipped on both counts: a link is not a file this run
     wrote, and following one leaves the tree being described. ``skip`` names
-    absolute paths left out with everything under them.
+    absolute paths left out with everything under them; a caller that names
+    none still has Raven's own state under ``root`` left out
+    (``workdir.state_within``), so no listing reports a transcript or a token
+    as a file a command wrote.
     """
     try:
         start = Path(root).resolve()
@@ -67,6 +70,10 @@ def take(root: Path | str, *, skip: Collection[str] = ()) -> Snapshot | None:
         return None
     if not start.is_dir():
         return None
+    if skip is None:
+        from raven.agent import workdir
+
+        skip = frozenset(str(path) for path in workdir.state_within(start))
     entries: Snapshot = {}
     for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
         dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS and os.path.join(dirpath, name) not in skip]

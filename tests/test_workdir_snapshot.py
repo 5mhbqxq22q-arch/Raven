@@ -160,3 +160,21 @@ def test_a_skipped_path_is_left_out_with_everything_under_it(tmp_path: Path) -> 
 
     assert listing is not None
     assert sorted(listing) == [str(root / "notes.md")]
+
+
+def test_a_listing_with_no_skip_named_leaves_ravens_own_state_out(tmp_path: Path) -> None:
+    """A caller that names nothing to skip -- a sub-agent's listing -- still
+    does not walk Raven's own state under its root, here the data directory a
+    config moved into the project."""
+    from raven.home import set_config_path
+
+    root = tmp_path.resolve()
+    (root / "credentials" / "mcp").mkdir(parents=True)
+    (root / "credentials" / "mcp" / "srv.json").write_text("{}")
+    (root / "notes.md").write_text("n")
+    set_config_path(root / "config.json")
+
+    listing = snapshot.take(root)
+
+    assert listing is not None
+    assert sorted(listing) == [str(root / "notes.md")]
