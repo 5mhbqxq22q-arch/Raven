@@ -7,6 +7,7 @@ module only decides where a turn reads and writes files.
 from __future__ import annotations
 
 import os
+import unicodedata
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum
@@ -194,22 +195,48 @@ def _data_dir() -> Path:
     return Path(get_config_path()).expanduser().resolve().parent
 
 
+def _fold(spelling: str | Path) -> str:
+    """A spelling as a case- and normalization-insensitive volume compares it."""
+    return unicodedata.normalize("NFC", os.fspath(spelling)).casefold()
+
+
 def _same(a: Path, b: Path) -> bool:
     """Whether two resolved paths name one directory, asked of the filesystem too.
 
-    ``resolve()`` does not fold case, and a case-insensitive volume (macOS by
-    default) does, so a spelling that differs only in case passes ``==``. Only
-    such a spelling is worth a ``stat``: every other pair answers from the
-    strings, which keeps the per-turn check off a slow network filesystem.
+    ``resolve()`` neither folds case nor normalizes Unicode, and macOS's
+    default volume does both, so two spellings that differ only that way pass
+    ``==`` while naming one directory. Only such a pair is worth a ``stat``:
+    every other answers from the strings, which keeps the per-turn check off a
+    slow network filesystem.
     """
     if a == b:
         return True
-    if os.fspath(a).casefold() != os.fspath(b).casefold():
+    if _fold(a) != _fold(b):
         return False
     try:
         return os.path.samefile(a, b)
     except OSError:
         return False
+
+
+def _respelled(root: Path, parts: tuple[str, ...]) -> Path:
+    """``root`` joined with ``parts``, each spelled the way its entry on disk is.
+
+    A path built from a typed spelling names the right file to the filesystem
+    and the wrong one to git and to a directory walk, which compare names as
+    stored. A part with no entry yet keeps the spelling it was given.
+    """
+    path = root
+    for part in parts:
+        try:
+            names = os.listdir(path)
+        except OSError:
+            names = []
+        if part not in names:
+            folded = _fold(part)
+            part = next((name for name in names if _fold(name) == folded and _same(path / name, path / part)), part)
+        path = path / part
+    return path
 
 
 def _anchor(path: Path, root: Path) -> Path | None:
@@ -244,13 +271,13 @@ def _inside_state(path: Path, homes: tuple[Path, ...]) -> str | None:
         anchor = _anchor(path.parent, root)
         if anchor is not None:
             entry = path.relative_to(anchor).parts[0]
-            if entry.casefold() in _STATE_ENTRIES:
+            if _fold(entry) in _STATE_ENTRIES:
                 return f"working directory must not be inside Raven's own state ({root / entry})"
     data = _data_dir()
     anchor = _anchor(path.parent, data)
     if anchor is not None:
         entry = path.relative_to(anchor).parts[0]
-        if entry.casefold() in _DATA_DIR_STATE:
+        if _fold(entry) in _DATA_DIR_STATE:
             return f"working directory must not be inside Raven's own state ({data / entry})"
     return None
 
@@ -302,6 +329,12 @@ def state_within(root: Path, agent_home: Path | None = None) -> tuple[Path, ...]
     data directory `--config` can move into a project), matched by where they
     are rather than by being named ``.raven``. A path inside another of them
     is folded into it.
+
+    Containment is asked of the filesystem, as the refusal side asks it: a
+    config path typed in another case or Unicode normalization names the same
+    tree on macOS. Each path comes back spelled under ``root`` the way its
+    entries are on disk, since the excludes, pathspecs and listing built from
+    it compare names as stored.
     """
     from raven.home import get_config_path
 
@@ -314,7 +347,11 @@ def state_within(root: Path, agent_home: Path | None = None) -> tuple[Path, ...]
     ]
     if agent_home is not None:
         candidates.append(Path(agent_home).expanduser().resolve())
-    inside = {path for path in candidates if root in path.parents}
+    inside = set()
+    for path in candidates:
+        anchor = _anchor(path.parent, root)
+        if anchor is not None:
+            inside.add(_respelled(root, path.relative_to(anchor).parts))
     return tuple(sorted(path for path in inside if not any(other in path.parents for other in inside)))
 
 

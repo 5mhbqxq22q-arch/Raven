@@ -1381,6 +1381,86 @@ async def test_a_moved_config_keeps_its_data_directory_state_out(tmp_path, monke
         assert secret not in stored
 
 
+def _fold(path) -> str:
+    return unicodedata.normalize("NFC", os.fspath(path)).casefold()
+
+
+def _insensitive_volume(monkeypatch) -> None:
+    """Simulate a volume that ignores case and Unicode normalization (macOS's
+    default): two spellings name one entry when they fold alike. Linux has no
+    such volume, so this is a stand-in for the filesystem's answer, not a
+    native run."""
+    monkeypatch.setattr(os.path, "samefile", lambda a, b: _fold(a) == _fold(b))
+
+
+@pytest.mark.parametrize(
+    ("on_disk", "typed", "typed_name"),
+    [
+        ("proj", "Proj", "config.json"),
+        (unicodedata.normalize("NFC", "caf\u00e9"), unicodedata.normalize("NFD", "caf\u00e9"), "config.json"),
+        ("proj", "PROJ", "CONFIG.JSON"),
+    ],
+    ids=["case", "nfd-for-nfc", "upper-name-too"],
+)
+async def test_a_config_spelled_unlike_the_disk_keeps_its_state_out(tmp_path, monkeypatch, on_disk, typed, typed_name):
+    """`--config` keeps the spelling it was typed with, and the launch
+    directory has the disk's. On a volume that folds case and normalization
+    the two name one tree, so its state must be left out by that identity --
+    and re-spelled as the disk has it, or the pathspecs miss the real files."""
+    from raven.agent.tools import command_writes
+    from raven.home import set_config_path
+
+    _insensitive_volume(monkeypatch)
+    root = tmp_path / on_disk
+    for rel, text in (
+        ("config.json", '{"apiKey": "fake-typed-config"}'),
+        ("credentials/mcp/srv.json", '{"token": "fake-typed-mcp"}'),
+        ("cron/jobs.json", '{"jobs": "fake-typed-cron"}'),
+        ("Credentials-notes.md", "the project's own notes\n"),
+        ("src/main.py", "print(1)\n"),
+    ):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    set_config_path(tmp_path / typed / typed_name)
+
+    svc = CheckpointService(root)
+    cid, changed = await svc.commit_turn("turn")
+    await svc.stage_tree()
+    _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+    stored = await _object_store(svc)
+    before = await command_writes.before(root, None)
+    (root / "cron" / "jobs.json").write_text('{"jobs": "fake-rewritten"}', encoding="utf-8")
+    (root / "notes.md").write_text("n\n", encoding="utf-8")
+    writes, _ = await command_writes.after(before)
+
+    assert cid is not None
+    assert sorted(tracked.splitlines()) == ["Credentials-notes.md", "src/main.py"]
+    assert sorted(changed) == ["Credentials-notes.md", "src/main.py"]
+    for secret in ("fake-typed-config", "fake-typed-mcp", "fake-typed-cron"):
+        assert secret not in stored
+    assert [Path(row.path).name for row in writes] == ["notes.md"]
+
+
+async def test_a_config_reached_through_a_symlink_keeps_its_state_out(tmp_path):
+    from raven.home import set_config_path
+
+    root = tmp_path / "proj"
+    (root / "credentials").mkdir(parents=True)
+    (root / "credentials" / "srv.json").write_text('{"token": "fake-linked"}', encoding="utf-8")
+    (root / "main.py").write_text("print(1)\n", encoding="utf-8")
+    link = tmp_path / "alias"
+    link.symlink_to(root, target_is_directory=True)
+    set_config_path(link / "config.json")
+
+    svc = CheckpointService(root)
+    await svc.commit_turn("turn")
+    _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+
+    assert tracked.splitlines() == ["main.py"]
+    assert "fake-linked" not in await _object_store(svc)
+
+
 async def test_a_moved_config_keeps_its_state_out_of_the_command_listing(tmp_path):
     """The exec listing walks the same directory and skips the same state."""
     from raven.agent.tools import command_writes

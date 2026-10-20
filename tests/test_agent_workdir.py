@@ -426,6 +426,33 @@ def test_instance_state_is_judged_by_the_filesystem_not_the_spelling(
     assert validate_override(spelled / "MY-PROJECTS", instance / "workspace") == spelled / "MY-PROJECTS"
 
 
+def test_instance_state_is_judged_whatever_the_unicode_normalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A volume that ignores normalization (macOS) names one directory by its
+    NFC and NFD spellings, so the refusal must fold both, not only case.
+    Simulated with a `samefile` that folds alike; not a native run."""
+    import os
+    import unicodedata
+
+    from raven.agent import workdir
+
+    def fold(path: object) -> str:
+        return unicodedata.normalize("NFC", os.fspath(path)).casefold()
+
+    monkeypatch.setattr(workdir.os.path, "samefile", lambda a, b: fold(a) == fold(b))
+    nfc = tmp_path / unicodedata.normalize("NFC", "caf\u00e9-home")
+    (nfc / "workspace").mkdir(parents=True)
+    (nfc / "oauth").mkdir()
+    monkeypatch.setenv("RAVEN_HOME", str(nfc))
+    nfd = tmp_path / unicodedata.normalize("NFD", "caf\u00e9-home")
+
+    with pytest.raises(ValueError, match="Raven's"):
+        validate_override(nfd / "oauth", nfc / "workspace")
+    with pytest.raises(ValueError, match="agent home|Raven's"):
+        validate_override(nfd, nfc / "workspace")
+
+
 def test_a_channel_workspace_in_instance_state_falls_back(instance: Path) -> None:
     resolver = WorkdirResolver(
         WorkdirPolicy.PER_CHANNEL,
