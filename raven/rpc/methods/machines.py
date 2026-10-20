@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -40,7 +41,7 @@ from raven.node import install as node_install
 from raven.node.client import MachineStatus, NodeError, get_node_pool
 from raven.ops import connection_add, connections
 from raven.ops.connection_add import NODE_FIELD
-from raven.ops.connections import SSH, UNREADABLE, row_problems, transport_of
+from raven.ops.connections import SSH, UNREADABLE, password_auth, row_problems, transport_of
 from raven.rpc.errors import ConfigValidationError
 
 if TYPE_CHECKING:
@@ -82,11 +83,18 @@ def _scrubbed(text: str, row: dict[str, Any]) -> str:
     host = str(row.get("host") or "")
     user = str(row.get("user") or "")
     key = str(row.get("key") or "")
+    port = str(row.get("port") or "")
     out = text
     if host:
+        if user and port:
+            out = out.replace(f"{user}@{host}:{port}", "the machine")
         if user:
             out = out.replace(f"{user}@{host}", "the machine")
+        if port:
+            out = out.replace(f"{host}:{port}", "the machine")
         out = out.replace(host, "the machine")
+        # ssh names the login twice ("could not reach user@host:port: user@host: Permission denied"); once is enough.
+        out = out.replace("the machine: the machine:", "the machine:")
     if key:
         out = out.replace(key, "the key")
     return out
@@ -121,6 +129,8 @@ def _row_out(row: dict[str, Any]) -> dict[str, Any]:
     }
     if version:
         out["node_version"] = version
+    if transport_of(row) == SSH:
+        out["auth"] = "password" if password_auth(row) else "key"
     return out
 
 
@@ -172,7 +182,7 @@ async def machines_list(params: dict) -> dict:
 # Why a machine was not registered, as a kind the page explains in the reader's
 # language; the sentence itself stays, for the reader who wants ssh's words.
 _REASONS = (
-    (re.compile(r"ssh not found on this computer", re.IGNORECASE), "nossh"),
+    (re.compile(r"ssh(-keygen)? not found on this computer", re.IGNORECASE), "nossh"),
     (re.compile(r"REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed", re.IGNORECASE), "hostkey"),
     (re.compile(r"Permission denied|Too many authentication failures|publickey", re.IGNORECASE), "login"),
     (re.compile(r"no answer within|timed out", re.IGNORECASE), "timeout"),
@@ -191,10 +201,21 @@ def _refused(detail: str, reason: str) -> dict[str, Any]:
 
 
 async def machines_add(params: dict) -> dict:
-    """Reach an ssh machine once with the given login, then write its row and its ssh alias."""
+    """Reach an ssh machine once with the given login, then write its row and its ssh alias.
+
+    With ``auth: password`` the password is what Raven logs in with, every
+    time: kept on this computer for the owner alone
+    (``connection_add.store_password``) before the probe, which then reaches
+    the machine the way every later connection will, through ssh's askpass
+    hook; a password the machine refuses is forgotten again. It is in no
+    registry row, log or answer. Such a row gets no ssh alias. On Windows the
+    pick itself is refused, first of all, before anything is kept.
+    """
     conn_id = str(params.get("id") or "").strip()
     name = str(params.get("name") or "").strip()
     paths = [str(x).strip() for x in (params.get("paths") or []) if str(x).strip()]
+    by_password = str(params.get("auth") or "key").strip().lower() == "password"
+    password = str(params.get("password") or "")
     row: dict[str, Any] = {
         "id": conn_id,
         "display_name": name or conn_id,
@@ -206,6 +227,18 @@ async def machines_add(params: dict) -> dict:
     }
     if paths:
         row["paths"] = paths
+    if by_password:
+        if sys.platform == "win32":
+            # Judged before anything else the pick would set in motion: every
+            # password login rides OpenSSH's askpass, and the helper Raven
+            # writes is a POSIX script this computer cannot run, so nothing is
+            # kept and no 'nossh' asks for an OpenSSH that could not make the
+            # mode work either.
+            return _refused("registering with a password is not supported on Windows; use a key instead", "platform")
+        if not password:
+            return _refused("registering with a password needs the password; nothing was written", "invalid")
+        row["auth"] = "password"
+        del row["key"]
     faults = [p.text for p in row_problems(row) if p.blocking]
     if faults:
         return _refused("; ".join(faults), "invalid")
@@ -219,19 +252,50 @@ async def machines_add(params: dict) -> dict:
         return _refused(f"{found.detail} Give those entries an id (or remove them) first.", "registry")
     if any(str(r.get("id") or "").strip() == conn_id for r in found.rows):
         return _refused(f"a machine with id {conn_id!r} is registered already", "duplicate")
-    reached, message, detected = await asyncio.to_thread(connection_add.probe, row)
-    if not reached:
-        return _refused(_scrubbed(message, row), _reason(message))
-    row.update(detected)
-    row["software"] = ""
-    row["budget_unit"] = "gpu-minute" if row.get("kind") == "gpu" else "core-minute"
-    if not connections.resource_unit(row):
-        row["concurrency"] = 1
+    kept = None
+    if by_password:
+        # Kept before the probe, which reaches the machine the way every later
+        # connection will: through the askpass helper reading this file. Last
+        # of all the checks, so a refusal has nothing to clean up but this
+        # file -- which the finally below sees to.
+        try:
+            kept = connection_add.store_registration_password(conn_id, password)
+        except ValueError as exc:
+            return _refused(str(exc), "duplicate" if "already listed" in str(exc) else "invalid")
+    written = False
     try:
-        connection_add.write(row)
-    except ValueError as exc:
-        said = str(exc)
-        return _refused(said, "duplicate" if "already listed" in said else "registry")
+        if by_password:
+            reached, message, detected = await asyncio.to_thread(connection_add.probe, row, password=password)
+        else:
+            reached, message, detected = await asyncio.to_thread(connection_add.probe, row)
+        if not reached:
+            said = _scrubbed(message, row)
+            if by_password:
+                # ssh never echoes a password, but the replace is the
+                # guarantee rather than the belief.
+                said = said.replace(password, "the password")
+            return _refused(said, _reason(message))
+        row.update(detected)
+        row["software"] = ""
+        row["budget_unit"] = "gpu-minute" if row.get("kind") == "gpu" else "core-minute"
+        if not connections.resource_unit(row):
+            row["concurrency"] = 1
+        try:
+            if by_password:
+                connection_add.write(row, password=password)
+            else:
+                connection_add.write(row)
+        except ValueError as exc:
+            said = str(exc)
+            return _refused(said, "duplicate" if "already listed" in said else "registry")
+        written = True
+    finally:
+        if kept is not None and not written:
+            # No row was written -- the machine refused, or the registry did --
+            # so the password kept a moment ago goes too, unless a registration
+            # of the same id landed meanwhile: the file is keyed by id alone,
+            # and is that row's now (`forget_unowned_password` has the rule).
+            connection_add.forget_unowned_password(conn_id, password, identity=kept)
     said = [f"{detected['cores']} cores" if "cores" in detected else "", str(detected.get("memory") or "")]
     said.append(str(detected.get("device") or ""))
     detail = f"reached machine {_label(row)}: " + (
@@ -242,6 +306,19 @@ async def machines_add(params: dict) -> dict:
     except (OSError, ValueError) as exc:
         detail += f"; its ssh alias was not written to ~/.ssh/config ({exc}), so scp and rsync cannot address it by id"
     return {"ok": True, "detail": detail, "reason": "", "row": _row_out(row)}
+
+
+def _forget_password(row: dict[str, Any], conn_id: str) -> str:
+    """The password kept here under this id goes with the row; one clause when there was one, else none.
+
+    Whatever the row's login: a file kept under the id by a registration that
+    was later refused, or by a row since re-registered with a key, is nobody's
+    once the row is gone, and this is the one place that reaches it.
+    """
+    del row
+    if not connection_add.forget_password(conn_id):
+        return ""
+    return "; the password kept here for it is deleted"
 
 
 async def _install(conn_id: str, node_dir: str, rec: _Install) -> None:
@@ -360,6 +437,7 @@ async def machines_remove(params: dict) -> dict:
     if transport_of(rows[0]) == SSH:
         await pool.close(conn_id)
         detail += "; the node installed on it stays there"
+        detail += _forget_password(rows[0], conn_id)
     _INSTALLS.pop(conn_id, None)
     if named:
         detail += (

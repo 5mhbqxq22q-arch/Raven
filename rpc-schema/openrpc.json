@@ -3087,12 +3087,32 @@
           }
         },
         {
+          "name": "auth",
+          "required": false,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "key",
+              "password"
+            ]
+          },
+          "description": "How Raven logs in: key (the default; `key` names the private key's path) or password (`password` is kept here and used on every connection; such a row gets no ssh alias)."
+        },
+        {
           "name": "key",
-          "required": true,
+          "required": false,
           "schema": {
             "type": "string"
           },
-          "description": "Path to the private key on this computer; the path is stored, never the key."
+          "description": "Path to the private key on this computer; the path is stored, never the key. Required with auth `key`."
+        },
+        {
+          "name": "password",
+          "required": false,
+          "schema": {
+            "type": "string"
+          },
+          "description": "The account's password, with auth `password`: kept on this computer for Raven's own logins, readable by the owner alone and used on every connection; never in the registry, a log or an answer. Not offered on Windows."
         },
         {
           "name": "paths",
@@ -3133,11 +3153,12 @@
                 "hostkey",
                 "timeout",
                 "nossh",
+                "platform",
                 "duplicate",
                 "invalid",
                 "registry"
               ],
-              "description": "Why the row was not written, as a kind the page can explain: the machine could not be reached, refused the login, presented a changed host key, did not answer in time, ssh is missing here, the id is taken, the fields are not usable, or the registry file cannot be changed. Empty when it was written."
+              "description": "Why the row was not written, as a kind the page can explain: the machine could not be reached, refused the login, presented a changed host key, did not answer in time, ssh is missing here, this computer cannot use the login picked (a password on Windows), the id is taken, the fields are not usable, or the registry file cannot be changed. Empty when it was written."
             },
             "row": {
               "$ref": "#/components/schemas/MachineRow"
@@ -18377,6 +18398,14 @@
           "node_current": {
             "type": "boolean",
             "description": "Whether the node named by node_version is this Raven's own code, which a dispatch there needs; false when none is known."
+          },
+          "auth": {
+            "type": "string",
+            "enum": [
+              "key",
+              "password"
+            ],
+            "description": "How this computer logs in to an ssh row: key (the path the row carries) or password (kept on this computer for Raven's own logins). Absent for a local row."
           },
           "install": {
             "type": "object",

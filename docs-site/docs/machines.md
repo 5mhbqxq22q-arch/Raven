@@ -14,8 +14,9 @@ installing the agents themselves.
 
 ## What you need
 
-- A machine reached over ssh with a key, as the user the agent will run as.
-  Raven never types a password: the login has to work with the key alone.
+- A machine reached over ssh, as the user the agent will run as: with a key,
+  or with a password that Raven keeps on this computer and hands to ssh on
+  every connection (see the registration section below).
 - Linux or macOS on that machine, with a POSIX shell for that user. The node
   uses unix sockets and process groups, so a Windows machine cannot be a
   destination. (Raven itself may run on Windows; see
@@ -61,11 +62,56 @@ What gets recorded, and where:
   [Oncall](oncall.md#prepare-the-agent-and-machine) describes the registry in
   more detail.
 - The **path** of the private key is stored, never the key itself.
+- A machine you can only reach with a password is registered from the Agent
+  Hub with **Login: Password**, or with `raven ops connection add
+  --non-interactive --auth password --password-stdin --id <id> --name <name>
+  --host <address> --port 22 --user <user>` (the password on the first line of
+  stdin, never on the command line; `--password-stdin` is read before the first
+  question, so it works with or without `--non-interactive`). The password must
+  be at least six characters and is kept on this computer, under
+  `~/.raven/keys/<id>.password`, readable by your account alone (mode 0600),
+  and handed to ssh on every connection through OpenSSH's askpass hook: it is
+  in no registry row, log or answer, and never on a command line. Each of
+  those connections logs in on its own (connection sharing from your ssh
+  config, `ControlMaster`, is turned off for them), so a registration proves
+  the password it keeps and a password changed on the machine is noticed at
+  the next connection. It is started with no controlling terminal, so an
+  OpenSSH older than 8.4 -- which only uses askpass when it cannot open a
+  terminal -- still reaches the helper instead of prompting. A jump host does
+  not: `ProxyJump` and `ProxyCommand` are off for password connections, since
+  the jump's own ssh would be handed this machine's password; a machine
+  reached only through one has to be registered with a key. The helper
+  answers one prompt: ssh's own, for the password of the registered account
+  at the registered address (`user@host`). Another account's prompt, a
+  second factor's (a verification code, a passcode) and a one-time
+  password's get no answer, so a machine whose login also asks for one is
+  registered with a key as well. The row carries `auth: password` and no key
+  path. `raven ops connection doctor` counts the row usable, and Oncall
+  campaigns run on it too, logging in the same way at the registered address
+  alone: a campaign cannot point such a connection at another host, port or
+  user. The machine's sshd has to accept
+  password logins (`PasswordAuthentication yes`); one that does not refuses
+  every connection, and the refusal says so. A password the machine refuses at
+  registration is not kept. A failed or cancelled registration preserves the
+  password kept by another registration of the same machine, even if that
+  registration is still connecting and uses the same password.
+  When the machine's password changes, remove the
+  machine and register it again (a registration under an id in use is
+  refused). Not available when this computer is Windows, whose OpenSSH cannot
+  run the POSIX script that hands ssh the password. Such a machine gets no
+  `Host <id>` alias in `~/.ssh/config`: `scp` and `rsync` from a terminal ask
+  for the password, and an agent reads and writes its files through Raven's
+  own file tools. Removing the machine deletes the password kept here
+  ([section 8](#8-remove-a-machine)).
 - The machine's host key is accepted on the first connection and kept in
   `~/.ssh/known_hosts`. A machine that later presents a different key is
-  refused until you check it yourself.
-- A managed `Host <id>` block is written to `~/.ssh/config`, so `scp` and
-  `rsync` on this computer can address the machine by its id.
+  refused until you check it yourself. With a password that first connection
+  carries the password, so on a network you do not trust, connect once from a
+  terminal first (`ssh user@host` shows the fingerprint to confirm) and
+  register after, or register with a key.
+- For a machine registered with a key, a managed `Host <id>` block is written
+  to `~/.ssh/config`, so `scp` and `rsync` on this computer can address the
+  machine by its id.
 
 `raven ops connection list` shows the machines. `raven ops connection doctor`
 lists what is wrong with each entry, blocking or advisory, and exits non-zero
@@ -74,7 +120,8 @@ zero, so read its output rather than its exit code.
 
 ### From the Agent Hub
 
-The same registration without a terminal: the Agent Hub's **Machines** tab
+The same registration without a terminal: the Agent Hub's **Machines** tab,
+beside **Agents** and **Channels** at the top of the hub,
 lists the registered machines, and **Register a machine** opens a form for
 the name, id, address, port, user name and private-key path, plus the work
 directories. The page reaches the machine once before writing anything, the
@@ -373,8 +420,9 @@ disconnect those entries first (the Agent Hub, or the `subagents.agents`
 section of the config), or pass `--force` to remove the machine anyway and be
 told which entries are left pointing at nothing. A disconnected entry does not
 stand in the way; it is named, and connecting it again is refused until a
-machine is registered under that id again. Nothing on the machine changes: the node under its `node_dir` stays,
-and removing it is a matter of deleting that directory there by hand.
+machine is registered under that id again. The node under its `node_dir` stays on the machine,
+and removing it is a matter of deleting that directory there by hand. The
+password kept here for a machine registered with one is deleted with the row.
 
 The Agent Hub's **Remove machine**, in a machine's sheet, does the same after
 a confirmation, and also refuses while agents are running on the machine over

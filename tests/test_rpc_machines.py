@@ -8,7 +8,10 @@ answer is validated against its declared result model.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
+import threading
 
 import pytest
 from pydantic import ValidationError
@@ -40,6 +43,7 @@ BOX = {
     "paths": ["/data/work"],
 }
 HERE = {"id": "here", "display_name": "This computer", "transport": "local"}
+PASSWORD_BOX = {k: v for k, v in BOX.items() if k != "key"} | {"auth": "password"}
 SECRETS = ("203.0.113.7", "alice", "id_box")
 
 
@@ -122,6 +126,7 @@ async def test_list_says_what_a_machine_is_and_how_its_link_is_doing_and_never_t
         "agents": 2,
         "node_version": "0.2.4",
         "node_current": True,
+        "auth": "key",
         "install": {"running": False, "detail": ""},
         "paths": ["/data/work"],
         "problems": [],
@@ -531,6 +536,46 @@ async def test_remove_takes_the_row_and_its_alias_out_closes_the_link_and_leaves
     assert pool.asked == [("close", "box")] and "box" not in rpc._INSTALLS
 
 
+async def test_remove_forgets_the_password_kept_for_a_password_row_and_asks_the_machine_for_nothing(
+    pool, _home, agents, monkeypatch
+):
+    monkeypatch.setenv("RAVEN_HOME", str(_home / "rhome"))
+    kept = connection_add.store_password("box", "hunter2")
+    _store(PASSWORD_BOX)
+
+    out = await rpc.machines_remove({"id": "box"})
+
+    _check("machines.remove", out)
+    assert out["removed"]
+    assert out["detail"].endswith("; the node installed on it stays there; the password kept here for it is deleted")
+    assert not kept.exists() and _rows() == []
+    assert pool.asked == [("close", "box")], "nothing is asked of the machine itself"
+
+
+async def test_remove_of_a_key_row_forgets_nothing_and_says_nothing_about_a_password(pool, _home, agents):
+    _store(BOX)
+
+    out = await rpc.machines_remove({"id": "box"})
+
+    assert out["removed"] and "password" not in out["detail"]
+
+
+async def test_remove_of_a_key_row_deletes_a_password_file_left_under_its_id_and_says_so(
+    pool, _home, agents, monkeypatch
+):
+    """A file kept under the id by a registration refused later, or by a row since re-registered with a key, is
+    nobody's once the row is gone; removal is the one place that reaches it."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("RAVEN_HOME", str(_home / "rhome"))
+    _store(BOX)
+    connection_add.store_password("box", "left-behind-1")
+
+    out = await rpc.machines_remove({"id": "box"})
+
+    assert out["removed"] and out["detail"].endswith("; the password kept here for it is deleted")
+    assert not connection_add.password_path("box").exists()
+
+
 async def test_remove_refuses_while_agent_entries_name_the_machine_and_force_says_what_is_left_pointing_at_nothing(
     pool, agents
 ):
@@ -655,3 +700,240 @@ async def test_remove_reads_a_malformed_agents_section_as_naming_nothing(pool, m
     _store(BOX)
 
     assert (await rpc.machines_remove({"id": "box"}))["removed"] is True
+
+
+# --- machines.add by password: the password stays here, used on every connection ------
+
+BY_PASSWORD = {k: v for k, v in FORM.items() if k != "key"} | {"auth": "password", "password": "hunter2"}
+
+
+@pytest.fixture
+def rhome(_home, monkeypatch):
+    monkeypatch.setenv("RAVEN_HOME", str(_home / "rhome"))
+    return _home / "rhome"
+
+
+async def test_add_by_password_keeps_the_password_here_proves_it_through_the_probe_and_writes_a_row_with_no_key(
+    supported_host, pool, rhome, monkeypatch
+):
+    probed: list[tuple[dict, str]] = []
+
+    def probe(row, **kw):
+        assert kw["password"] == BY_PASSWORD["password"]
+        # The probe runs as every later connection will: with the password already kept here.
+        probed.append((dict(row), connection_add.password_path("box").read_text(encoding="utf-8")))
+        return True, "reached alice@203.0.113.7:2222", {"cores": 8}
+
+    monkeypatch.setattr(connection_add, "probe", probe)
+
+    out = await rpc.machines_add(BY_PASSWORD)
+
+    _check("machines.add", out)
+    assert out["ok"] and out["reason"] == "" and out["row"]["auth"] == "password"
+    ((row, kept),) = probed
+    assert row["auth"] == "password" and "key" not in row and "password" not in row and kept == "hunter2\n"
+    (stored,) = _rows()
+    assert stored["auth"] == "password" and "key" not in stored and "password" not in stored
+    assert connection_add.password_path("box").read_text(encoding="utf-8") == "hunter2\n"
+    assert "hunter2" not in json.dumps(out) and "hunter2" not in json.dumps(_rows())
+    assert not (rhome.parent / ".ssh" / "config").exists(), "no alias: an ssh config has nowhere to carry a password"
+
+
+async def test_add_by_password_refuses_a_password_shorter_than_the_scrubbers_floor_before_the_probe(
+    supported_host, pool, rhome, monkeypatch
+):
+    monkeypatch.setattr(connection_add, "probe", lambda row, **kw: pytest.fail("the probe is not reached"))
+
+    out = await rpc.machines_add({**BY_PASSWORD, "password": "root1"})
+
+    _check("machines.add", out)
+    assert (out["ok"], out["reason"]) == (False, "invalid")
+    assert "shorter than 6 characters cannot be kept" in out["detail"] and "root1" not in out["detail"]
+    assert not (rhome / "keys").exists(), "nothing was kept, not even the directory"
+    assert not connections.store_path().exists(), "and no row was written"
+
+
+async def test_a_write_refused_because_the_id_landed_meanwhile_leaves_the_password_file_to_that_row(
+    supported_host, pool, rhome, monkeypatch
+):
+    """Between the duplicate check and the write another registration of the same id can land, with its own
+    password under the same file name: the file is that row's now, and the refused registration leaves it."""
+    monkeypatch.setattr(connection_add, "probe", lambda row, **kw: (True, "reached", {}))
+
+    def refuse(row, **kwargs):
+        connection_add.store_password(row["id"], "rpc-pw-2222")  # the competitor's, kept under the same id
+        raise ValueError(f"a machine with id {row['id']!r} is already listed in the registry")
+
+    monkeypatch.setattr(connection_add, "write", refuse)
+
+    out = await rpc.machines_add(BY_PASSWORD)
+
+    _check("machines.add", out)
+    assert (out["ok"], out["reason"]) == (False, "duplicate")
+    assert connection_add.password_path("box").read_text(encoding="utf-8") == "rpc-pw-2222\n"
+
+
+async def test_a_refusal_forgets_only_a_file_that_still_holds_this_registration_s_password(
+    supported_host, pool, rhome, monkeypatch
+):
+    """The machine refuses after a registration of the same id replaced the file: the file is left as it is."""
+
+    def probe(row, **kw):
+        connection_add.store_password(row["id"], "rpc-pw-2222")
+        return False, "could not reach alice@203.0.113.7:2222: alice@203.0.113.7: Permission denied (password).", {}
+
+    monkeypatch.setattr(connection_add, "probe", probe)
+
+    out = await rpc.machines_add(BY_PASSWORD)
+
+    assert (out["ok"], out["reason"]) == (False, "login")
+    assert connection_add.password_path("box").read_text(encoding="utf-8") == "rpc-pw-2222\n"
+
+
+async def test_a_refusal_after_the_same_machine_registered_meanwhile_leaves_the_password_it_shares(
+    supported_host, pool, rhome, monkeypatch
+):
+    """The realistic interleaving: the same machine submitted twice with the same password. The second
+    submission's probe is refused (the machine saw one login too many, say) after the first wrote its row; the
+    file now holds the first row's password, byte for byte the same, and the refusal must leave it."""
+    import raven.ops.connections as registry
+
+    listed: list[dict] = []
+    monkeypatch.setattr(registry, "read", lambda: registry.Read(list(listed), registry.OK))
+
+    def probe(row, **kw):
+        listed.append({**row, "auth": "password"})  # the first submission's row lands during this probe
+        return False, "could not reach alice@203.0.113.7:2222: alice@203.0.113.7: Permission denied (password).", {}
+
+    monkeypatch.setattr(connection_add, "probe", probe)
+
+    out = await rpc.machines_add(BY_PASSWORD)
+
+    assert (out["ok"], out["reason"]) == (False, "login")
+    assert connection_add.password_path("box").read_text(encoding="utf-8") == BY_PASSWORD["password"] + "\n"
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+@pytest.mark.parametrize("failed_index", [0, 1])
+async def test_a_failed_registration_keeps_the_same_password_of_another_registration_still_probing(
+    supported_host, pool, rhome, monkeypatch, cancelled, failed_index
+):
+    from raven.ops.transport import ssh_env
+
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+
+    def probe(row, **kw):
+        index = int(row["display_name"])
+        assert connection_add.password_path("box").read_text(encoding="utf-8") == BY_PASSWORD["password"] + "\n"
+        entered[index].set()
+        assert release[index].wait(5), "the registration's probe was not released"
+        return (False, "no answer within 30s", {}) if index == failed_index else (True, "reached", {})
+
+    monkeypatch.setattr(connection_add, "probe", probe)
+    first = asyncio.create_task(rpc.machines_add({**BY_PASSWORD, "name": "0"}))
+    tasks = [first]
+    try:
+        assert await asyncio.to_thread(entered[0].wait, 5)
+        second = asyncio.create_task(rpc.machines_add({**BY_PASSWORD, "name": "1"}))
+        tasks.append(second)
+        assert await asyncio.to_thread(entered[1].wait, 5)
+        if cancelled:
+            tasks[failed_index].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await tasks[failed_index]
+        else:
+            release[failed_index].set()
+            assert (await tasks[failed_index])["reason"] == "timeout"
+        release[1 - failed_index].set()
+        out = await tasks[1 - failed_index]
+    finally:
+        for event in release:
+            event.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert out["ok"]
+    (row,) = _rows()
+    assert connection_add.password_path("box").is_file(), "the successful registration must keep its password"
+    assert ssh_env(row), "the registered machine must still be able to start its next connection"
+
+
+async def test_add_by_password_refuses_a_password_with_a_line_break_before_the_probe(
+    supported_host, pool, rhome, monkeypatch
+):
+    monkeypatch.setattr(connection_add, "probe", lambda row, **kw: pytest.fail("the probe is not reached"))
+
+    out = await rpc.machines_add({**BY_PASSWORD, "password": "abcde\n"})
+
+    _check("machines.add", out)
+    assert (out["ok"], out["reason"]) == (False, "invalid")
+    assert "cannot contain a line break" in out["detail"] and "abcde" not in out["detail"]
+    assert not (rhome / "keys").exists()
+
+
+async def test_a_password_the_machine_refuses_is_forgotten_here_and_named_as_a_login_refusal(
+    supported_host, pool, rhome, monkeypatch
+):
+    monkeypatch.setattr(
+        connection_add,
+        "probe",
+        lambda row, **kw: (
+            False,
+            # ssh's own wording names the login twice; the answer names the machine once.
+            "could not reach alice@203.0.113.7:2222: alice@203.0.113.7: Permission denied (password).\nThe password "
+            "was refused, or this machine does not accept password logins (PasswordAuthentication is off in its sshd).",
+            {},
+        ),
+    )
+
+    out = await rpc.machines_add({**BY_PASSWORD, "password": "wrong-one"})
+
+    _check("machines.add", out)
+    assert (out["ok"], out["reason"]) == (False, "login")
+    assert out["detail"].startswith("could not reach the machine: Permission denied")
+    assert "does not accept password logins" in out["detail"]
+    assert "wrong-one" not in out["detail"] and "203.0.113.7" not in out["detail"] and "alice@" not in out["detail"]
+    assert not connection_add.password_path("box").exists(), "a password the machine refused is not kept"
+    assert not connections.store_path().exists()
+
+
+async def test_add_by_password_without_one_is_refused_before_anything_is_kept_or_reached(
+    supported_host, pool, rhome, monkeypatch
+):
+    monkeypatch.setattr(connection_add, "probe", lambda row, **kw: pytest.fail("reached the machine"))
+
+    out = await rpc.machines_add({**BY_PASSWORD, "password": ""})
+
+    assert (out["ok"], out["reason"]) == (False, "invalid") and "needs the password" in out["detail"]
+    assert not (rhome / "keys").exists() and not connections.store_path().exists()
+
+
+async def test_add_by_key_still_needs_the_key_path(pool, monkeypatch):
+    monkeypatch.setattr(connection_add, "probe", lambda row, **kw: pytest.fail("reached the machine"))
+
+    out = await rpc.machines_add({k: v for k, v in FORM.items() if k != "key"})
+
+    assert (out["ok"], out["reason"]) == (False, "invalid") and "'key' is missing" in out["detail"]
+
+
+async def test_add_by_password_on_windows_is_refused_before_anything_is_kept(pool, _home, monkeypatch):
+    """The Windows review of #1005, kept: the refusal comes first of all, and nothing is left behind."""
+    monkeypatch.setenv("RAVEN_HOME", str(_home / "rhome"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(connection_add, "probe", lambda row, **kw: pytest.fail("reached the machine"))
+
+    out = await rpc.machines_add(BY_PASSWORD)
+
+    _check("machines.add", out)
+    assert (out["ok"], out["reason"]) == (False, "platform")
+    assert out["detail"] == "registering with a password is not supported on Windows; use a key instead"
+    assert not (_home / "rhome" / "keys").exists() and not connections.store_path().exists()
+
+
+async def test_list_rows_say_how_they_log_in(pool, _home):
+    _store(BOX, PASSWORD_BOX | {"id": "pw"}, HERE)
+
+    rows = {r["id"]: r for r in (await rpc.machines_list({}))["rows"]}
+
+    assert rows["box"]["auth"] == "key" and rows["pw"]["auth"] == "password" and "auth" not in rows["here"]
+    _check("machines.list", {"rows": list(rows.values())})

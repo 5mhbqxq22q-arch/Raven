@@ -1035,6 +1035,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.nav.hub': 'Connectors',
     'gui.hub.agents': 'Agents',
     'gui.hub.channels': 'Channels',
+    'gui.hub.machines': 'Machines',
     'gui.nav.conn': 'Channels',
     'gui.nav.cron': 'Schedules',
     'gui.nav.more': 'More',
@@ -1095,6 +1096,8 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.page.conn': 'Channels',
     'gui.page.conn_sub':
       'Raven joins the chat apps you already use, so you can hand it work and get results back from WeChat, Feishu, Telegram and more.',
+    'gui.page.machines_sub':
+      'The machines Raven can hand work to besides this computer: register one, put the node on it, then pick it when an agent is connected.',
     'gui.page.cron': 'Schedules',
     'gui.page.set': 'Settings',
     'gui.perm.ask': 'Approve each step',
@@ -1513,7 +1516,6 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.agent.migrate_body':
       'The preset for {name} now reaches it over {to}. The entry is removed and added back from that preset, so handles from runs already in flight stop resolving.',
     'gui.agent.on_machine': 'On the registered machine {id}',
-    'gui.machine.g_machines': 'Machines',
     'gui.machine.register': 'Register a machine',
     'gui.machine.none': 'No machine is registered yet. Register one, then install the node on it.',
     'gui.machine.state_connected': '{n} agents running',
@@ -1543,11 +1545,20 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.f_host': 'Address',
     'gui.machine.f_port': 'Port',
     'gui.machine.f_user': 'User',
+    'gui.machine.f_auth': 'Login',
+    'gui.machine.auth_key': 'Key',
+    'gui.machine.auth_password': 'Password',
+    'gui.machine.auth_stored': 'Password (kept on this computer)',
     'gui.machine.f_key': 'Private key path',
     'gui.machine.key_note': 'Only the path is stored. The key never leaves this computer.',
+    'gui.machine.f_password': 'Password',
+    'gui.machine.password_note':
+      "The password is kept on this computer, readable by your account alone, and handed to ssh on every connection: never on a command line, never in a log. The first connection records the machine's host key and then sends the password, so on a network you do not trust, ssh once from a terminal and check the fingerprint before registering. When the machine's password changes, remove the machine and register it again.",
+    'gui.machine.auth_note':
+      "No ssh alias is written for it; an agent reads and writes its files through Raven's own file tools. When its password changes, remove the machine and register it again.",
     'gui.machine.f_paths': 'Work directories on the machine, one per line (optional)',
     'gui.machine.add_hint':
-      'The machine has to accept this key over ssh. Its host key is recorded at the first contact and checked after.',
+      "An ssh login, with a key or with a password. The machine's host key is recorded at the first contact and checked after.",
     'gui.machine.add_do': 'Reach it once and register',
     'gui.machine.adding': 'Reaching the machine',
     'gui.machine.add_bad': 'Not registered',
@@ -1567,6 +1578,8 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.remove_do': 'Remove machine',
     'gui.machine.remove_body':
       '{name} ({id}) is taken out of the registry and its ssh alias goes with it. Agent entries that run there have to be disconnected first. The node installed on the machine stays there.',
+    'gui.machine.remove_body_password':
+      '{name} ({id}) is taken out of the registry and the password kept here for it is deleted. Agent entries that run there have to be disconnected first. The node installed on the machine stays there.',
     'gui.machine.removing': 'Removing',
     'gui.machine.removed': '{name} was removed',
     'gui.machine.load_bad': 'The machine list could not be read',
@@ -1574,11 +1587,13 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.why_unreachable':
       'The machine could not be reached: check the address and port, and that the machine is on and reachable from this computer.',
     'gui.machine.why_login':
-      "The machine refused the login: check the user name and the private key path, and that the key's public half is on the machine.",
+      "The machine refused the login. With a key: check the user name and the private key path, and that the key's public half is on the machine. With a password: check it, and that the machine accepts password logins at all.",
     'gui.machine.why_hostkey':
       "The machine's host key differs from the one on record: check the machine before trusting it again, then take the old line out of ~/.ssh/known_hosts.",
     'gui.machine.why_timeout': 'The machine did not answer in time: check that it is on and that the port is open.',
     'gui.machine.why_nossh': 'ssh is not installed on this computer: install OpenSSH, then try again.',
+    'gui.machine.why_platform':
+      "This computer is Windows, where registering with a password is not available: pick Key, put the key's public half on the machine, and give the private key's path here.",
     'gui.machine.why_duplicate': 'That id is taken: pick another, or remove the machine listed under it first.',
     'gui.machine.why_invalid': 'A field is missing or cannot be used: see the line below.',
     'gui.machine.why_registry': 'The registry file cannot be changed: fix it first, as the line below says.',
@@ -4370,6 +4385,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.nav.hub': '连接',
     'gui.hub.agents': '智能体',
     'gui.hub.channels': '渠道',
+    'gui.hub.machines': '机器',
     'gui.nav.conn': '入口',
     'gui.nav.cron': '定时',
     'gui.nav.more': '更多',
@@ -4427,6 +4443,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.page.agents_sub': 'Raven 可以统一调度已连接的智能体，委派任务、协调执行、整合结果',
     'gui.page.conn': '入口',
     'gui.page.conn_sub': 'Raven 可以接入你常用的聊天应用，在微信、飞书、Telegram 里也能直接给它派活、收结果',
+    'gui.page.machines_sub': 'Raven 除本机之外还能把活派到这些机器上：先登记一台、装上节点，接入智能体时就能选它',
     'gui.page.cron': '定时',
     'gui.page.set': '设置',
     'gui.perm.ask': '逐项审批',
@@ -4841,7 +4858,6 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.agent.migrate_do': '换到新方式',
     'gui.agent.migrate_body': '{name} 的预设改成走 {to} 了 · 会先移除再按新预设装回来，已经在跑的会话句柄会失效',
     'gui.agent.on_machine': '在登记机器 {id} 上',
-    'gui.machine.g_machines': '机器',
     'gui.machine.register': '登记机器',
     'gui.machine.none': '还没有登记机器。先登记一台，再在它上面安装节点。',
     'gui.machine.state_connected': '{n} 个 Agent 在跑',
@@ -4871,10 +4887,19 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.f_host': '地址',
     'gui.machine.f_port': '端口',
     'gui.machine.f_user': '用户名',
+    'gui.machine.f_auth': '登录方式',
+    'gui.machine.auth_key': '密钥',
+    'gui.machine.auth_password': '密码',
+    'gui.machine.auth_stored': '密码（保存在本机）',
     'gui.machine.f_key': '私钥路径',
     'gui.machine.key_note': '只记录路径，私钥不离开这台电脑。',
+    'gui.machine.f_password': '密码',
+    'gui.machine.password_note':
+      '密码保存在这台电脑上，只有你的账号能读；每次连接时读出来交给 ssh，不进命令行、不进日志。第一次连接会先记下机器的主机密钥再送出密码，所以在不信任的网络上，先在终端里 ssh 一次核对指纹，再登记。机器改了密码，先移除这台机器再重新登记。',
+    'gui.machine.auth_note':
+      '没有写 ssh 别名；Agent 读写它上面的文件走 Raven 的文件工具。机器改了密码，先移除这台机器再重新登记。',
     'gui.machine.f_paths': '机器上的工作目录，每行一个（可不填）',
-    'gui.machine.add_hint': '机器要能用这把密钥 ssh 登录。第一次连接时记下它的主机密钥，之后每次核对。',
+    'gui.machine.add_hint': '用密钥或密码 ssh 登录。第一次连接时记下它的主机密钥，之后每次核对。',
     'gui.machine.add_do': '连一次并登记',
     'gui.machine.adding': '正在连接机器',
     'gui.machine.add_bad': '没有登记',
@@ -4893,16 +4918,21 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.remove_do': '移除机器',
     'gui.machine.remove_body':
       '{name}（{id}）会从登记表里去掉，ssh 别名一起去掉；在它上面跑的 Agent 条目要先断开。装在机器上的节点会留在那里。',
+    'gui.machine.remove_body_password':
+      '{name}（{id}）会从登记表里去掉，为它保存的密码一起删掉；在它上面跑的 Agent 条目要先断开。装在机器上的节点会留在那里。',
     'gui.machine.removing': '正在移除',
     'gui.machine.removed': '已移除 {name}',
     'gui.machine.load_bad': '机器列表读不出来',
     'gui.machine.file_problems': '登记表文件',
     'gui.machine.why_unreachable': '连不上这台机器：检查地址和端口，确认机器开着、从这台电脑能连到它。',
-    'gui.machine.why_login': '机器拒绝了登录：检查用户名和私钥路径，确认对应的公钥已经放到机器上。',
+    'gui.machine.why_login':
+      '机器拒绝了登录。用密钥时：检查用户名和私钥路径，确认对应的公钥已经放到机器上。用密码时：检查密码，并确认这台机器允许密码登录。',
     'gui.machine.why_hostkey':
       '机器的主机密钥和记录的不一样：先确认机器没问题，再把 ~/.ssh/known_hosts 里的旧记录删掉。',
     'gui.machine.why_timeout': '机器没有按时应答：确认机器开着、端口放行。',
     'gui.machine.why_nossh': '这台电脑没有 ssh：装好 OpenSSH 再试。',
+    'gui.machine.why_platform':
+      '这台电脑是 Windows，不能用密码登记：改选「密钥」，把公钥放到机器上，再在这里填私钥路径。',
     'gui.machine.why_duplicate': '这个 id 已经有机器在用：换一个，或者先移除原来那台。',
     'gui.machine.why_invalid': '有字段缺失或不能用：见下一行。',
     'gui.machine.why_registry': '登记表文件改不了：先按下一行的提示处理。',

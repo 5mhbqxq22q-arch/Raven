@@ -180,6 +180,10 @@ export interface MachineRow {
      which a dispatch there needs. '' when none is known. */
   node_version: string
   node_current: boolean
+  /* How this computer logs in to an ssh row: with the key whose path the
+     registry carries, or with the password kept here for it. '' for a local
+     row. The path and the password themselves never reach the page. */
+  auth: 'key' | 'password' | ''
   /* The last node install asked for from this page: in flight, or how it ended. */
   install: { running: boolean; ok: boolean | null; detail: string }
   paths: string[]
@@ -196,7 +200,7 @@ export interface MachineProblem {
 
 /* Why a machine was not registered, as a kind the page explains in the
    reader's language; '' when it was. */
-export type RegisterReason = '' | 'unreachable' | 'login' | 'hostkey' | 'timeout' | 'nossh' | 'duplicate' | 'invalid' | 'registry'
+export type RegisterReason = '' | 'unreachable' | 'login' | 'hostkey' | 'timeout' | 'nossh' | 'platform' | 'duplicate' | 'invalid' | 'registry'
 
 export interface RegisterForm {
   id: string
@@ -204,7 +208,12 @@ export interface RegisterForm {
   host: string
   port: number
   user: string
+  /* How Raven logs in, now and on every connection after: with the private
+     key at `key`, or with `password`, which the server keeps on this computer
+     for the owner alone. Both travel once, in `add`, and are not read back. */
+  auth: 'key' | 'password'
   key: string
+  password: string
   paths: string[]
 }
 
