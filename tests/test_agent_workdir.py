@@ -376,6 +376,16 @@ def test_instance_state_is_judged_through_symlinks(tmp_path: Path, monkeypatch: 
         validate_override(link, alias / "workspace")
 
 
+def test_the_default_home_stays_protected_when_raven_home_moves(instance: Path) -> None:
+    """The browser profile and the routing caches are written under `~/.raven`
+    whatever `RAVEN_HOME` says, so moving the home does not unprotect them."""
+    profile = Path.home() / ".raven" / "browser-profile"
+    profile.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(ValueError, match="Raven's"):
+        validate_override(profile, instance / "workspace")
+
+
 def test_instance_state_is_judged_by_the_filesystem_not_the_spelling(
     instance: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
