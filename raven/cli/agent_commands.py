@@ -339,7 +339,9 @@ def register(app: typer.Typer) -> None:
         # names reach their own endpoints.
         router, provider = build_model_routing(config, provider)
         try:
-            session_manager, workdir_resolver = build_local_sessions(config, workspace=workspace)
+            session_manager, workdir_resolver = build_local_sessions(
+                config, workspace=workspace, shadow_dir=ec_config.runtime.checkpoint.shadow_dir
+            )
         except ValueError as e:
             raise typer.BadParameter(str(e)) from e
 

@@ -61,7 +61,9 @@ def serve(
     ec_config = load_raven_config()
     provider = make_provider(cfg)
     router, provider = build_model_routing(cfg, provider)
-    session_manager, workdir_resolver = build_local_sessions(cfg, workspace=None)
+    session_manager, workdir_resolver = build_local_sessions(
+        cfg, workspace=None, shadow_dir=ec_config.runtime.checkpoint.shadow_dir
+    )
     runtime = build_runtime(
         cfg,
         ec_config,

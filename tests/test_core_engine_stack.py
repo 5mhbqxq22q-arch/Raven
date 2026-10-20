@@ -239,3 +239,21 @@ def test_a_fallback_over_an_earlier_checkpoint_history_says_so(
     assert len(messages) == 2
     assert str(shadow) in messages[1]
     assert (shadow / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/master\n"
+
+
+def test_the_fallback_names_an_earlier_history_at_the_configured_shadow_dir(
+    local_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch = local_config.workspace_path.parent / "oauth"
+    shadow = launch / "custom-shadow.git"
+    shadow.mkdir(parents=True)
+    (shadow / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+    monkeypatch.chdir(launch)
+    warning = Mock()
+    monkeypatch.setattr(logger, "warning", warning)
+
+    build_local_sessions(local_config, workspace=None, shadow_dir="custom-shadow.git")
+
+    messages = [call.args[0].format(*call.args[1:]) for call in warning.call_args_list]
+    assert len(messages) == 2
+    assert str(shadow) in messages[1]

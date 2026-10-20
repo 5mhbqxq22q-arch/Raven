@@ -57,7 +57,9 @@ def build_engine(
     # knn wrapper only reads the lazy provider's plain fields, so deferring
     # the litellm build survives it.
     router, provider = build_model_routing(config, provider)
-    session_manager, workdir_resolver = build_local_sessions(config, workspace=workspace)
+    session_manager, workdir_resolver = build_local_sessions(
+        config, workspace=workspace, shadow_dir=ec_config.runtime.checkpoint.shadow_dir
+    )
 
     cron = build_cron_service(allowed_channels={channel})
 
@@ -91,7 +93,9 @@ def build_engine(
     return runtime
 
 
-def build_local_sessions(config, *, workspace: str | None) -> "tuple[SessionManager, WorkdirResolver]":
+def build_local_sessions(
+    config, *, workspace: str | None, shadow_dir: str | None = None
+) -> "tuple[SessionManager, WorkdirResolver]":
     """The session manager and workdir resolver of a surface launched from a directory.
 
     Sessions group by launch directory here, the way Claude Code groups by
@@ -141,7 +145,7 @@ def build_local_sessions(config, *, workspace: str | None) -> "tuple[SessionMana
                 # it holds, and whether a key needs rotating, is the user's call.
                 from raven.config.raven import CheckpointConfig
 
-                earlier = launch_dir / CheckpointConfig().shadow_dir
+                earlier = launch_dir / (shadow_dir or CheckpointConfig().shadow_dir)
                 if (earlier / "HEAD").is_file():
                     logger.warning(
                         "An earlier checkpoint history at {} may hold Raven's own state; it is left as it is",
