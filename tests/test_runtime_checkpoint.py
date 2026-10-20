@@ -1556,6 +1556,28 @@ async def test_a_shadow_repository_that_already_tracked_itself_stops(workspace):
     assert ".raven/shadow.git/HEAD" in earlier.splitlines()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX names are bytes; Windows names are always Unicode")
+async def test_a_state_path_whose_name_is_not_utf8_does_not_stop_the_checkpoint(tmp_path):
+    """A data directory whose name holds a byte that is not UTF-8 reaches
+    Python surrogate-escaped. Writing it into the excludes must not raise and
+    take every later checkpoint in that tree with it."""
+    from raven.home import set_config_path
+
+    root = Path(os.fsdecode(os.fsencode(str(tmp_path)) + b"/proj\xff"))
+    (root / "credentials").mkdir(parents=True)
+    (root / "credentials" / "srv.json").write_text('{"token": "fake-bytes"}', encoding="utf-8")
+    (root / "main.py").write_text("print(1)\n", encoding="utf-8")
+    set_config_path(root / "config.json")
+
+    svc = CheckpointService(tmp_path)
+    cid, changed = await svc.commit_turn("turn")
+    _, stored_names, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+
+    assert cid is not None
+    assert changed and all("credentials" not in path for path in stored_names.splitlines())
+    assert "fake-bytes" not in await _object_store(svc)
+
+
 async def test_a_custom_shadow_dir_does_not_snapshot_itself(workspace):
     """The shadow repository is excluded by where it is, not by sitting under
     `.raven/`: a `shadow_dir` elsewhere in the tree would otherwise commit its

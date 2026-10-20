@@ -481,7 +481,9 @@ class CheckpointService:
             # files (.env, secrets.yml) out of any snapshot.
             exclude = self._git_dir / "info" / "exclude"
             exclude.parent.mkdir(parents=True, exist_ok=True)
-            exclude.write_text(_DEFAULT_EXCLUDES + self._state_excludes, encoding="utf-8")
+            # A state path's name can hold bytes that are not UTF-8 (a POSIX name
+            # read surrogate-escaped); written back as those bytes, not refused.
+            exclude.write_text(_DEFAULT_EXCLUDES + self._state_excludes, encoding="utf-8", errors="surrogateescape")
             # gc.auto: git's own threshold for "objects/refs are getting
             # crufty, fire a real GC". Setting it once at init lets every
             # subsequent ``git gc --auto`` consult the same threshold without
