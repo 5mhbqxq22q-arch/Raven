@@ -32,12 +32,16 @@ the project checkout.
 Local commands (`raven tui`, `raven serve`, `raven agent`, and `raven a2a serve`)
 normally work in the directory they were launched from. A launch inside Agent
 home's memory, skills, or transcripts, at Agent home itself, inside Raven's own
-state in `<instance>` (such as `oauth/`, `credentials/`, or `cron/`), or at an
-ancestor other than your user home or a higher root produces a warning and uses
+state in `<instance>` (such as `oauth/`, `credentials/`, or `cron/`), inside the
+state Raven keeps beside a config file passed with `--config`, or at an ancestor
+other than your user home or a higher root produces a warning and uses
 `<instance>/tmp/<channel>` instead. A valid `--workspace` override takes
-precedence; a protected explicit override is rejected. Checkpoints and the file
-list of a shell command leave that state out wherever it sits, whatever the
-instance directory is called. When your user home or a higher root is a strict ancestor
+precedence; a protected explicit override is rejected. From then on, checkpoints
+and the file list of a shell command leave Raven's own state out wherever it
+sits, whatever the instance directory is called. History a checkpoint took
+before this is not rewritten: if Raven warns about an earlier checkpoint history
+in the directory you launched from, review or delete it yourself, and rotate any
+key it may hold. When your user home or a higher root is a strict ancestor
 of Agent home, launching there keeps that directory, with checkpointing disabled
 for that scope.
 

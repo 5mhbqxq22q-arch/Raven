@@ -2004,11 +2004,13 @@ class WiringMixin:
         return self.peek_session_workdir(session_key or "")
 
     def peek_session_workdir(self, session_key: str) -> Path:
-        """Where this session would work, with no side effect and no refusal.
+        """Where this session would work, with no side effect.
 
         The read-only form, for a caller that only reports the path. Without a
         resolver the loop keeps its pre-split behaviour: every session shares
-        ``self.workspace``.
+        ``self.workspace``. A stored override the working-directory boundary
+        refuses (one saved before that directory became protected) raises
+        ``ValueError`` here as it does for a turn; a reporting caller catches it.
         """
         if self._workdir_resolver is None:
             return self.workspace
