@@ -212,7 +212,8 @@ def validate_override(value: str | Path, agent_home: Path) -> Path:
         raise ValueError(f"working directory must be an absolute path, got {value!r}")
     resolved = path.resolve()
     home = Path(agent_home).expanduser().resolve()
-    # An ancestor is worse still. `~/.raven` is not merely agent home's parent,
+    # An ancestor of agent home is worse than agent home itself (refused in
+    # `_inside_state`). `~/.raven` is not merely agent home's parent,
     # it is the instance data directory -- config.json (provider keys), oauth/
     # (provider tokens), cron/, sentinel/, logs/. The per-turn checkpoint runs
     # `add -A` over the working directory, and the `.raven/` default exclude
