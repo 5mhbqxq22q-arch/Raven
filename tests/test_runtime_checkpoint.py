@@ -25,7 +25,7 @@ import pytest
 from raven.agent import workdir
 from raven.agent.loop import AgentLoop
 from raven.agent.loop.bundles import EngineWiring, ToolWiring, TurnPolicy
-from raven.agent.loop.checkpoint import CheckpointService
+from raven.agent.loop.checkpoint import _GIT_IDENT, CheckpointService
 from raven.config.raven import CheckpointConfig, RuntimeConfig
 from raven.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
@@ -1400,6 +1400,80 @@ async def test_a_moved_config_keeps_its_state_out_of_the_command_listing(tmp_pat
 
     assert {Path(row.path).resolve() for row in writes} == {(root / "notes.md").resolve()}
     assert removals == ()
+
+
+_SHADOW_FILES = ("HEAD", "config", "hooks/", "info/exclude", "index", "description")
+
+
+@pytest.mark.parametrize(
+    ("project", "shadow_dir"),
+    [
+        ("project", ".raven/shadow.git"),
+        ("my proj [x]*", ".raven/shadow.git"),
+        ("project", "shadow store/repo.git"),
+    ],
+)
+async def test_a_gitignore_negating_raven_does_not_snapshot_the_shadow_repository(tmp_path, project, shadow_dir):
+    """`.raven/` is excluded by name, and a work-tree `.gitignore` outranks
+    that rule: with `!.raven/` the first turn used to commit the shadow
+    repository's own HEAD, config, hooks, excludes and live index lock, plus
+    the notice beside it, and every later turn grew it again. The repository
+    is left out by where it is, whatever the project's ignore rules say,
+    while the rest of what they re-include is still stored."""
+    root = tmp_path / project
+    root.mkdir()
+    (root / ".gitignore").write_text("!.raven/\n!.raven/**\n*.tmp\n!keep.tmp\n", encoding="utf-8")
+    (root / ".raven").mkdir()
+    (root / ".raven" / "plugins.json").write_text('{"project": "plugin list"}', encoding="utf-8")
+    (root / "keep.tmp").write_text("kept by the project's own negation\n", encoding="utf-8")
+    (root / "main.py").write_text("print(1)\n", encoding="utf-8")
+    shadow = root / shadow_dir
+    svc = CheckpointService(root, shadow_dir=shadow_dir)
+
+    sizes = []
+    for turn in range(3):
+        (root / "main.py").write_text(f"print({turn})\n", encoding="utf-8")
+        cid, changed = await svc.commit_turn(f"turn {turn}")
+        assert cid is not None
+        assert changed == (["main.py"] if turn else [".gitignore", ".raven/plugins.json", "keep.tmp", "main.py"])
+        _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+        sizes.append(len(tracked.splitlines()))
+    await svc.stage_tree()
+    stored = await _object_store(svc)
+
+    shadow_rel = shadow.relative_to(root).as_posix()
+    assert sorted(tracked.splitlines()) == [".gitignore", ".raven/plugins.json", "keep.tmp", "main.py"]
+    assert sizes == [4, 4, 4]
+    assert not [path for path in tracked.splitlines() if path.startswith(shadow_rel)]
+    if shadow.parent != root:
+        assert f"{shadow.parent.relative_to(root).as_posix()}/NOTICE.txt" not in tracked.splitlines()
+    assert "Safe to delete; will be recreated" not in stored
+    assert "refs/heads/" not in stored
+    for name in _SHADOW_FILES:
+        assert (shadow / name.rstrip("/")).exists()
+
+
+async def test_a_shadow_repository_that_already_tracked_itself_stops(workspace):
+    """A repository made before this rule, under a `.gitignore` that negated
+    `.raven/`, already holds its own files. Its next turn drops them from the
+    tree without rewriting the commits that hold them."""
+    (workspace / ".gitignore").write_text("!.raven/\n!.raven/**\n", encoding="utf-8")
+    (workspace / "main.py").write_text("print(1)\n", encoding="utf-8")
+    svc = CheckpointService(workspace)
+    assert (await svc.commit_turn("one"))[0] is not None
+    # What the earlier version left behind, recreated by hand.
+    await svc._git("add", "-f", "--", ".raven/shadow.git/HEAD", ".raven/NOTICE.txt")
+    await svc._git(*_GIT_IDENT, "commit", "-q", "-m", "old")
+    (workspace / "main.py").write_text("print(2)\n", encoding="utf-8")
+
+    cid, changed = await svc.commit_turn("two")
+    _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+    _, earlier, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD~1")
+
+    assert cid is not None
+    assert changed == ["main.py"]
+    assert sorted(tracked.splitlines()) == [".gitignore", "main.py"]
+    assert ".raven/shadow.git/HEAD" in earlier.splitlines()
 
 
 async def test_a_custom_shadow_dir_does_not_snapshot_itself(workspace):

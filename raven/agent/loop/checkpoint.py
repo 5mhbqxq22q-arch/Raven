@@ -288,11 +288,14 @@ class CheckpointService:
         self._git_dir = candidate
         self._shadow_rel = shadow_dir
         within = list(workdir.state_within(self._workspace, agent_home))
-        # The shadow repository is left out by where it is as well: the default
-        # sits under `.raven/`, which the excludes above cover, but a
-        # `shadow_dir` elsewhere would commit its own objects every turn.
-        if not candidate.is_relative_to(self._workspace / ".raven"):
-            within.append(candidate)
+        # The shadow repository, and the notice written beside it, are left out
+        # by where they are as well -- the default under `.raven/` included: a
+        # work-tree `.gitignore` saying `!.raven/` outranks the name rule above,
+        # and the repository would then commit itself, growing every turn. The
+        # notice only when it sits in a directory of its own, not the root.
+        within.append(candidate)
+        if candidate.parent != self._workspace:
+            within.append(candidate.parent / "NOTICE.txt")
         state = [rel for rel in (path.relative_to(self._workspace).as_posix() for path in within) if "\n" not in rel]
         self._state_excludes = "".join(f"/{_ignore_literal(rel)}\n" for rel in state)
         # The excludes are not the guard: a work-tree `.gitignore` outranks
