@@ -1274,6 +1274,33 @@ async def test_checkpoint_leaves_raven_state_inside_its_root_out(tmp_path, monke
     assert shown == {str(project / "main.py")}
 
 
+async def test_a_work_tree_gitignore_cannot_put_raven_state_back(tmp_path, monkeypatch):
+    """A `.gitignore` in the tree outranks the shadow repo's own excludes, so a
+    negation there must not be what decides whether a config file is stored
+    or shown."""
+    from raven.home import set_config_path
+
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / "raven.json"
+    config.write_text('{"apiKey": "fake-negated-key"}', encoding="utf-8")
+    (project / ".gitignore").write_text("!raven.json\n!/raven.json\n", encoding="utf-8")
+    (project / "main.py").write_text("print(1)\n", encoding="utf-8")
+    set_config_path(config)
+
+    svc = CheckpointService(project)
+    cid, _ = await svc.commit_turn("turn")
+    _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+    tree = await svc.stage_tree()
+    _, staged, _ = await svc._git("ls-tree", "-r", "--name-only", tree or "HEAD")
+    shown = await svc.trackable([str(config), str(project / "main.py")])
+
+    assert cid is not None
+    assert sorted(tracked.splitlines()) == [".gitignore", "main.py"]
+    assert sorted(staged.splitlines()) == [".gitignore", "main.py"]
+    assert shown == {str(project / "main.py")}
+
+
 async def test_state_tracked_before_the_rule_takes_no_new_content(tmp_path, monkeypatch):
     """A shadow repo made before the rule may already track a state file. The
     rule cannot take it out of that history, but no later turn adds to it."""

@@ -20,7 +20,12 @@ want stored):
 2. The work-tree's own ``.gitignore`` files are honored automatically by git
    (standard ``add -A`` semantics) — so anything the user marked private in
    their own repo stays out of the shadow as well.
-3. ``gc.auto`` is configured so a periodic ``git gc --auto`` keeps long-lived
+3. Raven's own state (its home, agent home, the config file in use) is judged
+   by absolute path, not by name: a root inside it is refused, and state
+   inside a root is excluded and untracked (``workdir.state_refusal`` /
+   ``workdir.state_within``). The name-based excludes above cannot see a home
+   that is not called ``.raven``.
+4. ``gc.auto`` is configured so a periodic ``git gc --auto`` keeps long-lived
    sessions from accumulating loose objects forever.
 
 Every git invocation is best-effort: failures are logged and degrade to a
@@ -268,9 +273,10 @@ class CheckpointService:
         within = workdir.state_within(self._workspace, agent_home)
         state = [rel for rel in (path.relative_to(self._workspace).as_posix() for path in within) if "\n" not in rel]
         self._state_excludes = "".join(f"/{_ignore_literal(rel)}\n" for rel in state)
-        # A repo made before a path was excluded may already track it, and
-        # `add -A` keeps updating a tracked file whatever the excludes say, so
-        # it is dropped from the index first. Its earlier commits stay as they are.
+        # The excludes are not the guard: a work-tree `.gitignore` outranks
+        # info/exclude and can re-include a path, and a repo made before the
+        # rule may already track it. So every `add -A` is followed by dropping
+        # these paths from the index; their earlier commits stay as they are.
         self._untrack: tuple[str, ...] = (
             ("rm", "-r", "--cached", "--ignore-unmatch", "-q", "--", *(f":(literal){rel}" for rel in state))
             if state
@@ -464,12 +470,15 @@ class CheckpointService:
         if not await self._ensure_init():
             return None, []
         try:
-            if self._untrack:
-                await self._git(*self._untrack)
             rc, _, err = await self._git("add", "-A")
             if rc != 0:
                 logger.debug("checkpoint add failed: {}", err.strip())
                 return None, []
+            if self._untrack:
+                rc, _, err = await self._git(*self._untrack)
+                if rc != 0:
+                    logger.debug("checkpoint untrack failed: {}", err.strip())
+                    return None, []
             # Files staged this turn = this turn's changes. Capture before commit.
             rc, out, _ = await self._git("diff", "--cached", "--name-only")
             changed = [ln for ln in out.splitlines() if ln.strip() and not self._is_state(ln)]
@@ -608,9 +617,9 @@ class CheckpointService:
         """
         try:
             with _STAGE_LOCKS.setdefault(index, threading.Lock()):
-                if self._untrack and self._stage_step(self._untrack, index) is None:
-                    return
                 if self._stage_step(("add", "-A"), index, timeout=_STAGE_ADD_TIMEOUT_SECONDS) is None:
+                    return
+                if self._untrack and self._stage_step(self._untrack, index) is None:
                     return
                 tree = self._stage_step(("write-tree",), index)
             _settle(result, tree or None)
@@ -741,7 +750,13 @@ class CheckpointService:
         if rc not in (0, 1):
             return set()
         ignored = set(out.decode(errors="surrogateescape").split("\0")) - {""}
-        return {path for path, rels in spellings.items() if ignored.isdisjoint(rels)}
+        # Raven's own state is withheld whatever the ignore rules say: a work-tree
+        # `.gitignore` can re-include a path info/exclude names.
+        return {
+            path
+            for path, rels in spellings.items()
+            if ignored.isdisjoint(rels) and not any(self._is_state(rel) for rel in rels)
+        }
 
     def _stage_path(self) -> Path:
         """This process's staging index.
