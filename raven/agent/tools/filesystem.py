@@ -133,16 +133,18 @@ def _is_a_device_spelling(path: str) -> bool:
 
     ``looks_remote`` reads the colon in ``NUL:`` as a machine prefix, so on a
     Windows host this lets the reserved-name fence answer before the remote
-    path does. Only a device name counts: a remote path's own ``host:path``
-    (``box:raven-work/a.txt``) is a file on a machine, and its first component
-    is a host, not a device. A machine whose id is itself a device spelling
-    (``nul:notes.md``) is refused along with the device names -- no file on it
-    is reachable through that id, and the owner can rename the machine. On a
-    POSIX host this is ``False`` and the remote answer runs as it always did.
+    path does. Only the head of a remote spelling -- the machine's id or
+    ``user@address``, before the separator -- can be the device instead of a
+    machine: everything after the separator is a path on that machine, where
+    ``nul`` and ``aux`` are ordinary file names and must reach it. On a POSIX
+    host this is ``False`` and the remote answer runs as it always did.
     """
     if not _WINDOWS or _url_argument(path):
         return False
-    return any(_windows_device_stem(part) in _WINDOWS_DEVICE_NAMES for part in _supplied_components(Path(path)))
+    if not remote_path.looks_remote(path):
+        return any(_windows_device_stem(part) in _WINDOWS_DEVICE_NAMES for part in _supplied_components(Path(path)))
+    raw = path.strip()
+    return _windows_device_stem(raw.partition(":")[0]) in _WINDOWS_DEVICE_NAMES
 
 
 def _unified(before: str, after: str, name: str) -> str | None:
