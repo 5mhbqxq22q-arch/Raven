@@ -16,6 +16,7 @@ import pytest
 
 from raven.agent.subagent import activity as run_activity
 from raven.agent.subagent import instances as instances_mod
+from raven.config.agent_names import GENERIC_AGENT
 from raven.rpc.errors import ConfigValidationError
 from raven.rpc.methods.instances import (
     instances_create,
@@ -485,6 +486,30 @@ async def _history(session_dir: Path, agent: str, handle: str) -> list[dict[str,
         agent_loop_factory=_factory(_FakeLoop(manager)),
     )
     return out["turns"]
+
+
+@pytest.mark.parametrize("former", ["Raven", "raven"])
+@pytest.mark.parametrize("lane", ["spawn", "dag", "unfinished_dag"])
+async def test_legacy_record_history_is_visible_under_the_current_name(tmp_path, former, lane):
+    from raven.agent.subagent.instance_log import transcript_path
+
+    session_dir = tmp_path / "session"
+    if lane == "spawn":
+        _spawn(session_dir, agent=former, handle="h1", task="question", output="answer", at_ms=1)
+    else:
+        writer = _dag_run if lane == "dag" else _dead_dag_run
+        writer(
+            session_dir,
+            "run1",
+            {"n1": {"agent": former, "instance": "h1", "prompt": "question", "out": "answer", "at_ms": 1}},
+        )
+    _as_a_pre_log_conversation(session_dir)
+    assert not transcript_path(session_dir, GENERIC_AGENT, "h1").exists()
+
+    for name in (GENERIC_AGENT, "Raven", "raven"):
+        assert [turn["content"] for turn in await _history(session_dir, name, "h1")] == ["question", "answer"]
+    assert await _history(session_dir, "Other", "h1") == []
+    assert await _history(session_dir, GENERIC_AGENT, "other") == []
 
 
 async def test_history_includes_the_spawn_that_created_the_instance(tmp_path: Path) -> None:
@@ -1180,7 +1205,7 @@ async def test_instance_create_returns_the_row_the_strip_will_draw(tmp_path: Pat
     out = await instances_create({"session_key": "s1", "agent": "raven"}, agent_loop_factory=_factory(loop))
 
     row = out["instance"]
-    assert row["agent"] == "raven"
+    assert row["agent"] == GENERIC_AGENT
     assert row["status"] == "idle"
     assert row["sessionKey"] == "s1"
     assert row["handle"].startswith("raven-")
@@ -1261,7 +1286,7 @@ async def test_a_creation_is_announced_to_the_main_agent(tmp_path: Path) -> None
     assert out["pending_handoff_count"] == 1
 
     block = loop._direct_handoff.take("s1")
-    assert f"raven / {created['instance']['handle']}" in block
+    assert f"{GENERIC_AGENT} / {created['instance']['handle']}" in block
     assert "created by the user at" in block
 
 

@@ -7,6 +7,21 @@ tasks and stateful agent instances; they are different things.
 Set up agents first with [Agent Integrations](agent-integrations.md). This page
 covers using them, not installing their transports.
 
+## What the host does and what it hands over
+
+Raven itself works as your agent manager. It sorts a request into tasks, hands
+each to the sub-agent that fits it, keeps track of every task until you accept
+the result, and gathers what the agents report into one answer. A later message
+about a task's work -- a correction, more work, or a question about why it was
+done that way -- goes back to the instance that did the work, which still has
+its context. Raven answers conversation, what it already knows and where your
+tasks stand itself; anything to produce, however small, goes to the agent that
+fits it, and to the built-in `Raven-General` agent only when none does. In a
+conversation running on a Harness with workers, such as a Persona, Raven hands work
+only to those workers; work none of them covers, it tells you about and asks how to
+go on instead of doing it itself. On a turn where both dispatch tools are disabled,
+Raven does the work itself.
+
 ## Work on a registered machine
 
 An agent entry that names a `machine` runs on that registered machine, works
@@ -134,6 +149,16 @@ agent's own choice. Neither setting grants new filesystem or tool permissions.
 Parallel instances do not imply independent working copies. For concurrent
 edits, give each agent explicit file ownership or separate worktrees. Raven-Code
 reports shared-workspace conditions, but that is not a filesystem lock.
+
+For coding work the host arranges this itself, following its built-in
+`multi-agent-coding` skill. When coding tasks run side by side in one git
+project, the host asks each coding agent to create a git worktree of its own, on
+a branch named for its task, and to report the worktree's path and branch. The
+changes stay on those branches until you ask for them to be merged, and the
+worktrees stay until you ask for them to be removed. The same skill keeps one
+instance per task, sends a follow-up on an unfinished task to that task's
+instance, and moves a task to another coding agent when the first reports that
+its quota is used up.
 
 ## Troubleshooting
 

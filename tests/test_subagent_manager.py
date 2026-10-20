@@ -785,6 +785,40 @@ def _stub_mgr(monkeypatch, **kw) -> SubagentManager:
     return mgr
 
 
+@pytest.mark.parametrize("former", ["Raven", "raven"])
+@pytest.mark.parametrize("cancel_with_alias", [False, True])
+async def test_alias_spawn_is_listed_running_and_cancellable_after_registry_reload(
+    tmp_path, monkeypatch, former, cancel_with_alias
+):
+    from raven.agent.subagent.instances import InstanceRegistry, reconcile_instance_rows
+    from raven.config.agent_names import GENERIC_AGENT
+
+    path = tmp_path / "registry.json"
+    registry = InstanceRegistry(path)
+    monkeypatch.setattr(manager_mod, "get_registry", lambda: registry)
+    mgr = _stub_mgr(monkeypatch)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def running(task_id, task, task_summary, origin, provider, model, mcp_grant=None):
+        await registry.upsert_spawn(origin["session_key"], origin["agent"], origin["handle"], "running")
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(mgr, "_run_subagent", running)
+    await mgr.spawn(task="continue", session_key="s1", agent=former, instance="h1")
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        rows = InstanceRegistry(path).list_instances("s1")
+        (record,) = reconcile_instance_rows(rows, live_handles=mgr.live_handles, active_run_ids=set)
+        assert (record["agent"], record["status"]) == (GENERIC_AGENT, "running")
+        assert mgr.live_handles("s1") == {(GENERIC_AGENT, "h1")}
+        assert await mgr.cancel_by_instance("s1", former if cancel_with_alias else record["agent"], "h1")
+        assert mgr.get_running_count() == 0
+    finally:
+        await mgr.cancel_all()
+
+
 async def test_spawn_rate_limit_refuses_within_window(monkeypatch):
     """N spawns/window allowed; the next is refused even as concurrency frees up."""
     _fixed_clock(monkeypatch)
@@ -833,6 +867,37 @@ async def test_cancel_by_session_clears_spawn_history(monkeypatch):
 
     await mgr.cancel_by_session("sessA")
     assert "sessA" not in mgr._session_spawn_times
+
+
+async def test_the_coding_skill_names_ravens_own_refusals_in_their_words(monkeypatch):
+    """The multi-agent coding skill moves a task to another coding agent when that agent's
+    quota runs out, and tells the main agent which of Raven's own refusals are not that
+    case, since they refuse every agent alike. It names them by the words below, read off
+    the refusals themselves: reworded on either side, the skill would send the main agent
+    from agent to agent against a limit they all share. Not every `Spawn refused:` is one
+    of them -- an agent missing from the table is refused for that agent alone -- which is
+    why the skill names reasons rather than the prefix. The graph's pause refusal, written
+    by the graph tool, carries the same words as the spawn one."""
+    import raven
+
+    skill_md = Path(raven.__file__).parent / "memory_engine" / "skills" / "multi-agent-coding" / "SKILL.md"
+    skill = " ".join(skill_md.read_text(encoding="utf-8").split())
+    limited = _stub_mgr(monkeypatch, max_spawns_per_hour=0)
+    paused = _stub_mgr(monkeypatch)
+    paused.set_paused(True)
+    closing = _stub_mgr(monkeypatch)
+    await closing.cancel_all()
+
+    refusals = {
+        "spawn rate limit": [await limited.spawn(task="a")],
+        "dispatch rate limit": [limited.charge_dag_run("web:sess1")],
+        "delegation is paused": [await paused.spawn(task="a")],
+        "the host is shutting down": [await closing.spawn(task="a"), closing.charge_dag_run("web:sess1")],
+    }
+    for words, texts in refusals.items():
+        for text in texts:
+            assert text is not None and words in text, (words, text)
+        assert words in skill, f"the skill no longer names the refusal for {words!r}"
 
 
 async def test_cancel_by_session_cancels_live_task(monkeypatch):
@@ -995,13 +1060,15 @@ def test_generated_participant_notes_preserve_each_supported_message_shape() -> 
 def test_build_subagent_prompt_hides_orchestration_skills(tmp_path):
     """The catalog handed to a sub-agent must not advertise a skill whose
     procedure needs a tool this backend never registers — the DAG skill tells
-    the reader to call run_subagent_dag, which only the main agent has."""
+    the reader to call run_subagent_dag, and the coding skill to call spawn,
+    which only the main agent has."""
     from raven.agent.subagent.backends.raven_loop import build_subagent_prompt
 
     prompt = build_subagent_prompt(tmp_path, tmp_path / "session", ["read_file", "exec"])
 
     assert "subagent-dag-orchestration" not in prompt
     assert "run_subagent_dag" not in prompt
+    assert "multi-agent-coding" not in prompt
     # The filter is targeted, not a blanket catalog suppression.
     assert "weather" in prompt
 

@@ -2054,7 +2054,7 @@ class TestSubagentRoster:
     def test_the_tags_are_explained_once_in_the_field_that_they_gate(self, tmp_path: Path) -> None:
         """Tags the model cannot interpret are just noise, and the pre-check would
         then reject graphs over a rule it was never told. The field descriptions
-        are that explanation -- they ride in the same payload as the roster (both
+        are that explanation -- they ride wherever the node schema does (both
         `to_schema()` and a tool_search hit carry description + parameters), so a
         second copy in the tool description is prose the model pays for twice."""
         tool = SubAgentDagTool(
@@ -2122,6 +2122,39 @@ class TestSubagentRoster:
         desc = SubAgentDagTool(workspace=tmp_path, agents=[]).description
         assert "(none configured)" not in desc
         assert GENERIC_AGENT in desc
+
+
+class TestTheRosterIsSpawnsToSayWhenSpawnIsListed:
+    """``spawn`` closes the tool array and ends with the roster, so this tool
+    points there instead of rendering a second copy. Told whether ``spawn`` is on
+    offer by the loop; a host that wires no answer gets the roster here, the
+    contract every other caller of this tool already relies on."""
+
+    _AGENTS = [ThirdPartyCliSubagentConfig(name="Coder", description="Codes things.", command="cat")]
+
+    def test_it_points_at_spawn_when_spawn_is_listed(self, tmp_path: Path) -> None:
+        desc = SubAgentDagTool(workspace=tmp_path, agents=self._AGENTS, spawn_offered=lambda: True).description
+
+        assert "Coder [" not in desc
+        assert desc.endswith(
+            "Available sub-agents for the `subagent` field: the roster at the end of the `spawn` tool's description."
+        )
+
+    def test_it_renders_the_roster_when_spawn_is_not(self, tmp_path: Path) -> None:
+        tool = SubAgentDagTool(workspace=tmp_path, agents=self._AGENTS, spawn_offered=lambda: False)
+
+        assert tool.description.endswith(tool.registry.roster_text() + ".")
+
+    def test_a_turns_worker_labels_are_listed_here_whatever_spawn_says(self, tmp_path: Path) -> None:
+        """Labels are not on spawn's roster, so there is nothing there to point at."""
+        from raven.agent.subagent.delegate import DelegateTable, Worker, delegate_scope
+
+        tool = SubAgentDagTool(workspace=tmp_path, agents=self._AGENTS, spawn_offered=lambda: True)
+        with delegate_scope(DelegateTable(workers={"drafter": Worker("drafter", "Coder", "writes the draft")})):
+            desc = tool.description
+
+        assert "- drafter: writes the draft [runs on Coder]" in desc
+        assert "`spawn` tool's description" not in desc
 
 
 class TestSubagentEnum:
