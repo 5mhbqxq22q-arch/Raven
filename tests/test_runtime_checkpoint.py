@@ -1272,6 +1272,13 @@ async def test_checkpoint_leaves_raven_state_inside_its_root_out(tmp_path, monke
     assert rc == 0
     assert tracked.splitlines() == ["main.py"]
     assert shown == {str(project / "main.py")}
+    # Not even hashed: untracking after `add -A` keeps state out of every
+    # commit, but only the excludes keep its bytes out of the object store.
+    await svc.stage_tree()
+    _, stored, _ = await svc._git("cat-file", "--batch-all-objects", "--batch")
+    assert "print(1)" in stored
+    assert "fake-passed-config-key" not in stored
+    assert "fake-oauth-token" not in stored
 
 
 async def test_a_work_tree_gitignore_cannot_put_raven_state_back(tmp_path, monkeypatch):
