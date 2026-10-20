@@ -6,6 +6,7 @@ module only decides where a turn reads and writes files.
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum
@@ -24,18 +25,21 @@ _PROTECTED_SUBTREES = ("user_memory", "skills", "sessions")
 
 # Directories Raven keeps its own state in, directly under its home: provider
 # tokens, MCP credentials, machine passwords, cron jobs, channel sessions, the
-# engines' homes, installed agents and plugins. Matched under the resolved home,
-# so a home not named `.raven` and one reached through a symlink are covered
-# alike. Agent home (`workspace`) has its own rules above and the per-channel
-# root (`tmp`) is where work happens, so neither is here, and a directory of
-# the user's own beside them stays usable. A test walks raven/ for every
-# directory created under the home, so a new one cannot be left off unnoticed.
+# browser profile, the engines' homes, installed agents and plugins. Matched
+# under the resolved home -- and under `~/.raven`, which a few writers use
+# whatever RAVEN_HOME says -- so a home not named `.raven` and one reached
+# through a symlink are covered alike. Agent home (`workspace`) has its own
+# rules above and the per-channel root (`tmp`) is where work happens, so
+# neither is here, and a directory of the user's own beside them stays usable.
+# A test walks raven/ for every directory created under the home, so a new one
+# cannot be left off unnoticed.
 _STATE_ENTRIES = frozenset(
     {
         "acp-launches",
         "agents",
         "background",
         "bridge",
+        "browser-profile",
         "cache",
         "credentials",
         "cron",
@@ -43,6 +47,7 @@ _STATE_ENTRIES = frozenset(
         "everos",
         "imports",
         "keys",
+        "knn_embcache",
         "knowledge",
         "logs",
         "matrix-store",
@@ -50,9 +55,11 @@ _STATE_ENTRIES = frozenset(
         "mochat",
         "oauth",
         "plugins",
+        "routing",
         "runtime",
         "sandbox",
         "sentinel",
+        "skills",
         "subagent_sessions",
         "subagents",
         "telemetry",
@@ -140,7 +147,38 @@ def _raven_home() -> Path:
     return raven_home().expanduser().resolve()
 
 
-def _inside_state(path: Path, homes: tuple[Path, ...], raven_root: Path) -> str | None:
+def _state_roots() -> tuple[Path, ...]:
+    """Raven's home, and the default one a few writers use whatever ``RAVEN_HOME`` says."""
+    from raven.contracts.path_policy import DEFAULT_HOME_DIRNAME
+
+    return tuple(dict.fromkeys((_raven_home(), (Path.home() / DEFAULT_HOME_DIRNAME).resolve())))
+
+
+def _same(a: Path, b: Path) -> bool:
+    """Whether two resolved paths name one directory, asked of the filesystem too.
+
+    ``resolve()`` does not fold case, and a case-insensitive volume (macOS by
+    default) does, so a spelling that differs only in case passes ``==``.
+    """
+    if a == b:
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _anchor(path: Path, root: Path) -> Path | None:
+    """``path`` or the ancestor of it that is ``root``, or ``None``."""
+    return next((candidate for candidate in (path, *path.parents) if _same(candidate, root)), None)
+
+
+def _contains(path: Path, target: Path) -> bool:
+    """Whether ``path`` is a strict ancestor of ``target``."""
+    return any(_same(path, parent) for parent in target.parents)
+
+
+def _inside_state(path: Path, homes: tuple[Path, ...]) -> str | None:
     """Why ``path`` (resolved) lies in Raven's own state, or ``None`` when it does not.
 
     Containing that state is a separate question: a checkpoint can leave a
@@ -150,18 +188,20 @@ def _inside_state(path: Path, homes: tuple[Path, ...], raven_root: Path) -> str 
         # Agent home itself is rejected for the same reason its subtrees are, and
         # more strongly: from there every protected subtree is one relative path
         # away, so an ordinary relative write lands on the agent's own memory.
-        if path == home:
+        if _same(path, home):
             return f"working directory must not be the agent home directory itself ({home})"
         for subtree in _PROTECTED_SUBTREES:
             candidate = home / subtree
-            if path == candidate or candidate in path.parents:
+            if _anchor(path, candidate) is not None:
                 return f"working directory must not be inside the agent's {subtree} tree ({candidate})"
-    if path == raven_root:
-        return f"working directory must not be Raven's home directory itself ({raven_root})"
-    if raven_root in path.parents:
-        entry = path.relative_to(raven_root).parts[0]
-        if entry in _STATE_ENTRIES:
-            return f"working directory must not be inside Raven's own state ({raven_root / entry})"
+    for root in _state_roots():
+        if _same(path, root):
+            return f"working directory must not be Raven's home directory itself ({root})"
+        anchor = _anchor(path.parent, root)
+        if anchor is not None:
+            entry = path.relative_to(anchor).parts[0]
+            if entry.casefold() in _STATE_ENTRIES:
+                return f"working directory must not be inside Raven's own state ({root / entry})"
     return None
 
 
@@ -172,18 +212,18 @@ def validate_override(value: str | Path, agent_home: Path) -> Path:
         raise ValueError(f"working directory must be an absolute path, got {value!r}")
     resolved = path.resolve()
     home = Path(agent_home).expanduser().resolve()
-    raven_root = _raven_home()
     # An ancestor is worse still. `~/.raven` is not merely agent home's parent,
     # it is the instance data directory -- config.json (provider keys), oauth/
     # (provider tokens), cron/, sentinel/, logs/. The per-turn checkpoint runs
     # `add -A` over the working directory, and the `.raven/` default exclude
     # cannot help when `.raven` *is* the work-tree root, so pointing a session
     # here would commit every credential into a shadow git repo.
-    if resolved in home.parents:
+    if _contains(resolved, home):
         raise ValueError(f"working directory must not contain the agent home directory ({home})")
-    if resolved in raven_root.parents:
+    raven_root = _raven_home()
+    if _contains(resolved, raven_root):
         raise ValueError(f"working directory must not contain Raven's home directory ({raven_root})")
-    reason = _inside_state(resolved, (home,), raven_root)
+    reason = _inside_state(resolved, (home,))
     if reason is not None:
         raise ValueError(reason)
     return resolved
@@ -200,7 +240,7 @@ def state_refusal(root: Path, agent_home: Path | None = None) -> str | None:
     from raven.config.paths import default_workspace
 
     homes = tuple(dict.fromkeys(Path(h).expanduser().resolve() for h in (agent_home, default_workspace()) if h))
-    return _inside_state(Path(root).expanduser().resolve(), homes, _raven_home())
+    return _inside_state(Path(root).expanduser().resolve(), homes)
 
 
 def state_within(root: Path, agent_home: Path | None = None) -> tuple[Path, ...]:
@@ -214,7 +254,7 @@ def state_within(root: Path, agent_home: Path | None = None) -> tuple[Path, ...]
     from raven.home import get_config_path
 
     root = Path(root).expanduser().resolve()
-    candidates = [_raven_home(), Path(get_config_path()).expanduser().resolve()]
+    candidates = [*_state_roots(), Path(get_config_path()).expanduser().resolve()]
     if agent_home is not None:
         candidates.append(Path(agent_home).expanduser().resolve())
     inside = {path for path in candidates if root in path.parents}

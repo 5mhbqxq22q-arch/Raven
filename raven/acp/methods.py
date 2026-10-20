@@ -1250,9 +1250,10 @@ class AcpMethods:
         of it or of Raven's home, the memory / skills / sessions subtrees, and
         the state directories under Raven's home -- because the per-turn
         checkpoint runs ``add -A`` over the working directory, so a session
-        rooted at ``~`` would commit provider keys into a shadow git repo. Its refusals arrive as ``ValueError``; a bare Python exception is
-        not an acceptable handshake failure, so each becomes -32602 with the
-        reason attached.
+        rooted at ``~`` would commit provider keys into its history. Its
+        refusals arrive as ``ValueError``; a bare Python exception is not an
+        acceptable handshake failure, so each becomes -32602 with the reason
+        attached.
         """
         from raven.agent.workdir import validate_override
         from raven.config import load_config

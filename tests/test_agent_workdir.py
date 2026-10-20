@@ -376,6 +376,26 @@ def test_instance_state_is_judged_through_symlinks(tmp_path: Path, monkeypatch: 
         validate_override(link, alias / "workspace")
 
 
+def test_instance_state_is_judged_by_the_filesystem_not_the_spelling(
+    instance: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a case-insensitive volume (macOS by default) `resolve()` keeps the
+    case it was given, so a path spelled in another case names the same tree
+    and must be refused for it. Simulated here by a case-folding `samefile`."""
+    import os
+
+    from raven.agent import workdir
+
+    monkeypatch.setattr(workdir.os.path, "samefile", lambda a, b: os.fspath(a).casefold() == os.fspath(b).casefold())
+    spelled = Path(str(instance).upper())
+
+    with pytest.raises(ValueError, match="Raven's"):
+        validate_override(spelled / "OAUTH" / "nested", instance / "workspace")
+    with pytest.raises(ValueError, match="agent's sessions"):
+        validate_override(spelled / "WORKSPACE" / "SESSIONS", instance / "workspace")
+    assert validate_override(spelled / "MY-PROJECTS", instance / "workspace") == spelled / "MY-PROJECTS"
+
+
 def test_a_channel_workspace_in_instance_state_falls_back(instance: Path) -> None:
     resolver = WorkdirResolver(
         WorkdirPolicy.PER_CHANNEL,
@@ -422,7 +442,7 @@ def _module_strings(tree: ast.Module) -> dict[str, object]:
 
 
 def _entries_created_under_the_home() -> dict[str, set[str]]:
-    """Every top-level name the runtime puts under ``raven_home()`` / the data dir."""
+    """Every top-level name the runtime puts under ``raven_home()``, the data dir or ``~/.raven``."""
     found: dict[str, set[str]] = {}
     for path in sorted(Path("raven").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -447,7 +467,19 @@ def _entries_created_under_the_home() -> dict[str, set[str]]:
                     value = held[index] if isinstance(held, tuple) else None
             return value if isinstance(value, str) else f"<unresolved {ast.unparse(expr)}>"
 
+        def is_default_home(expr: ast.expr) -> bool:
+            """``Path.home() / ".raven"``, which a few writers use whatever ``RAVEN_HOME`` says."""
+            return (
+                isinstance(expr, ast.BinOp)
+                and isinstance(expr.op, ast.Div)
+                and isinstance(expr.left, ast.Call)
+                and getattr(expr.left.func, "attr", None) == "home"
+                and name_of(expr.right) == ".raven"
+            )
+
         for node in ast.walk(tree):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and is_default_home(node.left):
+                found.setdefault(name_of(node.right), set()).add(f"{path}:{node.lineno}")
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and isinstance(node.left, ast.Call):
                 func = node.left.func
                 called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
