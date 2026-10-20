@@ -136,6 +136,17 @@ def build_local_sessions(config, *, workspace: str | None) -> "tuple[SessionMana
                     exc,
                     default_channel_root(agent_home),
                 )
+                # A checkpoint taken there before the boundary existed may hold
+                # Raven's own state. Named, never read, moved or deleted: what
+                # it holds, and whether a key needs rotating, is the user's call.
+                from raven.config.raven import CheckpointConfig
+
+                earlier = launch_dir / CheckpointConfig().shadow_dir
+                if (earlier / "HEAD").is_file():
+                    logger.warning(
+                        "An earlier checkpoint history at {} may hold Raven's own state; it is left as it is",
+                        earlier,
+                    )
     session_manager = SessionManager(agent_home, project_slug=project_slug(launch_dir), project_dir=launch_dir)
     workdir_resolver = WorkdirResolver(
         policy,

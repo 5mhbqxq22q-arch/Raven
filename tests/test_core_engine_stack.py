@@ -219,3 +219,23 @@ def test_launch_from_a_moved_config_directory_is_kept_and_its_state_falls_back(
     _, resolver = build_local_sessions(local_config, workspace=None)
     assert resolver.resolve("tui:one", create=False) == default_channel_root(local_config.workspace_path) / "tui"
 
+
+def test_a_fallback_over_an_earlier_checkpoint_history_says_so(
+    local_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A history taken there before the boundary existed may already hold
+    Raven's own state; the fallback says so once and leaves it alone."""
+    launch = local_config.workspace_path.parent / "oauth"
+    shadow = launch / ".raven" / "shadow.git"
+    shadow.mkdir(parents=True)
+    (shadow / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+    monkeypatch.chdir(launch)
+    warning = Mock()
+    monkeypatch.setattr(logger, "warning", warning)
+
+    build_local_sessions(local_config, workspace=None)
+
+    messages = [call.args[0].format(*call.args[1:]) for call in warning.call_args_list]
+    assert len(messages) == 2
+    assert str(shadow) in messages[1]
+    assert (shadow / "HEAD").read_text(encoding="utf-8") == "ref: refs/heads/master\n"
