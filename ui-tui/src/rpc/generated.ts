@@ -3312,6 +3312,10 @@ export interface MachineRow {
    * What the registry's doctor says about this row, one sentence each; empty when nothing.
    */
   problems: string[];
+  /**
+   * The connected agent entries that run on the machine, by name: empty on a machine whose next step is to connect one.
+   */
+  agents_here: string[];
 }
 /**
  * This interface was referenced by `RavenRpcRoot`'s JSON-Schema
@@ -4184,6 +4188,31 @@ export interface SubagentsListResult {
 }
 /**
  * This interface was referenced by `RavenRpcRoot`'s JSON-Schema
+ * via the `definition` "SubagentsPresetsParams".
+ */
+export interface SubagentsPresetsParams {}
+/**
+ * This interface was referenced by `RavenRpcRoot`'s JSON-Schema
+ * via the `definition` "SubagentsPresetsResult".
+ */
+export interface SubagentsPresetsResult {
+  presets: {
+    preset: string;
+    name: string;
+    kind: 'acp' | 'cli';
+    description: string;
+    /**
+     * An entry of this preset runs on this computer; one on a machine is a second entry, not a conflict.
+     */
+    connected_here: boolean;
+    /**
+     * The registered machines (ids) an entry of this preset already runs on.
+     */
+    on_machines: string[];
+  }[];
+}
+/**
+ * This interface was referenced by `RavenRpcRoot`'s JSON-Schema
  * via the `definition` "SubagentsAddParams".
  */
 export interface SubagentsAddParams {
@@ -4605,6 +4634,18 @@ export interface MachinesRemoveResult {
    * The agent entries that name the machine: the connected ones to disconnect first when the removal was refused over them; after a removal, the ones left pointing at nothing.
    */
   agents: string[];
+}
+/**
+ * This interface was referenced by `RavenRpcRoot`'s JSON-Schema
+ * via the `definition` "MachinesLocalKeysParams".
+ */
+export interface MachinesLocalKeysParams {}
+/**
+ * This interface was referenced by `RavenRpcRoot`'s JSON-Schema
+ * via the `definition` "MachinesLocalKeysResult".
+ */
+export interface MachinesLocalKeysResult {
+  keys: string[];
 }
 /**
  * This interface was referenced by `RavenRpcRoot`'s JSON-Schema

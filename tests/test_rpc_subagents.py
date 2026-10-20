@@ -19,6 +19,7 @@ from raven.rpc.methods.subagents import (
     _read_the_shell_again,
     register_subagents_methods,
     subagents_list,
+    subagents_presets,
     subagents_probe,
     subagents_test,
     subagents_test_cancel,
@@ -151,6 +152,69 @@ async def test_a_preset_is_withheld_when_a_configured_row_holds_its_name(
     assert rows[0]["preset"] is None, "a hand-written row is not given provenance it did not declare"
     # Every other preset is still offered: the rule withholds one name, not the group.
     assert "OpenClaw" in {r["name"] for r in result["rows"]}
+
+
+async def test_presets_lists_what_a_machine_can_start_whether_or_not_an_entry_holds_it_and_where_each_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The machine sheet's connect form chooses from this: the roster hides a
+    preset once a row holds its name, but an entry is one preset on one
+    machine, so the same preset is still to be had on each machine."""
+    from raven.rpc.models import METHOD_MODELS
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "subagents": {
+                    "agents": [
+                        {
+                            "name": "Coder",
+                            "preset": "claude_code",
+                            "kind": "cli",
+                            "command": "claude -p {prompt}",
+                            "enabled": True,
+                        },
+                        {
+                            "name": "Claude Code@box",
+                            "preset": "claude_code",
+                            "kind": "acp",
+                            "command": "npx -y @agentclientprotocol/claude-agent-acp@0.81.1",
+                            "machine": "box",
+                            "enabled": True,
+                        },
+                        {
+                            "name": "Researcher",
+                            "preset": "mirothinker",
+                            "kind": "openai",
+                            "baseUrl": "https://x.invalid/v1",
+                            "model": "m",
+                            "apiKey": "k",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("raven.config.loader.get_config_path", lambda: path)
+    monkeypatch.setattr("raven.rpc.methods.subagents.get_config_path", lambda: path)
+
+    out = await subagents_presets({})
+
+    METHOD_MODELS["subagents.presets"][1].model_validate(out)
+    by_key = {p["preset"]: p for p in out["presets"]}
+    # Held here AND on a machine: listed all the same, saying both.
+    assert by_key["claude_code"]["name"] == "Claude Code"
+    assert by_key["claude_code"]["connected_here"] is True
+    assert by_key["claude_code"]["on_machines"] == ["box"]
+    # Held nowhere: listed, saying so.
+    assert by_key["codex"]["connected_here"] is False and by_key["codex"]["on_machines"] == []
+    # Only what a machine's node starts: no openai endpoint, no Mirasim shim, no built-in.
+    assert "mirothinker" not in by_key
+    assert not any(key.startswith("mirasim_") for key in by_key)
+    assert {p["kind"] for p in out["presets"]} <= {"acp", "cli"}
+    assert all(p["description"] for p in out["presets"])
 
 
 async def test_list_leaves_out_a_hidden_row(tmp_path: Path, monkeypatch) -> None:
@@ -3398,6 +3462,64 @@ async def test_add_on_a_machine_keeps_the_name_the_caller_chose(
     assert out == {"added": True, "name": "lab"}
     entry = next(e for e in _stored(config_path) if e["name"] == "lab")
     assert entry["machine"] == "ravenx2" and not entry.get("remoteCwd"), "unset: the node's default applies"
+
+
+async def test_add_on_a_machine_refuses_a_preset_the_machine_already_has_before_any_ping(
+    config_path: Path, registry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seen live: the page and the chat reach one machine by two routes and spell
+    the default name differently, so the second route made a second entry of the
+    same preset there. Judged on the preset and the machine, under the default
+    name only; a named add is a second entry on purpose."""
+    monkeypatch.setattr("raven.rpc.methods.subagents.ping_agent", _pings_ok)
+    monkeypatch.setattr("raven.rpc.methods.subagents.record_capabilities", _no_record)
+    await subagents_add({"preset": "claude_code", "machine": "ravenx2", "name": "Claude Code@ravenx2"})
+    before = _stored(config_path)
+
+    async def _never(cfg: object) -> object:
+        pytest.fail("the duplicate is refused before the agent is pinged")
+
+    monkeypatch.setattr("raven.rpc.methods.subagents.ping_agent", _never)
+    with pytest.raises(ConfigValidationError) as caught:
+        await subagents_add({"preset": "claude_code", "machine": "ravenx2", "remote_cwd": "~/elsewhere"})
+
+    said = str(caught.value)
+    assert "'claude_code'" in said and "'ravenx2'" in said and "'Claude Code@ravenx2'" in said and "(connected)" in said
+    assert "203.0.113" not in said
+    assert caught.value.data == {"field": "machine", "machine": "ravenx2", "existing": "Claude Code@ravenx2"}
+    assert _stored(config_path) == before
+    # Named, it is a second entry on purpose: allowed, proved like any other.
+    monkeypatch.setattr("raven.rpc.methods.subagents.ping_agent", _pings_ok)
+    out = await subagents_add({"preset": "claude_code", "machine": "ravenx2", "name": "lab-2", "remote_cwd": "~/b"})
+    assert out == {"added": True, "name": "lab-2"}
+    names = [e["name"] for e in _stored(config_path)]
+    assert names.count("Claude Code@ravenx2") == 1 and "lab-2" in names
+    # Another machine is another entry, under the default name.
+    registry.write_text(
+        json.dumps({"connections": [*_MACHINES, {**_MACHINES[0], "id": "ravenx", "display_name": "RavenX"}]}),
+        encoding="utf-8",
+    )
+    out = await subagents_add({"preset": "claude_code", "machine": "ravenx"})
+    assert out == {"added": True, "name": "claude_code@ravenx"}
+
+
+async def test_add_on_a_machine_names_the_switched_off_entry_of_the_preset_there(
+    config_path: Path, registry: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("raven.rpc.methods.subagents.ping_agent", _pings_ok)
+    monkeypatch.setattr("raven.rpc.methods.subagents.record_capabilities", _no_record)
+    await subagents_add({"preset": "claude_code", "machine": "ravenx2"})
+    doc = json.loads(config_path.read_text(encoding="utf-8"))
+    for entry in doc["subagents"]["agents"]:
+        if entry["name"] == "claude_code@ravenx2":
+            entry["enabled"] = False
+    config_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    with pytest.raises(ConfigValidationError) as caught:
+        await subagents_add({"preset": "claude_code", "machine": "ravenx2"})
+
+    assert "'claude_code@ravenx2' (switched off); switch that entry back on" in str(caught.value)
+    assert caught.value.data == {"field": "machine", "machine": "ravenx2", "existing": "claude_code@ravenx2"}
 
 
 async def test_add_on_a_machine_needs_no_debug_switch(config_path, registry, monkeypatch):

@@ -2855,6 +2855,27 @@ class SubagentsListResult(_Strict):
     rows: list[SubagentRow]
 
 
+class SubagentsPresetsParams(_Strict):
+    pass
+
+
+class PresetChoice(_Strict):
+    """One preset as the machines tab's connect form offers it: what it is, and where an entry of it already runs."""
+
+    preset: str
+    name: str
+    kind: Literal["acp", "cli"]
+    description: str
+    connected_here: bool
+    """Whether an entry of this preset runs on this computer; one on a machine is a second entry, not a conflict."""
+    on_machines: list[str]
+    """The registered machines (ids) an entry of this preset already runs on."""
+
+
+class SubagentsPresetsResult(_Strict):
+    presets: list[PresetChoice]
+
+
 class SubagentsAddParams(_Strict):
     preset: str
     name: str | None = None
@@ -2875,8 +2896,9 @@ class SubagentsAddParams(_Strict):
         description=(
             "A registered machine, by its id in the machine registry: an acp or cli preset's command is started "
             "there by the machine's Raven node and signed in there; an openai preset's endpoint is reached from "
-            "that machine through an ssh tunnel. The row's name defaults to <preset>@<machine>. Refused for a "
-            "built-in agent, and unless the machine is registered and usable."
+            "that machine through an ssh tunnel. The row's name defaults to <preset>@<machine>, and under that default a "
+            "preset the machine already has is refused, naming the entry there (give `name` to add a second one on "
+            "purpose). Refused for a built-in agent, and unless the machine is registered and usable."
         ),
     )
     remote_cwd: str | None = Field(
@@ -3024,6 +3046,8 @@ class MachineRow(_Strict):
     install: MachineInstall
     paths: list[str]
     problems: list[str]
+    agents_here: list[str]
+    """The connected agent entries that run on the machine, by name; what tells a reader the next step is on the agents side."""
 
 
 class MachinesListParams(_Strict):
@@ -3105,6 +3129,15 @@ class MachinesRemoveResult(_Strict):
     removed: bool
     detail: str
     agents: list[str]
+
+
+class MachinesLocalKeysParams(_Strict):
+    pass
+
+
+class MachinesLocalKeysResult(_Strict):
+    keys: list[str]
+    """Private keys on this computer the register form proposes, as `~/.ssh/<name>` paths, ssh's own defaults first."""
 
 
 # ---------------------------------------------------------------------------
@@ -6918,6 +6951,7 @@ METHOD_MODELS: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
     "subagent.context": (SubagentContextParams, SubagentContextResult),
     # subagents.*
     "subagents.list": (SubagentsListParams, SubagentsListResult),
+    "subagents.presets": (SubagentsPresetsParams, SubagentsPresetsResult),
     "subagents.add": (SubagentsAddParams, SubagentsAddResult),
     "subagents.update": (SubagentsUpdateParams, SubagentsUpdateResult),
     "subagents.remove": (SubagentsRemoveParams, SubagentsRemoveResult),
@@ -6931,6 +6965,7 @@ METHOD_MODELS: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
     "machines.install_node": (MachinesInstallNodeParams, MachinesInstallNodeResult),
     "machines.doctor": (MachinesDoctorParams, MachinesDoctorResult),
     "machines.remove": (MachinesRemoveParams, MachinesRemoveResult),
+    "machines.local_keys": (MachinesLocalKeysParams, MachinesLocalKeysResult),
     # subagents.instance*
     "subagents.instances": (SubagentsInstancesParams, SubagentsInstancesResult),
     "subagents.instance.create": (SubagentsInstanceCreateParams, SubagentsInstanceCreateResult),

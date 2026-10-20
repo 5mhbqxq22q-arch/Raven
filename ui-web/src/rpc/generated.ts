@@ -3,7 +3,7 @@
 // Source of truth: rpc-schema/openrpc.json (OpenRPC 1.2.6).
 // Drift check: `npm run gen:check` (CI runs this; a stale file fails the build).
 //
-// 246 methods, 138 component schemas.
+// 248 methods, 138 component schemas.
 
 /* eslint-disable */
 /**
@@ -2753,6 +2753,10 @@ export interface MachineRow {
    * What the registry's doctor says about this row, one sentence each; empty when nothing.
    */
   problems: string[];
+  /**
+   * The connected agent entries that run on the machine, by name: empty on a machine whose next step is to connect one.
+   */
+  agents_here: string[];
 }
 export interface SessionListParams {
   /**
@@ -3280,6 +3284,23 @@ export interface SubagentsListParams {
 export interface SubagentsListResult {
   rows: SubagentRow[];
 }
+export interface SubagentsPresetsParams {}
+export interface SubagentsPresetsResult {
+  presets: {
+    preset: string;
+    name: string;
+    kind: 'acp' | 'cli';
+    description: string;
+    /**
+     * An entry of this preset runs on this computer; one on a machine is a second entry, not a conflict.
+     */
+    connected_here: boolean;
+    /**
+     * The registered machines (ids) an entry of this preset already runs on.
+     */
+    on_machines: string[];
+  }[];
+}
 export interface SubagentsAddParams {
   preset: string;
   name?: string;
@@ -3543,6 +3564,10 @@ export interface MachinesRemoveResult {
    * The agent entries that name the machine: the connected ones to disconnect first when the removal was refused over them; after a removal, the ones left pointing at nothing.
    */
   agents: string[];
+}
+export interface MachinesLocalKeysParams {}
+export interface MachinesLocalKeysResult {
+  keys: string[];
 }
 export interface SessionSetHarnessParams {
   session_key: string;
@@ -6394,6 +6419,7 @@ export interface RpcMethods {
   'subagent.list': { params: SubagentListParams; result: SubagentListResult };
   'subagent.context': { params: SubagentContextParams; result: SubagentContextResult };
   'subagents.list': { params: SubagentsListParams; result: SubagentsListResult };
+  'subagents.presets': { params: SubagentsPresetsParams; result: SubagentsPresetsResult };
   'subagents.add': { params: SubagentsAddParams; result: SubagentsAddResult };
   'subagents.update': { params: SubagentsUpdateParams; result: SubagentsUpdateResult };
   'subagents.remove': { params: SubagentsRemoveParams; result: SubagentsRemoveResult };
@@ -6414,6 +6440,7 @@ export interface RpcMethods {
   'machines.install_node': { params: MachinesInstallNodeParams; result: MachinesInstallNodeResult };
   'machines.doctor': { params: MachinesDoctorParams; result: MachinesDoctorResult };
   'machines.remove': { params: MachinesRemoveParams; result: MachinesRemoveResult };
+  'machines.local_keys': { params: MachinesLocalKeysParams; result: MachinesLocalKeysResult };
   'session.set_harness': { params: SessionSetHarnessParams; result: SessionSetHarnessResult };
   'session.set_mode': { params: SessionSetModeParams; result: SessionSetModeResult };
   'session.set_knowledge': { params: SessionSetKnowledgeParams; result: SessionSetKnowledgeResult };
@@ -6703,6 +6730,7 @@ export const RPC_METHODS = [
   "machines.doctor",
   "machines.install_node",
   "machines.list",
+  "machines.local_keys",
   "machines.remove",
   "mcp.list",
   "mcp.test",
@@ -6824,6 +6852,7 @@ export const RPC_METHODS = [
   "subagents.instance.steer",
   "subagents.instances",
   "subagents.list",
+  "subagents.presets",
   "subagents.probe",
   "subagents.remove",
   "subagents.test",

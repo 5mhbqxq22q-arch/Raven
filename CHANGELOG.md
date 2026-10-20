@@ -29,6 +29,25 @@ All notable changes to Raven are documented here.
   registration of the same machine, including when both passwords are identical.
   New RPC group `machines.{list,add,install_node,doctor,remove}`.
 
+- The Machines tab says what to do next. A card names the agent entries
+  connected on the machine (*No agent connected here yet* until one is; the
+  state line now reads *Link up, no agent running*), and a machine whose node
+  is up has **Connect an agent on this machine** in its sheet: pick the agent
+  and its working directory there, and **Connect** adds `<preset>@<machine id>`
+  with one proof prompt run on the machine. The list has every preset a node
+  can start, including one already connected on this computer. `subagents.add`
+  now refuses a preset the machine already has when no name is given, naming
+  the entry there, so the page and a chat cannot add the same agent on one
+  machine twice between them; a named add is still a second entry. A preset
+  that is not installed on this computer can be connected onto a machine from
+  its own sheet (*Runs on*); a row that already exists, switched off, connects
+  by its own button as before. While an add is still running on a machine, a
+  form opened again on that machine greys the preset rather than adding it
+  twice. The register form fills the private-key path with the key ssh would
+  try first (`id_rsa` before `id_ed25519`) instead of a placeholder. New read-only RPCs
+  `subagents.presets` and `machines.local_keys`; `machines.list` rows carry
+  `agents_here`.
+
 - The bug report review remembers your redaction decisions. Every keep or
   replace answer is stored in `redaction_history.json` under the Raven home
   (hashes and masked samples only), and the next `report-bug` or browser

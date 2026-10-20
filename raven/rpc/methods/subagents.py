@@ -512,10 +512,13 @@ async def subagents_add(params: dict, *, agent_loop_factory: "AgentLoopFactory |
     # would run for an add that could never land -- and for a duplicate name it
     # would run against the *stored* row of that name, because the schema keeps
     # the first of two, so it would prove a row this call is not writing.
+    existing = _read_agents()
+    if machine and not name:
+        _refuse_a_second_entry_there(existing, preset_name, machine)
     try:
         reject_unsupported_openai_fields([entry])
         reject_unsupported_acp_fields([entry])
-        entries = [*_read_agents(), entry]
+        entries = [*existing, entry]
         validate_agents(entries, config_path=get_config_path())
     except (ValueError, ValidationError) as exc:
         _raise_config_error(exc)
@@ -536,6 +539,35 @@ async def subagents_add(params: dict, *, agent_loop_factory: "AgentLoopFactory |
         _raise_config_error(exc)
     _hot_apply(agent_loop_factory)
     return {"added": True, "name": entry["name"]}
+
+
+def _refuse_a_second_entry_there(existing: list[dict], preset_name: str, machine: str) -> None:
+    """Refuse a default-named add of a preset the machine already carries.
+
+    One preset is added once per machine -- that is what the default name
+    says -- and the machine is reached by more than one route: the chat's
+    ``raven_config``, the preset's own sheet, the machine's sheet. Seen live
+    (2026-10-19): one route had put Claude Code on a machine under one name,
+    and the next would have put it there again under the default, two rows of
+    one agent on one machine with nothing to tell them apart. Judged on the
+    preset and the machine, not the name, since the routes spell the name
+    differently; judged before the ping, so no prompt is spent on it; and
+    only under the default name -- a caller that names the new entry means a
+    second one (two working directories, say), and is allowed it. The entry
+    the machine has is named, switched off or not: switched off, the fix is
+    to switch it back on rather than to make another.
+    """
+    for row in existing:
+        if str(row.get("preset") or "") != preset_name or str(row.get("machine") or "").strip() != machine:
+            continue
+        held = str(row.get("name") or "")
+        on = row.get("enabled", True)
+        raise ConfigValidationError(
+            f"preset {preset_name!r} is already on machine {machine!r} as {held!r} "
+            + ("(connected); use that entry" if on else "(switched off); switch that entry back on")
+            + ", or give this one a name of its own",
+            data={"field": "machine", "machine": machine, "existing": held},
+        )
 
 
 def _refuse_unless_it_can_run_there(entry: dict, machine: str, *, remote_cwd: str = "") -> None:
@@ -1481,6 +1513,44 @@ async def subagents_test_cancel(params: dict) -> dict:
     return {"cancelled": True}
 
 
+async def subagents_presets(params: dict) -> dict:
+    """The presets an entry can be made from on a registered machine, and where each already is.
+
+    What the machines tab's "connect an agent on this machine" form chooses
+    from. Unlike ``subagents.list``, a preset is listed here whether or not an
+    entry already holds it: an entry is one preset on one machine, so a preset
+    connected on this computer is still to be had on each machine, under
+    the add's default ``<preset>@<machine id>`` -- the roster withholds it only because two
+    rows of one NAME would be unusable there. Only the kinds a machine's node
+    starts are listed (acp, cli): a built-in agent is this process's own loop,
+    a Mirasim shim runs on this host's interpreter, and an openai endpoint
+    takes a key this form does not. The page greys a preset the machine
+    already has (``on_machines``) and says when this computer has it too
+    (``connected_here``), so the add's own refusals are not the first word.
+    """
+    configured = _as_configs(_read_agents())
+    presets: list[dict[str, Any]] = []
+    for preset in third_party_subagent_presets():
+        key = str(preset.get("preset") or "")
+        kind = preset.get("kind")
+        if kind not in ("acp", "cli") or key in BUNDLED_SHIM_PRESETS:
+            continue
+        name = str(preset.get("name") or key)
+        holders = [c for c in configured if getattr(c, "preset", None) == key or getattr(c, "name", "") == name]
+        wheres = [(getattr(c, "machine", None) or "").strip() for c in holders]
+        presets.append(
+            {
+                "preset": key,
+                "name": name,
+                "kind": kind,
+                "description": str(preset.get("description") or ""),
+                "connected_here": any(not where for where in wheres),
+                "on_machines": sorted({where for where in wheres if where}),
+            }
+        )
+    return {"presets": presets}
+
+
 def register_subagents_methods(
     dispatcher: "Dispatcher",
     *,
@@ -1489,6 +1559,7 @@ def register_subagents_methods(
     """Register the ``subagents.*`` methods on a dispatcher instance."""
     dispatcher.register("subagents.list", subagents_list)
     dispatcher.register("subagents.probe", subagents_probe)
+    dispatcher.register("subagents.presets", subagents_presets)
 
     async def _add(params: dict) -> dict:
         return await subagents_add(params, agent_loop_factory=agent_loop_factory)

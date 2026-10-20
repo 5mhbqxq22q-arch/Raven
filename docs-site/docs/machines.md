@@ -130,7 +130,10 @@ the refusal says what kind it was (unreachable, login refused, changed host
 key, no answer in time) and what to do about it. What the page shows
 afterwards is what the machine is -- its name, id, link and node -- never its
 address, user or key path: those travel once, in the form, and are not read
-back.
+back. The private-key field starts filled with a key this computer has: ssh's
+own identities first (`~/.ssh/id_rsa` before `id_ed25519`, the order ssh tries them), then any pair you
+named, with the others to pick from; when none is found the form says so, and
+*Password* is the other way in.
 
 ## 2. Install the node
 
@@ -180,10 +183,27 @@ has the node before any link to it is up.
 in the background: the card says *Installing the node* until it ends, and the
 sheet keeps how it ended. The sheet's *Install into* field is the command's
 `--dir`. A machine whose node is another Raven's shows *needs updating* and
-offers **Update node**. An agent is connected onto a machine from its preset's
-sheet (*Runs on*), which lists the registered machines, lets only those with
-this Raven's node be picked (the others say why), and takes the working
-directory there for an acp or cli agent.
+offers **Update node**.
+
+Once the node is up, the card says which agent entries are connected on the
+machine (*No agent connected here yet* until one is; the state line, *Link
+up, no agent running*, is about this moment), and the sheet says the next
+step and offers **Connect an agent on this machine**: pick the agent, give
+its working directory there, and **Connect** adds `<preset>@<machine id>`
+(`codex@gpu1`) the way section 4's `subagents.add` does, one real prompt run
+on the machine first, and refused the same way when the machine already has
+that preset. The list has every preset a machine's node can start, including
+one already connected on this computer -- that is a second entry, on the
+machine, not a conflict. An agent's own sheet connects it onto a
+machine too (*Runs on*), which lists the registered machines, lets only those
+with this Raven's node be picked (the others say why), and takes the working
+directory there; an agent that is not installed on this computer offers it
+as well, since what matters is that it is installed and signed in on the
+machine. Only a preset not yet on the roster offers it: a row that already
+exists, switched off, connects by its own button, which takes no machine.
+While an add on a machine is still running -- its proof prompt takes up to a
+minute -- the machine's connect form, opened again, greys that preset rather
+than adding it a second time.
 
 **Upgrading.** The node runs exactly the code of the Raven that installed it,
 checked by a digest on every connection. After you update Raven on this
@@ -286,15 +306,19 @@ with the preset, the machine and, for an ACP or CLI preset, an optional
 ```
 
 The entry is named `<preset>@<machine>` unless you give a name, so one preset
-can be added once per machine. Before anything is stored, the add is proved
+can be added once per machine: a preset the machine already has is refused
+under the default name, and the refusal names the entry it has (connected or
+switched off). A second entry of one agent on one machine -- two working
+directories, say -- is added by giving it a name of its own. Before anything
+is stored, the add is proved
 the way a local add is: one real test prompt, run on that machine, through
 that agent -- so the agent has to be installed and signed in there already.
 The add is refused up front when the preset is a built-in agent, when an
 OpenAI preset is given a `remote_cwd`, or when the machine's entry cannot be
 used.
 
-The sub-agent page's **Add** does not take a machine yet; use the chat or the
-config file for that.
+On the page, the same add is the machine sheet's **Connect an agent on this
+machine**, or *Runs on* in the agent's own sheet.
 
 ## 5. What happens when you dispatch
 

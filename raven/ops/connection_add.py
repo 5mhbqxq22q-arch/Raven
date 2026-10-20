@@ -104,6 +104,39 @@ def ssh_defaults(host: str, *, port: int = 0, user: str = "") -> dict[str, Any]:
     return out
 
 
+#: ssh's own identity files, in the order it offers them: the IdentityFile
+#: defaults of ssh_config(5), as ``ssh -G`` prints them on OpenSSH 8.9, 9.6
+#: and 9.9 alike -- ``id_rsa`` first. The form prefills the first one that
+#: exists, so this order is what decides which key an owner with two of them
+#: is proposed; measured rather than assumed, since the other way round
+#: proposed the key ssh itself would try second.
+DEFAULT_IDENTITIES = ("id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk", "id_xmss", "id_dsa")
+
+
+def local_keys() -> list[str]:
+    """The private keys this computer has to offer, as ``~/.ssh/<name>`` paths.
+
+    What the register form proposes where the owner would otherwise type a
+    path from memory (the form's old placeholder named ``id_ed25519`` to an
+    owner whose key is ``id_rsa``): ssh's own default identities that exist,
+    in the order ssh tries them, then any other file in ``~/.ssh`` with a
+    ``.pub`` beside it, by name. Nothing is read beyond the directory listing.
+    The paths are spelled with ``~`` the way ``ssh -G`` spells them, which the
+    transport hands to ssh unchanged and ssh expands itself. Empty when there
+    is no ``~/.ssh`` or nothing in it looks like a key; the owner then types a
+    path, or registers the machine with its password.
+    """
+    ssh_dir = Path(os.path.expanduser("~/.ssh"))
+    try:
+        names = sorted(p.name for p in ssh_dir.iterdir() if p.is_file())
+    except OSError:
+        return []
+    present = set(names)
+    found = [name for name in DEFAULT_IDENTITIES if name in present]
+    found += [name[:-4] for name in names if name.endswith(".pub") and name[:-4] in present and name[:-4] not in found]
+    return [f"~/.ssh/{name}" for name in found]
+
+
 def probe(
     row: dict[str, Any], *, timeout: float = 30.0, isolate_key: bool = False, password: str | None = None
 ) -> tuple[bool, str, dict[str, Any]]:

@@ -9,7 +9,7 @@ import { familyOf } from './catalogue'
 import * as machines from './machines'
 import { isFound, remedyOf, runsAgent, sectionOf, stageOf } from './source'
 
-import type { ExtAgentActArgs, ExtAgentOp, ExtAgentRow, ExtAgentsSource, Remedy } from './types'
+import type { ExtAgentActArgs, ExtAgentOp, ExtAgentRow, ExtAgentsSource, PresetChoice, Remedy } from './types'
 
 /* Page state, outside React on purpose: two of the callers that drive this page
  * are not React. The rail opens it (chrome/Rail.tsx) and Esc closes it
@@ -113,6 +113,34 @@ export interface ExtAgentsState {
      model one write. Here rather than in the row's component, which a reload
      would reset to the agent's default without the reader touching it. */
   picked: Record<string, string>
+  /* The machine whose "connect an agent on this machine" form is open in the
+     drawer, by registry id, or null: the fourth thing the one drawer draws,
+     exclusive with the other three. */
+  mconnect: string | null
+  /* What that form chooses from, read when it opens and again when an add
+     lands on its machine while it is open, the latest read being the one
+     kept; null before the answer, and the read's refusal beside it. */
+  presets: PresetChoice[] | null
+  presetsFailed: string
+  /* Each opening of that form is a generation, and the write in flight
+     carries the generation it was pressed in: the add's readiness ping can
+     take a minute, the drawer stays closable meanwhile, and a form closed or
+     replaced by then is left alone when the write ends -- its result is told
+     in a toast, not on whatever the reader is looking at now. `mconnectBusy`
+     is the generation with a write in flight, or null. */
+  mconnectGen: number
+  mconnectBusy: number | null
+  /* That form's refusal -- the agent's words when it did not answer on the
+     machine -- for the form it was pressed in. */
+  mconnectFailed: string
+  /* The adds in flight from any opening of that form, by the name each will
+     land under (`<preset>@<machine>`): the generation above says whose form
+     a write is, this says that the write is still running -- or has landed,
+     and the form open on that machine is still reading its presets again. A
+     form opened on the same machine meanwhile greys that preset instead of
+     offering a second add of it, which the server would ping and then refuse
+     as a duplicate. */
+  mconnectPending: string[]
 }
 
 const store = makeStore<ExtAgentsState>({
@@ -130,6 +158,13 @@ const store = makeStore<ExtAgentsState>({
   wheres: {},
   picking: null,
   picked: {},
+  mconnect: null,
+  presets: null,
+  presetsFailed: '',
+  mconnectGen: 0,
+  mconnectBusy: null,
+  mconnectFailed: '',
+  mconnectPending: [],
 })
 
 export const { get, subscribe, _resetForTests } = store
@@ -468,13 +503,96 @@ export function sheetOpen(row: ExtAgentRow): void {
   /* `msheet` and `picking` go with it: all three portal into the one drawer,
      and a sheet opened over the picker or a machine card would otherwise draw
      beside it. */
-  set({ sheet: row.name, msheet: null, picking: null, epoch: get().epoch + 1 })
+  set({ sheet: row.name, msheet: null, picking: null, mconnect: null, epoch: get().epoch + 1 })
 }
 
 /** The drawer on a machine card (its registry id), or on the register form (`new`). */
 export function machineSheetOpen(id: string): void {
   detail.open('extAgents')
-  set({ msheet: id, sheet: null, picking: null, epoch: get().epoch + 1 })
+  set({ msheet: id, sheet: null, picking: null, mconnect: null, epoch: get().epoch + 1 })
+}
+
+/** The drawer on a machine's "connect an agent on this machine" form; the presets are read as it opens. */
+export function machineConnectOpen(id: string): void {
+  detail.open('extAgents')
+  set({
+    mconnect: id,
+    msheet: null,
+    sheet: null,
+    picking: null,
+    presets: null,
+    presetsFailed: '',
+    mconnectGen: get().mconnectGen + 1,
+    mconnectBusy: null,
+    mconnectFailed: '',
+    epoch: get().epoch + 1
+  })
+  void loadPresets()
+}
+
+/* Reads of the presets, counted: only the latest one is written, so a read
+   started when a form opened cannot land over the one a finished add asked
+   for after it. */
+let presetsRead = 0
+
+async function loadPresets(): Promise<void> {
+  const read = ++presetsRead
+  try {
+    const presets = await source().presets()
+    if (read === presetsRead) set({ presets, presetsFailed: '' })
+  } catch (e) {
+    if (read === presetsRead) set({ presets: [], presetsFailed: failure(e) })
+  }
+}
+
+/* The add from the machine's side: the preset on that machine, under the
+   server's default name (`<preset>@<machine>`). `landed` when it was written,
+   with the `name` it landed under; the roster is read again then, with the
+   probe, so the new card arrives with its verdict. `current` says whether the
+   form it was pressed in is still the one open -- the same machine, the same
+   opening -- which is the only form a refusal is written to and the only
+   drawer the caller may put the machine's sheet back into: closed or replaced
+   meanwhile, the write's end changes nothing on screen. The busy mark is
+   cleared only when it is still this write's. */
+export async function connectOnMachine(
+  choice: PresetChoice,
+  machine: string,
+  remoteCwd: string
+): Promise<{ landed: boolean; current: boolean; name: string }> {
+  const gen = get().mconnectGen
+  /* Still the form it was pressed in, and that form still on screen: the
+     drawer's own state says whether it is open and ours, since `mconnect`
+     stays set through the close fade (`sheetDismissed` drops it after). */
+  const current = (): boolean =>
+    get().mconnect === machine && get().mconnectGen === gen && detail.get().open && detail.get().owner === 'extAgents'
+  const pending = `${choice.preset}@${machine}`
+  set({ mconnectBusy: gen, mconnectFailed: '', mconnectPending: [...get().mconnectPending, pending] })
+  let got: { name: string } | { refused: string }
+  try {
+    got = await source().connectOnMachine(choice, machine, remoteCwd)
+  } catch (e) {
+    got = { refused: failure(e) }
+  }
+  if (get().mconnectBusy === gen) set({ mconnectBusy: null })
+  const settled = (): void => set({ mconnectPending: get().mconnectPending.filter(name => name !== pending) })
+  if ('name' in got) {
+    await load(true)
+    /* The preset just landed on the machine, so a form open on that machine
+       has to read its choices again -- whichever opening it is: one opened
+       while the write ran holds a copy that predates it, and would offer the
+       preset once more, which a press answers with a second add the server
+       refuses before any ping, right after a toast said connected. The
+       in-flight mark comes off only once that read is in, so the preset goes
+       from being connected to taken with no moment in between where it is
+       offered. `current()` is the wrong test here: it is about the form the
+       write was pressed in, and the reader may have reopened it since. */
+    if (get().mconnect === machine) await loadPresets()
+    settled()
+    return { landed: true, current: current(), name: got.name }
+  }
+  settled()
+  if (current()) set({ mconnectFailed: got.refused })
+  return { landed: false, current: current(), name: `${choice.preset}@${machine}` }
 }
 
 export function closeSheet(): void {
@@ -489,7 +607,7 @@ export function closeSheet(): void {
    nine rows it stands for each have a name, and the card has none. */
 export function pickerOpen(family: string): void {
   detail.open('extAgents')
-  set({ picking: family, sheet: null, msheet: null })
+  set({ picking: family, sheet: null, msheet: null, mconnect: null })
 }
 
 /* A model chosen for a member before it is connected; see `picked`. */
@@ -528,7 +646,12 @@ export async function pickAndConnect(row: ExtAgentRow): Promise<void> {
    the drawer has finished fading, or the card is gone from inside a panel that
    is still on screen. */
 export function sheetDismissed(): void {
-  if (!get().sheet && !get().msheet && !get().picking) return
+  /* A connect form's write may still be running: from this tick it is no
+     longer the form's, whatever the fade still shows -- the drop below comes
+     a fade later, and a write ending inside that window must not reopen the
+     drawer the reader just closed, nor write to the fading form. */
+  if (get().mconnect) set({ mconnectGen: get().mconnectGen + 1, mconnectBusy: null })
+  if (!get().sheet && !get().msheet && !get().picking && !get().mconnect) return
   /* Which open this close belongs to. The name cannot answer that: closing a
      card and pressing the same row again inside the fade writes the same string
      back, so the pending drop read it as "still mine" and cleared the card that
@@ -536,7 +659,7 @@ export function sheetDismissed(): void {
      which would read as a reopen and leave the closed card up. */
   const gen = detail.get().gen
   detail.dropAfterFade(
-    () => set({ sheet: null, msheet: null, picking: null }),
+    () => set({ sheet: null, msheet: null, picking: null, mconnect: null }),
     () => detail.get().gen !== gen,
   )
 }

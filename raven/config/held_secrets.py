@@ -103,24 +103,31 @@ def held_secrets() -> tuple[tuple[str, str], ...]:
 
     The config's credentials, re-read when the file changes, and the passwords
     kept for registered machines, read on every call: they are a few tiny
-    files, and an in-place rewrite can keep the old mtime (reviewed
-    2026-10-19 -- a stamp on mtime let a replaced password reach a model
-    verbatim until something else invalidated the cache).
+    files, and an in-place rewrite can keep the old mtime, so a stamp on it
+    would hold a replaced password's old value until something else
+    invalidated the cache.
     """
     global _cache
     path = get_config_path()
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        return ()
-    if _cache is None or _cache[0] != path or _cache[1] != mtime:
-        found: list[tuple[str, str]] = []
-        try:
-            _collect(read_raw(path), "", found)
-        except Exception as exc:  # noqa: BLE001 - an unreadable config holds nothing to scrub
-            logger.debug("held_secrets: config unreadable: {}", exc)
-        _cache = (path, mtime, tuple(found))
-    unique = dict(_cache[2])
+        # No config file: an empty set of config credentials, not the end of
+        # the call. The machine passwords below live under the Raven home on
+        # their own, and a missing config does not imply they are absent.
+        mtime = None
+    if mtime is None:
+        config_held: tuple[tuple[str, str], ...] = ()
+    else:
+        if _cache is None or _cache[0] != path or _cache[1] != mtime:
+            found: list[tuple[str, str]] = []
+            try:
+                _collect(read_raw(path), "", found)
+            except Exception as exc:  # noqa: BLE001 - an unreadable config holds nothing to scrub
+                logger.debug("held_secrets: config unreadable: {}", exc)
+            _cache = (path, mtime, tuple(found))
+        config_held = _cache[2]
+    unique = dict(config_held)
     unique.update(_machine_passwords(_machine_password_files()))
     # As a JSON file prints it too: a quote or a backslash in the value is
     # escaped there, and `cat config.json` shows that spelling.
