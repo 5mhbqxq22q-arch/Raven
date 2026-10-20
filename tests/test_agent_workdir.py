@@ -376,6 +376,26 @@ def test_instance_state_is_judged_through_symlinks(tmp_path: Path, monkeypatch: 
         validate_override(link, alias / "workspace")
 
 
+def test_a_moved_config_puts_its_state_beside_it(tmp_path: Path) -> None:
+    """`--config` moves the data directory with the config file: the MCP
+    credentials and the cron store follow it, and must be refused there too.
+    The directory itself is often the user's project, so it stays usable."""
+    from raven.home import set_config_path
+
+    data = tmp_path / "project"
+    for rel in ("credentials/mcp", "cron", "render", "src"):
+        (data / rel).mkdir(parents=True)
+    set_config_path(data / "config.json")
+    home = tmp_path / "agent"
+    home.mkdir()
+
+    for refused in ("credentials/mcp", "cron", "render"):
+        with pytest.raises(ValueError, match="Raven's own state"):
+            validate_override(data / refused, home)
+    assert validate_override(data, home) == data.resolve()
+    assert validate_override(data / "src", home) == (data / "src").resolve()
+
+
 def test_the_default_home_stays_protected_when_raven_home_moves(instance: Path) -> None:
     """The browser profile and the routing caches are written under `~/.raven`
     whatever `RAVEN_HOME` says, so moving the home does not unprotect them."""
@@ -424,6 +444,8 @@ _HOME_FILES = {
     "config.json",
     "connections.json",
     "env",
+    "everos-server.lock",
+    "everos-server.pid",
     "gateway.lock",
     "import_state.json",
     "redaction_history.json",
@@ -444,17 +466,32 @@ def _module_strings(tree: ast.Module) -> dict[str, object]:
                 values[node.targets[0].id] = ast.literal_eval(node.value)
             except ValueError:
                 continue
-        elif isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("raven.contracts"):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("raven.contracts"):
             module = importlib.import_module(node.module)
             for alias in node.names:
                 values[alias.asname or alias.name] = getattr(module, alias.name, None)
     return values
 
 
-def _entries_created_under_the_home() -> dict[str, set[str]]:
-    """Every top-level name the runtime puts under ``raven_home()``, the data dir or ``~/.raven``."""
-    found: dict[str, set[str]] = {}
-    for path in sorted(Path("raven").rglob("*.py")):
+def _scopes(tree: ast.Module) -> list[ast.AST]:
+    """The module and each function in it, the scopes a local name is bound in."""
+    return [tree, *(node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))]
+
+
+def _entries_created_under_the_home() -> dict[str, dict[str, set[str]]]:
+    """Every top-level name the runtime puts under Raven's home, by where it is anchored.
+
+    ``"home"`` is ``raven_home()`` or ``Path.home() / ".raven"``; ``"data"`` is
+    the data directory beside the config file (``get_data_dir()`` and
+    ``get_runtime_subdir()``), which ``--config`` moves away from the home.
+    Reached directly, through ``joinpath``, or through a local name bound to
+    one of those roots first; in ``raven/`` and in the ``plugins-dist``
+    packages alike.
+    """
+    found: dict[str, dict[str, set[str]]] = {}
+    sources = [*Path("raven").rglob("*.py"), *Path("plugins-dist").rglob("*.py")]
+    for path in sorted(p for p in sources if "tests" not in p.parts):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         constants = _module_strings(tree)
         params = {
@@ -465,6 +502,10 @@ def _entries_created_under_the_home() -> dict[str, set[str]]:
         }
 
         def name_of(expr: ast.expr) -> str:
+            if isinstance(expr, ast.Starred):
+                held = constants.get(expr.value.id) if isinstance(expr.value, ast.Name) else None
+                value = held[0] if isinstance(held, tuple) and held else None
+                return value if isinstance(value, str) else f"<unresolved {ast.unparse(expr)}>"
             try:
                 value = ast.literal_eval(expr)
             except ValueError:
@@ -477,45 +518,98 @@ def _entries_created_under_the_home() -> dict[str, set[str]]:
                     value = held[index] if isinstance(held, tuple) else None
             return value if isinstance(value, str) else f"<unresolved {ast.unparse(expr)}>"
 
-        def is_default_home(expr: ast.expr) -> bool:
-            """``Path.home() / ".raven"``, which a few writers use whatever ``RAVEN_HOME`` says."""
-            return (
+        def called(expr: ast.expr) -> str | None:
+            if not isinstance(expr, ast.Call) or expr.args:
+                return None
+            func = expr.func
+            return func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+
+        def anchor(expr: ast.expr, bound: dict[str, str]) -> str | None:
+            if called(expr) == "raven_home":
+                return "home"
+            if called(expr) == "get_data_dir":
+                return "data"
+            if (
                 isinstance(expr, ast.BinOp)
                 and isinstance(expr.op, ast.Div)
-                and isinstance(expr.left, ast.Call)
-                and getattr(expr.left.func, "attr", None) == "home"
+                and called(expr.left) == "home"
                 and name_of(expr.right) == ".raven"
-            )
+            ):
+                return "home"
+            if isinstance(expr, ast.Name):
+                return bound.get(expr.id)
+            return None
 
-        for node in ast.walk(tree):
-            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and is_default_home(node.left):
-                found.setdefault(name_of(node.right), set()).add(f"{path}:{node.lineno}")
-            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) and isinstance(node.left, ast.Call):
-                func = node.left.func
-                called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
-                own_parameter = isinstance(node.right, ast.Name) and node.right.id in params
-                if called in {"raven_home", "get_data_dir"} and not node.left.args and not own_parameter:
-                    found.setdefault(name_of(node.right), set()).add(f"{path}:{node.lineno}")
-            if isinstance(node, ast.Call) and node.args:
-                func = node.func
-                called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
-                argument = node.args[0]
-                if called == "get_runtime_subdir" and not (isinstance(argument, ast.Name) and argument.id in params):
-                    found.setdefault(name_of(argument), set()).add(f"{path}:{node.lineno}")
+        def record(name: str, where: str, node: ast.AST) -> None:
+            found.setdefault(name, {}).setdefault(where, set()).add(f"{path}:{node.lineno}")
+
+        for scope in _scopes(tree):
+            bound: dict[str, str] = {}
+            for node in ast.walk(scope):
+                if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                    where = anchor(node.value, {})
+                    if where is not None:
+                        bound[node.targets[0].id] = where
+            for node in ast.walk(scope):
+                if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                    where = anchor(node.left, bound)
+                    if where is not None and not (isinstance(node.right, ast.Name) and node.right.id in params):
+                        record(name_of(node.right), where, node)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.args:
+                    if node.func.attr == "joinpath":
+                        where = anchor(node.func.value, bound)
+                        if where is not None:
+                            record(name_of(node.args[0]), where, node)
+                if isinstance(node, ast.Call) and node.args:
+                    func = node.func
+                    name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+                    argument = node.args[0]
+                    if name == "get_runtime_subdir" and not (isinstance(argument, ast.Name) and argument.id in params):
+                        record(name_of(argument), "data", node)
     return found
 
 
 def test_every_directory_raven_creates_in_its_home_is_known_state() -> None:
-    """The state list is the boundary, so a directory the runtime starts
-    writing under its home must be named in it, or chosen as a file or work
-    area here; and an entry nothing creates any more must leave the list."""
-    from raven.agent.workdir import _STATE_ENTRIES
+    """The state lists are the boundary, so a directory the runtime starts
+    writing under its home must be named in them, or chosen as a file or work
+    area here; and an entry nothing creates any more must leave the list. The
+    data-directory list is exactly what is anchored there, since `--config`
+    puts that directory in a user's project and over-matching would hide the
+    project's own files from the checkpoint."""
+    from raven.agent.workdir import _DATA_DIR_STATE, _STATE_ENTRIES
 
     found = _entries_created_under_the_home()
 
     unclassified = {
-        name: sorted(sites) for name, sites in found.items() if name not in _STATE_ENTRIES | _HOME_FILES | _HOME_WORK
+        name: sites for name, sites in found.items() if name not in _STATE_ENTRIES | _HOME_FILES | _HOME_WORK
     }
     assert unclassified == {}
     assert _STATE_ENTRIES - found.keys() == set()
     assert _STATE_ENTRIES.isdisjoint(_HOME_FILES | _HOME_WORK)
+    assert {name for name, sites in found.items() if "data" in sites} == _DATA_DIR_STATE
+
+
+def test_the_scan_sees_each_way_a_path_reaches_the_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The completeness test is only as good as its scan: it must see a name
+    joined with `joinpath`, one joined after the root was bound to a local
+    name, and one in a plugin package."""
+    (tmp_path / "raven").mkdir()
+    (tmp_path / "plugins-dist" / "demo").mkdir(parents=True)
+    (tmp_path / "raven" / "a.py").write_text(
+        "RUNS = ('alpha', 'runs')\n"
+        "def f():\n    return raven_home().joinpath(*RUNS)\n"
+        "def g():\n    root = raven_home()\n    return root / 'beta'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "plugins-dist" / "demo" / "b.py").write_text(
+        "def h():\n    return get_runtime_subdir('gamma')\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    found = _entries_created_under_the_home()
+
+    assert {name: sorted(sites) for name, sites in found.items()} == {
+        "alpha": ["home"],
+        "beta": ["home"],
+        "gamma": ["data"],
+    }

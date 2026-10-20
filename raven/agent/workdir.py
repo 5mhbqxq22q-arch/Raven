@@ -50,11 +50,13 @@ _STATE_ENTRIES = frozenset(
         "knn_embcache",
         "knowledge",
         "logs",
+        "machines",
         "matrix-store",
         "media",
         "mochat",
         "oauth",
         "plugins",
+        "render",
         "routing",
         "runtime",
         "sandbox",
@@ -64,6 +66,37 @@ _STATE_ENTRIES = frozenset(
         "subagents",
         "telemetry",
         "traces",
+        "weixin",
+        "whatsapp-auth",
+    }
+)
+
+# What Raven keeps in the data directory beside the config file
+# (``get_runtime_subdir`` and ``get_data_dir()``). It is Raven's home unless
+# `--config` moves it, and then it is often the user's project, so only these
+# names are protected there, never the directory itself or anything else in it.
+# The same test keeps this list exactly equal to what the code anchors there.
+_DATA_DIR_STATE = frozenset(
+    {
+        "acp-launches",
+        "cache",
+        "credentials",
+        "cron",
+        "deliverables",
+        "everos",
+        "everos-server.lock",
+        "everos-server.pid",
+        "gateway.lock",
+        "import_state.json",
+        "knowledge",
+        "logs",
+        "matrix-store",
+        "media",
+        "mochat",
+        "plugins",
+        "render",
+        "sandbox",
+        "sentinel",
         "weixin",
         "whatsapp-auth",
     }
@@ -154,14 +187,25 @@ def _state_roots() -> tuple[Path, ...]:
     return tuple(dict.fromkeys((_raven_home(), (Path.home() / DEFAULT_HOME_DIRNAME).resolve())))
 
 
+def _data_dir() -> Path:
+    """The data directory beside the config file in use, resolved, created by nothing here."""
+    from raven.home import get_config_path
+
+    return Path(get_config_path()).expanduser().resolve().parent
+
+
 def _same(a: Path, b: Path) -> bool:
     """Whether two resolved paths name one directory, asked of the filesystem too.
 
     ``resolve()`` does not fold case, and a case-insensitive volume (macOS by
-    default) does, so a spelling that differs only in case passes ``==``.
+    default) does, so a spelling that differs only in case passes ``==``. Only
+    such a spelling is worth a ``stat``: every other pair answers from the
+    strings, which keeps the per-turn check off a slow network filesystem.
     """
     if a == b:
         return True
+    if os.fspath(a).casefold() != os.fspath(b).casefold():
+        return False
     try:
         return os.path.samefile(a, b)
     except OSError:
@@ -202,6 +246,12 @@ def _inside_state(path: Path, homes: tuple[Path, ...]) -> str | None:
             entry = path.relative_to(anchor).parts[0]
             if entry.casefold() in _STATE_ENTRIES:
                 return f"working directory must not be inside Raven's own state ({root / entry})"
+    data = _data_dir()
+    anchor = _anchor(path.parent, data)
+    if anchor is not None:
+        entry = path.relative_to(anchor).parts[0]
+        if entry.casefold() in _DATA_DIR_STATE:
+            return f"working directory must not be inside Raven's own state ({data / entry})"
     return None
 
 
@@ -248,14 +298,20 @@ def state_within(root: Path, agent_home: Path | None = None) -> tuple[Path, ...]
     """Raven's own state lying strictly inside ``root``, as resolved paths.
 
     What a snapshot or a listing of ``root`` leaves out: Raven's home, agent
-    home and the configuration file in use, matched by where they are rather
-    than by being named ``.raven``. A path inside another of them is folded
-    into it.
+    home, the configuration file in use and what Raven keeps beside it (the
+    data directory `--config` can move into a project), matched by where they
+    are rather than by being named ``.raven``. A path inside another of them
+    is folded into it.
     """
     from raven.home import get_config_path
 
     root = Path(root).expanduser().resolve()
-    candidates = [*_state_roots(), Path(get_config_path()).expanduser().resolve()]
+    data = _data_dir()
+    candidates = [
+        *_state_roots(),
+        Path(get_config_path()).expanduser().resolve(),
+        *(data / name for name in sorted(_DATA_DIR_STATE)),
+    ]
     if agent_home is not None:
         candidates.append(Path(agent_home).expanduser().resolve())
     inside = {path for path in candidates if root in path.parents}

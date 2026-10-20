@@ -200,3 +200,22 @@ def test_user_home_that_is_the_instance_uses_the_fallback(
     _, resolver = build_local_sessions(local_config, workspace=None)
 
     assert resolver.resolve("tui:one", create=False) == default_channel_root(agent_home) / "tui"
+
+
+def test_launch_from_a_moved_config_directory_is_kept_and_its_state_falls_back(
+    local_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from raven.home import set_config_path
+
+    data = Path.home() / "project"
+    (data / "credentials" / "mcp").mkdir(parents=True)
+    set_config_path(data / "config.json")
+
+    monkeypatch.chdir(data)
+    _, resolver = build_local_sessions(local_config, workspace=None)
+    assert resolver.resolve("tui:one", create=False) == Path.cwd()
+
+    monkeypatch.chdir(data / "credentials" / "mcp")
+    _, resolver = build_local_sessions(local_config, workspace=None)
+    assert resolver.resolve("tui:one", create=False) == default_channel_root(local_config.workspace_path) / "tui"
+

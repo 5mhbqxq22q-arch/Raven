@@ -1343,6 +1343,65 @@ async def test_state_tracked_before_the_rule_takes_no_new_content(tmp_path, monk
     assert "fake-key-after" not in await _object_store(second)
 
 
+@pytest.mark.parametrize("name", ["inst", "st [x]*?", ":colon", "trailing "])
+async def test_a_moved_config_keeps_its_data_directory_state_out(tmp_path, monkeypatch, name):
+    """`--config` moves the data directory beside the config file, and with it
+    the MCP OAuth tokens, the gateway lock's token and the cron store. Started
+    from that directory, the checkpoint must leave them out by where they are,
+    whatever the directory or its parents are called."""
+    from raven.home import set_config_path
+
+    root = tmp_path / name
+    for rel, text in (
+        ("config.json", '{"apiKey": "fake-moved-config"}'),
+        ("credentials/mcp/srv.json", '{"token": "fake-mcp-token"}'),
+        ("gateway.lock", '{"token": "fake-lock-token"}'),
+        ("cron/jobs.json", '{"jobs": "fake-cron"}'),
+        # Already ignored by the default excludes: naming it in an exclude
+        # pathspec as well would make git refuse the whole add.
+        ("logs/raven.log", "fake-log-line"),
+        ("main.py", "print(1)\n"),
+    ):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    set_config_path(root / "config.json")
+
+    svc = CheckpointService(root)
+    cid, changed = await svc.commit_turn("turn")
+    await svc.stage_tree()
+    _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", "HEAD")
+    stored = await _object_store(svc)
+
+    assert cid is not None
+    assert changed == ["main.py"]
+    assert tracked.splitlines() == ["main.py"]
+    assert "print(1)" in stored
+    for secret in ("fake-moved-config", "fake-mcp-token", "fake-lock-token", "fake-cron", "fake-log-line"):
+        assert secret not in stored
+
+
+async def test_a_moved_config_keeps_its_state_out_of_the_command_listing(tmp_path):
+    """The exec listing walks the same directory and skips the same state."""
+    from raven.agent.tools import command_writes
+    from raven.home import set_config_path
+
+    root = tmp_path / "project"
+    token = root / "credentials" / "mcp" / "srv.json"
+    token.parent.mkdir(parents=True)
+    token.write_text('{"token": "fake-mcp-token"}', encoding="utf-8")
+    set_config_path(root / "config.json")
+
+    before = await command_writes.before(root, None)
+    token.write_text('{"token": "fake-refreshed"}', encoding="utf-8")
+    (root / "gateway.lock").write_text('{"token": "fake-lock"}', encoding="utf-8")
+    (root / "notes.md").write_text("The command's own output.\n", encoding="utf-8")
+    writes, removals = await command_writes.after(before)
+
+    assert {Path(row.path).resolve() for row in writes} == {(root / "notes.md").resolve()}
+    assert removals == ()
+
+
 async def test_a_custom_shadow_dir_does_not_snapshot_itself(workspace):
     """The shadow repository is excluded by where it is, not by sitting under
     `.raven/`: a `shadow_dir` elsewhere in the tree would otherwise commit its
