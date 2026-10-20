@@ -14,6 +14,9 @@ raven agents new example-agent
 ```
 
 The second command writes a new folder under `$RAVEN_HOME/agents/example-agent`.
+That folder is Raven's own state, so it cannot be a session's working
+directory: edit it from another directory, or create it with `--here` inside
+your project.
 It validates the manifests, compiles generated Python, scans discovery, and
 by default launches an ACP initialize smoke check. The check can start the
 runtime and write its state; it is not a full model task.

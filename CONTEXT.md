@@ -3440,8 +3440,11 @@ working-directory override still takes precedence, and is refused by the same ru
 checkpointing already refuses those roots. The checkpoint applies the rule again on its
 own: it refuses a root inside that state, and leaves state inside its root, and its own
 shadow repository, out by absolute path -- excluded by pathspec before anything is hashed,
-so a work-tree `.gitignore` cannot put it back -- as `exec`'s file listing does. Neither
-depends on the directory being named `.raven`. Both lists are kept by a test that scans
+so a work-tree `.gitignore` cannot put it back -- as `exec`'s file listing does (every
+listing, a sub-agent's included). Neither depends on the directory being named `.raven`,
+nor on a path being spelled as on disk: containment is the filesystem's answer on both
+sides (two spellings that fold alike in case and Unicode normalization are asked of
+`samefile`), and each excluded path is re-spelled as its entries are on disk. Both lists are kept by a test that scans
 `raven/` and `plugins-dist/` for what the code creates under the Home and the data
 directory (directly, through `joinpath`, or through a local name bound to the root); a
 path built some other way is not seen by it. Commits a shadow repository already holds

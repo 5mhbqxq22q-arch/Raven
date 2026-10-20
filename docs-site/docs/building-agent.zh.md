@@ -12,7 +12,9 @@ raven agents new example-agent --dry-run
 raven agents new example-agent
 ```
 
-第二条命令在 `$RAVEN_HOME/agents/example-agent` 写入新目录，校验 manifest、
+第二条命令在 `$RAVEN_HOME/agents/example-agent` 写入新目录（该目录属于 Raven
+自身状态，不能作为会话的工作目录：请在其他目录下编辑它，或在项目中用 `--here`
+创建），并校验 manifest、
 编译生成的 Python、扫描 discovery，并默认启动 ACP initialize smoke check。
 检查会启动 runtime、可能写运行状态，但不是完整模型任务。
 
