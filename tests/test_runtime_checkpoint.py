@@ -1578,6 +1578,45 @@ async def test_a_state_path_whose_name_is_not_utf8_does_not_stop_the_checkpoint(
     assert "fake-bytes" not in await _object_store(svc)
 
 
+async def test_a_state_path_with_a_newline_is_still_kept_out(tmp_path):
+    """A name with a newline cannot be written into info/exclude, but it is
+    still Raven's state: the pathspecs, the untracking and the changed-file
+    filter must keep it out, as the listing already does."""
+    from raven.agent.tools import command_writes
+    from raven.home import set_config_path
+
+    root = tmp_path / "ws"
+    data = root / "pro\nj"
+    for rel, text in (
+        ("config.json", '{"apiKey": "fake-newline-config"}'),
+        ("credentials/mcp/srv.json", '{"token": "fake-newline-mcp"}'),
+        ("cron/jobs.json", '{"jobs": "fake-newline-cron"}'),
+    ):
+        path = data / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    (root / "main.py").write_text("print(1)\n", encoding="utf-8")
+    set_config_path(data / "config.json")
+
+    svc = CheckpointService(root)
+    assert (await svc.commit_turn("one"))[0] is not None
+    (data / "credentials" / "mcp" / "srv.json").write_text('{"token": "fake-newline-rotated"}', encoding="utf-8")
+    (root / "main.py").write_text("print(2)\n", encoding="utf-8")
+    cid, changed = await svc.commit_turn("two")
+    _, tracked, _ = await svc._git("ls-tree", "-r", "-z", "--name-only", "HEAD")
+    stored = await _object_store(svc)
+    before = await command_writes.before(root, None)
+    (data / "cron" / "jobs.json").write_text('{"jobs": "fake-newline-again"}', encoding="utf-8")
+    writes, _ = await command_writes.after(before)
+
+    assert cid is not None
+    assert changed == ["main.py"]
+    assert [name for name in tracked.split("\0") if name] == ["main.py"]
+    for secret in ("fake-newline-config", "fake-newline-mcp", "fake-newline-cron", "fake-newline-rotated"):
+        assert secret not in stored
+    assert writes == ()
+
+
 async def test_a_custom_shadow_dir_does_not_snapshot_itself(workspace):
     """The shadow repository is excluded by where it is, not by sitting under
     `.raven/`: a `shadow_dir` elsewhere in the tree would otherwise commit its

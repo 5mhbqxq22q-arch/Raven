@@ -296,8 +296,11 @@ class CheckpointService:
         within.append(candidate)
         if candidate.parent != self._workspace:
             within.append(candidate.parent / "NOTICE.txt")
-        state = [rel for rel in (path.relative_to(self._workspace).as_posix() for path in within) if "\n" not in rel]
-        self._state_excludes = "".join(f"/{_ignore_literal(rel)}\n" for rel in state)
+        state = [path.relative_to(self._workspace).as_posix() for path in within]
+        # An ignore pattern cannot hold a newline, so such a name stays out of
+        # info/exclude alone; the pathspecs and the untracking below still
+        # name it, and they are what keep it out of the repository.
+        self._state_excludes = "".join(f"/{_ignore_literal(rel)}\n" for rel in state if "\n" not in rel)
         # The excludes are not the guard: a work-tree `.gitignore` outranks
         # info/exclude and can re-include a path, and a repo made before the
         # rule may already track it. So every staging drops these paths from
