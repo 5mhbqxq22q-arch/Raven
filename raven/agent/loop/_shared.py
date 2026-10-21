@@ -58,6 +58,7 @@ from raven.agent.tools.web import (
     image_search_vendor,
     resolve_vendor_key,
 )
+from raven.agent.window.compaction import SUMMARY_MARKER
 from raven.contracts.assembled import TokenBudget
 from raven.contracts.llm_provider import LLMProvider, LLMResponse
 from raven.contracts.tool import SKIPPED_AFTER_BLOCKED_CALL, Continuation, FileRemoval, ToolOutput
@@ -390,9 +391,11 @@ def merge_mid_turn(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _plain_user(message: dict[str, Any]) -> bool:
+    content = message.get("content")
     return (
         message.get("role") == "user"
-        and isinstance(message.get("content"), (str, list))
+        and isinstance(content, (str, list))
+        and not (isinstance(content, str) and content.startswith(SUMMARY_MARKER))
         and not any(str(key).startswith("_") for key in message)
     )
 
@@ -410,7 +413,9 @@ def merge_adjacent_user(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     the session. History keeps one entry per message; the payload folds them, the
     same way every time, so the prompt-cache prefix stays stable. A message that
     carries one of the loop's own underscore marks rides its own message on
-    purpose and is left alone.
+    purpose and is left alone, and so is a compaction summary: it follows the
+    first user message on purpose, which stays byte-identical so the cached
+    prefix ahead of the summary survives every compaction.
     """
     if not any(_plain_user(a) and _plain_user(b) for a, b in zip(messages, messages[1:])):
         return messages

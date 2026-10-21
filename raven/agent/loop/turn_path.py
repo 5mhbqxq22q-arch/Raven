@@ -569,7 +569,7 @@ class TurnPathMixin:
         # The turn's own conversation plus one instruction: the main line, not a
         # side question, so its input reads as a continuation and its output as
         # the turn's last word.
-        synth_messages = merge_adjacent_user(messages + [{"role": "user", "content": prompt}])
+        synth_messages = merge_adjacent_user(messages) + [{"role": "user", "content": prompt}]
         # The wrap-up is a model call of the same turn, so it pays the turn's
         # effort; absent, the provider's configured default stands.
         effort_kwargs: dict[str, str] = {} if reasoning_effort is None else {"reasoning_effort": reasoning_effort}

@@ -107,3 +107,17 @@ def test_a_message_the_loop_marked_is_not_folded() -> None:
     messages = [{"role": "user", "content": "summarise the report"}, _mid("skip 2023")]
 
     assert merge_adjacent_user(messages) is messages
+
+
+def test_a_compaction_summary_is_not_folded() -> None:
+    """Compaction puts its summary right after the first user message on purpose:
+    that message stays byte-identical, so the cached prefix ahead of the summary
+    survives every compaction."""
+    from raven.agent.window.compaction import SUMMARY_MARKER
+
+    messages = [
+        {"role": "user", "content": "the task statement"},
+        {"role": "user", "content": f"{SUMMARY_MARKER}\n\nwhat happened so far"},
+    ]
+
+    assert merge_adjacent_user(messages) is messages
