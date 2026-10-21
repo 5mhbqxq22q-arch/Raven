@@ -217,6 +217,30 @@ def _ignore_literal(rel: str) -> str:
     return stripped + "\\ " * (len(escaped) - len(stripped))
 
 
+_C_ESCAPES = {"\a": "a", "\b": "b", "\t": "t", "\n": "n", "\v": "v", "\f": "f", "\r": "r", '"': '"', "\\": "\\"}
+
+
+def _quoted(name: str) -> str:
+    """``name`` as git's line output shows it with ``core.quotePath`` off.
+
+    A name with a control character, a quote or a backslash is C-quoted and
+    the rest is left as it is, so a name never spans two lines of whatever
+    shows it; a byte that is not UTF-8 reads as U+FFFD.
+    """
+    text = name.encode(errors="surrogateescape").decode(errors="replace")
+    if not any(char in _C_ESCAPES or char < " " or char == "\x7f" for char in text):
+        return text
+    body = "".join(
+        f"\\{_C_ESCAPES[char]}"
+        if char in _C_ESCAPES
+        else f"\\{ord(char):03o}"
+        if char < " " or char == "\x7f"
+        else char
+        for char in text
+    )
+    return f'"{body}"'
+
+
 def _precomposed(name: str) -> str:
     """``name`` as git on macOS spells it before matching an ignore rule.
 
@@ -529,10 +553,12 @@ class CheckpointService:
             # NUL-separated and decoded as the names are held: in its line
             # output git quotes a name with a newline, a quote, a backslash or
             # a control character, and the quoted form matches no state path.
-            # What is kept is spelled for display, as the line output was.
+            # What is kept is quoted as the line output was: the list reaches
+            # the next turn's recovery prompt, where a raw newline in a name
+            # would start a line of its own.
             rc, raw, _ = await self._run(("diff", "--cached", "--name-only", "-z"))
             changed = [
-                name.encode(errors="surrogateescape").decode(errors="replace")
+                _quoted(name)
                 for name in raw.decode(errors="surrogateescape").split("\0")
                 if name and not self._is_state(name)
             ]
