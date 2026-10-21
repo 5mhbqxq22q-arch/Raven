@@ -453,6 +453,46 @@ def test_instance_state_is_judged_whatever_the_unicode_normalization(
         validate_override(nfd, nfc / "workspace")
 
 
+def test_a_project_directory_that_differs_from_a_state_name_only_in_case_stays_usable(tmp_path: Path) -> None:
+    """On a case-sensitive volume `Media/` and `media/` are two directories,
+    and only Raven's own lower-case one is state: a project's `Media/` beside
+    a config moved into it is the user's."""
+    from raven.home import set_config_path
+
+    data = tmp_path / "proj"
+    for rel in ("media", "Media/sub", "Logs"):
+        (data / rel).mkdir(parents=True)
+    set_config_path(data / "config.json")
+    home = tmp_path / "agent"
+    home.mkdir()
+
+    assert validate_override(data / "Media" / "sub", home) == (data / "Media" / "sub").resolve()
+    assert validate_override(data / "Logs", home) == (data / "Logs").resolve()
+    with pytest.raises(ValueError, match="Raven's own state"):
+        validate_override(data / "media", home)
+
+
+def test_a_case_variant_of_a_state_name_is_state_where_the_volume_folds_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where the volume folds case (simulated here, not native), `Media/` is
+    Raven's `media/` and stays refused."""
+    import os
+
+    from raven.agent import workdir
+    from raven.home import set_config_path
+
+    monkeypatch.setattr(workdir.os.path, "samefile", lambda a, b: os.fspath(a).casefold() == os.fspath(b).casefold())
+    data = tmp_path / "proj"
+    (data / "media").mkdir(parents=True)
+    set_config_path(data / "config.json")
+    home = tmp_path / "agent"
+    home.mkdir()
+
+    with pytest.raises(ValueError, match="Raven's own state"):
+        validate_override(data / "Media" / "sub", home)
+
+
 def test_a_channel_workspace_in_instance_state_falls_back(instance: Path) -> None:
     resolver = WorkdirResolver(
         WorkdirPolicy.PER_CHANNEL,

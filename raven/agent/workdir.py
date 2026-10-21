@@ -263,6 +263,19 @@ def _contains(path: Path, target: Path) -> bool:
     return any(_same(path, parent) for parent in target.parents)
 
 
+def _names_state(anchor: Path, entry: str, names: frozenset[str]) -> bool:
+    """Whether ``entry`` under ``anchor`` is one of Raven's own ``names``.
+
+    Exactly, or as a spelling the volume itself takes for one of them: on a
+    volume that folds case `Media/` is Raven's `media/`, on one that does not
+    it is the user's own directory beside it.
+    """
+    if entry in names:
+        return True
+    folded = _fold(entry)
+    return any(_fold(name) == folded and _same(anchor / entry, anchor / name) for name in names)
+
+
 def _inside_state(path: Path, homes: tuple[Path, ...]) -> str | None:
     """Why ``path`` (resolved) lies in Raven's own state, or ``None`` when it does not.
 
@@ -285,13 +298,13 @@ def _inside_state(path: Path, homes: tuple[Path, ...]) -> str | None:
         anchor = _anchor(path.parent, root)
         if anchor is not None:
             entry = path.relative_to(anchor).parts[0]
-            if _fold(entry) in _STATE_ENTRIES:
+            if _names_state(anchor, entry, _STATE_ENTRIES):
                 return f"working directory must not be inside Raven's own state ({root / entry})"
     data = _data_dir()
     anchor = _anchor(path.parent, data)
     if anchor is not None:
         entry = path.relative_to(anchor).parts[0]
-        if _fold(entry) in _DATA_DIR_STATE:
+        if _names_state(anchor, entry, _DATA_DIR_STATE):
             return f"working directory must not be inside Raven's own state ({data / entry})"
     return None
 
