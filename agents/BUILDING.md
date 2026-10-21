@@ -134,7 +134,7 @@ override only what you need.
 | `before_execute_tools` | after the model proposes tool calls, before they run | audit or veto the batch (short-circuit, rollback, note) |
 | `after_iteration` | after each iteration completes | observe, budget, note |
 | `terminal_answerless` | the turn ended with no answer | salvage or report |
-| `after_send` | after the outbound text is sent | file a report, update state |
+| `after_send` | after the outbound text is sent; `outbound_content` is None when the model ended the turn without a reply | file a report, update state |
 
 Every phase returns a `HookDecision`. Its vocabulary, by field:
 

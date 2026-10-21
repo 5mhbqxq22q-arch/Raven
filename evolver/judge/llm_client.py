@@ -111,8 +111,8 @@ class LitellmBackend(JudgeLLMBackend):
         temperature: float = 0.0,
     ) -> str:
         # Route through chat_with_retry (base.LLMProvider) so the judge
-        # inherits the empty-response retry + sync OpenAI fallback that
-        # the agent loop already relies on. Calling provider.chat()
+        # inherits the transient-failure retry + sync OpenAI fallback that
+        # the agent loop's own calls get. Calling provider.chat()
         # directly surfaced provider empty-content errors at the judge
         # layer (~3% of calls in an early dry run).
         # The provider's chat[_with_retry] accepts model=None to fall

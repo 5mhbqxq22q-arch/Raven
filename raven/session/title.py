@@ -196,9 +196,9 @@ async def generate_title(
     """One model call naming a session, or ``None`` on any refusal.
 
     ``chat_with_retry`` rather than ``chat`` for the reason the evolver judge
-    uses it (``evolver/judge/llm_client.py``): it carries the empty-response
-    retry the agent loop relies on, and an empty answer here is otherwise
-    indistinguishable from a model that had nothing to say.
+    uses it (``evolver/judge/llm_client.py``): it retries a provider's transient
+    failures, an empty-content error among them, and an empty answer here is
+    otherwise indistinguishable from a model that had nothing to say.
     """
     try:
         with _llm_purpose("title"):

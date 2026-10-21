@@ -897,3 +897,32 @@ def test_a_labeller_that_is_not_callable_leaves_the_ask_unnamed(metadata):
 
 def test_a_callable_labeller_is_handed_back_as_it_is():
     assert turn_ask_kind({TURN_ASK_KIND_KEY: _names_the_ask}) is _names_the_ask
+
+
+class _AlwaysThinking(LLMProvider):
+    """Reasons on every call and never reaches an answer, keeping the effort each asked for."""
+
+    def __init__(self) -> None:
+        super().__init__(api_key="test")
+        self.efforts: list[str | None] = []
+
+    async def chat(self, messages, tools=None, model=None, max_tokens=4096, temperature=0.7, **kw):
+        self.efforts.append(kw.get("reasoning_effort"))
+        return LLMResponse(content="", reasoning_content="Let me weigh it.", finish_reason="stop")
+
+    def get_default_model(self) -> str:
+        return "stub"
+
+
+@pytest.mark.asyncio
+async def test_a_rerun_does_not_walk_the_step_down_rungs_again(tmp_path):
+    """Each rung is used once a turn, not once an attempt. The rerun asks at the
+    turn's own effort, and with both rungs already spent, a second stop in its
+    thinking fails it at once."""
+    provider = _AlwaysThinking()
+    agent = _loop(tmp_path, provider, [_Budgeted(dead_end_retries=1)])
+
+    failure = await _run_answerless(agent)
+
+    assert provider.efforts == [None, "high", "low", None]
+    assert "thinking" in failure

@@ -5,11 +5,14 @@ so this pass is the only thing standing between "the reader corrected me while I
 worked" and "the reader asked a second question". These pin the rules the seam
 depends on: which messages it touches, which it must leave alone, and that
 running it twice over the same list changes nothing.
+
+``merge_adjacent_user`` runs at the same seam and folds two plain user messages
+in a row, which a turn the model ended without a reply leaves behind.
 """
 
 from __future__ import annotations
 
-from raven.agent.loop._shared import _MID_TURN_HEADER, _MID_TURN_USER_KEY, merge_mid_turn
+from raven.agent.loop._shared import _MID_TURN_HEADER, _MID_TURN_USER_KEY, merge_adjacent_user, merge_mid_turn
 
 
 def _mid(text: str) -> dict:
@@ -70,3 +73,37 @@ def test_a_stored_mid_turn_entry_is_never_labelled_again() -> None:
     messages = [{"role": "user", "content": "only the last quarter", "mid_turn": True}]
 
     assert merge_mid_turn(messages) is messages
+
+
+def test_two_user_messages_in_a_row_are_sent_as_one() -> None:
+    """A turn the model ended without a reply leaves its question with nothing
+    after it, so the next question lands right behind it. Some providers refuse
+    two user messages in a row; the history keeps both, the payload folds them."""
+    messages = [{"role": "user", "content": "first"}, {"role": "user", "content": "second"}]
+
+    assert merge_adjacent_user(messages) == [{"role": "user", "content": "first\n\nsecond"}]
+
+
+def test_a_body_in_parts_keeps_its_parts_when_folded() -> None:
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    messages = [{"role": "user", "content": "first"}, {"role": "user", "content": [image]}]
+
+    assert merge_adjacent_user(messages) == [{"role": "user", "content": [{"type": "text", "text": "first"}, image]}]
+
+
+def test_a_list_with_no_two_user_messages_in_a_row_is_handed_back_untouched() -> None:
+    messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+    ]
+
+    assert merge_adjacent_user(messages) is messages
+
+
+def test_a_message_the_loop_marked_is_not_folded() -> None:
+    """A mid-turn arrival rides its own message under its own header; the fold
+    takes only plain messages and leaves the loop's own marks where they are."""
+    messages = [{"role": "user", "content": "summarise the report"}, _mid("skip 2023")]
+
+    assert merge_adjacent_user(messages) is messages

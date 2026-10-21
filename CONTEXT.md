@@ -789,7 +789,8 @@ ceiling) is a model that said nothing: it is not asked again, and the turn ends 
 Turn**. A reply that reasoned and never reached a body stopped while thinking, and so did one cut at
 the output ceiling: the call is asked again a rung at a time, high and then low -- below the effort
 the turn named on `REASONING_EFFORT_LADDER`, or both from the top when it named none -- each rung
-once a turn (`lower_reasoning_effort`); with no rung left, the turn fails with an
+once a turn, a product's rerun of the turn included (`lower_reasoning_effort`). Asking again
+spends no iteration, since the call it repeats did no work. With no rung left, the turn fails with an
 `AnswerlessTurnError` naming which (`stopped_in_thinking`), even on its last iteration. Reasoning
 counts in whatever form a provider reports it: a structured field, thinking blocks, an inline
 `<think>` block, or a billed `reasoning_tokens` count when the text is withheld, as Codex withholds
@@ -804,6 +805,10 @@ written. The `after_send` chain still runs, with no outbound content, so the tur
 their bookkeeping (an oncall hold, a research record). Text a hook composes there -- a deck built
 this turn -- is sent as the reply, and the turn is then not silent; a hook that only decorates a
 reply, such as a queued nudge, leaves it for the next one. Post-turn learning does not run.
+Saying nothing on the last iteration is still a Silent Turn, never an exhausted one that gets a
+wrap-up. A Silent Turn that called no tool writes no assistant message at all: its hooks' record
+is then filed on the session, where **Response Meta** reads it, and the next call folds its
+question into the one after it, since some providers refuse two user messages in a row.
 What a reply would have ended is ended without one: a channel is told the turn is over
 (`ChannelBase.end_turn`) so a typing indicator stops, a cron run is recorded as done without
 waking heartbeat, and the TUI adds no row.
@@ -3181,7 +3186,8 @@ What an ACP agent attaches to its `session/prompt` response under `_meta`, the f
 schema reserves for an agent's own metadata, kept on the run record as `acp_response_meta`
 verbatim and namespaced as sent. Raven serving the agent side fills it from the turn's
 observer stash: whatever a hook filed under `metadata["observers"]["acp_meta"]` is read
-back off the turn's last substantive assistant message once the turn has landed, so the
+back off the turn's last substantive assistant message once the turn has landed (off the
+session, for a **Silent Turn** that wrote no assistant message), so the
 loop_hooks paper's filing is the only seam a plugin needs - no plugin touches the wire, and
 a turn that filed nothing answers with its stop reason alone. Raven driving the agent side
 reads none of it: the table reaches the spawn record's `meta.json` and the DAG run's

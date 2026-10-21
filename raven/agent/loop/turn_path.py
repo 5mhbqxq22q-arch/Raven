@@ -60,6 +60,7 @@ from raven.agent.loop._shared import (
     json,
     logger,
     loop_break_nudge,
+    merge_adjacent_user,
     merge_mid_turn,
     monotonic,
     replace,
@@ -224,24 +225,28 @@ def _turns_a_person_opened(messages: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
-def _stamp_turn_observers(messages: list[dict[str, Any]], metadata: dict[str, Any] | None, turn_base: int) -> None:
+def _stamp_turn_observers(
+    messages: list[dict[str, Any]], metadata: dict[str, Any] | None, turn_base: int
+) -> dict[str, Any] | None:
     """File the turn's observer record onto its last substantive assistant message.
 
     The loop_hooks paper files ``metadata["observers"]`` on THE TURN'S message
     at persist time, so the search never crosses ``turn_base``: an answerless
     turn has no seat, and the assembled window can share dict objects with the
     session record (the curator candidate view), so stamping an earlier
-    message would rewrite filed history in place.
+    message would rewrite filed history in place. Returns the record when the
+    turn wrote no such message, for the caller to file elsewhere.
     """
     if not metadata:
-        return
+        return None
     observers = metadata.get("observers")
     if not isinstance(observers, dict) or not observers:
-        return
+        return None
     for message in reversed(messages[turn_base:]):
         if message.get("role") == "assistant" and (message.get("content") or message.get("tool_calls")):
             message["observers"] = dict(observers)
-            break
+            return None
+    return dict(observers)
 
 
 # What one log line of model output may carry. The whole reply is already in the
@@ -564,7 +569,7 @@ class TurnPathMixin:
         # The turn's own conversation plus one instruction: the main line, not a
         # side question, so its input reads as a continuation and its output as
         # the turn's last word.
-        synth_messages = messages + [{"role": "user", "content": prompt}]
+        synth_messages = merge_adjacent_user(messages + [{"role": "user", "content": prompt}])
         # The wrap-up is a model call of the same turn, so it pays the turn's
         # effort; absent, the provider's configured default stands.
         effort_kwargs: dict[str, str] = {} if reasoning_effort is None else {"reasoning_effort": reasoning_effort}
@@ -712,6 +717,7 @@ class TurnPathMixin:
         attempt: int = 1,
         rerun_pending: "Callable[[str | None, list[dict], str], bool] | None" = None,
         spend: TurnSpend | None = None,
+        step_down: dict[str, str] | None = None,
     ) -> tuple[str | None, list[str], list[dict], LoopOutcome]:
         """Run the agent iteration loop.
 
@@ -755,11 +761,18 @@ class TurnPathMixin:
         clock above does: a rerun is a second attempt at one turn and bills
         into the same scope. A caller that opened no scope gets one for this
         loop alone, which bills its own calls and takes no delegated ones.
+
+        ``step_down`` keeps, under ``"effort"``, the rung a reply that stopped
+        while thinking was last asked again at. It is the turn's for the same
+        reason: each rung is used once a turn, and a rerun is the same turn. A
+        caller that keeps none gets one for this loop alone.
         """
         spend = spend if spend is not None else TurnSpend(session_key)
+        step_down = step_down if step_down is not None else {}
         messages = initial_messages
         iteration = 0
         final_content = None
+        said_nothing = False
         tools_used: list[str] = []
         effective_model = model or self.model
 
@@ -882,7 +895,6 @@ class TurnPathMixin:
         )
         iter_msg_base = 0
         pending_gen_overrides: dict[str, Any] | None = None
-        empty_retry_effort: str | None = None
 
         def _land_hook_note(decision) -> None:
             """Honor a hook's ``append_note``: the note joins the last message
@@ -1108,7 +1120,7 @@ class TurnPathMixin:
             # Last, and on the payload only: the strategies above decide against
             # the shape the messages arrived in, and the prompt-cache prefix
             # stays stable because the same arrivals always fold the same way.
-            call_messages = merge_mid_turn(call_messages)
+            call_messages = merge_adjacent_user(merge_mid_turn(call_messages))
             # A hook can send this whole response back, and a rollback pops the
             # history the stream has already left -- so where hooks are installed
             # the deltas are held until something keeps the response.
@@ -1765,15 +1777,18 @@ class TurnPathMixin:
                 # the turn's own effort standing. With no rung left, it fails the turn.
                 if clean is None:
                     if (failure := stopped_in_thinking(response)) is None:
+                        said_nothing = True
                         break
-                    if (lowered := lower_reasoning_effort(empty_retry_effort or call_reasoning_effort)) is not None:
+                    spent = step_down.get("effort")
+                    if (lowered := lower_reasoning_effort(spent or call_reasoning_effort)) is not None:
                         logger.warning(
                             "Model stopped while thinking at reasoning_effort {}; asking again at {}",
-                            empty_retry_effort or call_reasoning_effort or "unstated",
+                            spent or call_reasoning_effort or "unstated",
                             lowered,
                         )
-                        empty_retry_effort = lowered
+                        step_down["effort"] = lowered
                         pending_gen_overrides = {"reasoning_effort": lowered}
+                        iteration -= 1  # the call did no work; asking it again spends no iteration
                         continue
                     logger.error("Model reply ended the turn as a failure: {}", failure)
                     status = "error"
@@ -1821,11 +1836,13 @@ class TurnPathMixin:
             logger.info("question autofill: {} row(s) ended the turn unwritten", len(lost))
 
         # A turn that already failed is not an exhausted one, even when its failure
-        # landed on the last iteration: wrapping it up would replace the failure
-        # with a reply.
+        # landed on the last iteration, and neither is one the model ended by
+        # saying nothing: wrapping either up would replace what happened with a
+        # reply.
         if (
             final_content is None
             and status != "error"
+            and not said_nothing
             and (stalled_tool is not None or iteration >= iteration_cap or stopped_by == "wall_clock")
         ):
             if stalled_tool is not None:
@@ -1984,9 +2001,10 @@ class TurnPathMixin:
         """Process a single turn request and return its reply.
 
         Returns ``(reply_content, media_paths)`` for a turn that produced an
-        outbound reply, or ``None`` for a silent turn (the model ended it
-        without a reply and no ``after_send`` hook composed one, the message
-        tool already sent, or a hook short-circuit chose to return None). ``origin`` is the
+        outbound reply, or ``None`` when nothing is left to send: the model
+        ended the turn without a reply and no ``after_send`` hook composed one
+        (a Silent Turn), the message tool already sent, or a hook short-circuit
+        chose to return None. ``origin`` is the
         spine TurnRequest's origin. ``hook_sink``, when given, receives under
         ``"appended"`` whatever the ``after_send`` chain added to the end of the
         reply: a streamed reply has already left as deltas by then, so the
@@ -2404,6 +2422,7 @@ class TurnPathMixin:
                 attempt=attempt,
                 rerun_pending=_rerun_pending,
                 spend=spend,
+                step_down=step_down,
             )
 
         # Taken BEFORE the first attempt, because the loop appends to the list it is
@@ -2417,6 +2436,7 @@ class TurnPathMixin:
         turn_t0 = monotonic()
         pending: dict[str, Any] = {"rerun": False, "reasons": []}
         live: dict[str, list[dict]] = {"messages": initial_messages}
+        step_down: dict[str, str] = {}
 
         def _seed_for_the_rerun(msgs: list[dict]) -> list[dict]:
             """The question again, plus whatever the reader said while the attempt ran.
@@ -2622,8 +2642,14 @@ class TurnPathMixin:
         # substantive assistant message at persist time -- after the send fire,
         # so a stash from any phase, ``after_send`` included, reaches the filed
         # record. Per turn, on the turn -- not a session-wide last write.
-        if len(self.hooks) > 0:
-            _stamp_turn_observers(all_msgs, turn_hook_meta, turn_start_idx)
+        rowless = _stamp_turn_observers(all_msgs, turn_hook_meta, turn_start_idx) if len(self.hooks) > 0 else None
+        # Except for a turn with no such message -- a model that said nothing
+        # without calling a tool -- whose record goes on the session, at where the
+        # turn began, so ACP can still read its Response Meta back. Written by every
+        # turn that gets here, None included, for the output-limit marker's reasons:
+        # a save keeps a key left unsaid, and undo rewinds messages without
+        # touching metadata. A turn that never gets here is told apart by ``at``.
+        session.metadata["rowless_turn_observers"] = {"at": prev_len, "observers": rowless} if rowless else None
 
         self._save_turn(session, all_msgs, persist_from)
         self.sessions.save(session)

@@ -54,12 +54,14 @@ async def _run_answerless(agent: AgentLoop, text: str = "hi", **kwargs) -> str:
     return str(failed.value)
 
 
-def _make_agent(workspace: Path, provider: LLMProvider, limits: RecoveryLimits | None = None) -> AgentLoop:
+def _make_agent(
+    workspace: Path, provider: LLMProvider, limits: RecoveryLimits | None = None, *, max_iterations: int = 10
+) -> AgentLoop:
     return AgentLoop(
         provider=provider,
         workspace=workspace,
         model="stub",
-        policy=TurnPolicy(max_iterations=10, empty_recovery=limits),
+        policy=TurnPolicy(max_iterations=max_iterations, empty_recovery=limits),
         tools=ToolWiring(restrict_to_workspace=True),
     )
 
@@ -770,6 +772,35 @@ async def test_running_out_of_rungs_on_the_last_iteration_still_fails_the_turn(w
 
 
 @pytest.mark.asyncio
+async def test_saying_nothing_on_the_last_iteration_ends_the_turn_without_a_wrap_up(workspace):
+    """A turn reaches its cap by working, not by answering. A model that ends the
+    turn on its last iteration has ended it: a wrap-up would put words in its
+    mouth and file the turn as cut short."""
+    provider = _AlwaysEmptyProvider()
+    agent = _make_agent(workspace, provider, max_iterations=1)
+
+    out = await agent._process_message(_turn(), session_key="s1")
+
+    assert out is None
+    assert provider.calls == 1
+    assert [m["role"] for m in agent.sessions.get_or_create("s1").messages] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_a_step_down_owed_on_the_last_iteration_is_still_asked(workspace):
+    """Asking again a rung lower repeats a call that did no work, so it spends no
+    iteration: the step-down, and the failure once no rung is left, land on a
+    turn's last iteration exactly as on its first."""
+    provider = _OneReplyProvider(LLMResponse(content="", reasoning_content="Let me weigh it.", finish_reason="stop"))
+    agent = _make_agent(workspace, provider, max_iterations=1)
+
+    failure = await _run_answerless(agent)
+
+    assert provider.efforts == [None, "high", "low"]
+    assert "thinking" in failure
+
+
+@pytest.mark.asyncio
 async def test_a_silent_turn_still_runs_the_after_send_chain_with_no_reply(workspace):
     """The chain is also where a turn's hooks do their bookkeeping, so it runs
     on a silent turn too -- handed no reply, rather than an empty one."""
@@ -810,6 +841,73 @@ async def test_a_hold_filed_on_a_silent_turn_reaches_the_acp_client(workspace):
     assert AcpMethods._turn_meta(agent.sessions, "s1", 0) == {
         HOLD_TURN_META: {"untilMs": None, "why": "waiting for the next look"}
     }
+
+
+@pytest.mark.asyncio
+async def test_a_hold_filed_on_a_silent_turn_that_called_no_tool_still_reaches_the_acp_client(workspace):
+    """No tool ran, so the turn wrote no assistant row for its observers to ride
+    on. A wait the client reads as finished is the failure the hold exists for."""
+    from raven.acp.methods import HOLD_TURN_META, AcpMethods
+
+    agent = _make_agent(workspace, _AlwaysEmptyProvider())
+    agent.hooks.append(_FilesAHold())
+
+    out = await agent._process_message(_turn("anything new?"), session_key="s1")
+
+    assert out is None
+    assert [m["role"] for m in agent.sessions.get_or_create("s1").messages] == ["user"]
+    assert AcpMethods._turn_meta(agent.sessions, "s1", 0) == {
+        HOLD_TURN_META: {"untilMs": None, "why": "waiting for the next look"}
+    }
+
+
+class _FilesAHoldOnce(_FilesAHold):
+    def __init__(self):
+        self.filed = False
+
+    async def after_send(self, ctx):
+        if self.filed:
+            return HookDecision()
+        self.filed = True
+        return await super().after_send(ctx)
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_silent_turn_s_hold_does_not_answer_a_later_prompt(workspace):
+    """A prompt answered before the loop runs (a slash command) files nothing, so
+    the earlier turn's record is still there; where it was filed says it is not
+    this prompt's."""
+    from raven.acp.methods import AcpMethods
+
+    agent = _make_agent(workspace, _AlwaysEmptyProvider())
+    agent.hooks.append(_FilesAHoldOnce())
+    await agent._process_message(_turn("anything new?"), session_key="s1")
+    assert AcpMethods._turn_meta(agent.sessions, "s1", 0) is not None, "the first turn filed a hold"
+    filed_before = len(agent.sessions.get_or_create("s1").messages)
+
+    await agent._process_message(_turn("/help"), session_key="s1")
+
+    assert AcpMethods._turn_meta(agent.sessions, "s1", filed_before) is None
+
+
+@pytest.mark.asyncio
+async def test_a_hold_from_an_undone_turn_does_not_answer_the_turn_after_it(workspace):
+    """Undo rewinds the messages and leaves the session's record alone, so the next
+    turn starts where the undone one did. That turn files its own record, an empty
+    one included, or it would read the undone turn's hold as its own."""
+    from raven.acp.methods import AcpMethods
+
+    agent = _make_agent(workspace, _AlwaysEmptyProvider())
+    agent.hooks.append(_FilesAHoldOnce())
+    await agent._process_message(_turn("anything new?"), session_key="s1")
+    assert AcpMethods._turn_meta(agent.sessions, "s1", 0) is not None, "the first turn filed a hold"
+    session = agent.sessions.get_or_create("s1")
+    session.undo_last_turn()
+    agent.sessions.save(session)
+
+    await agent._process_message(_turn("and now?"), session_key="s1")
+
+    assert AcpMethods._turn_meta(agent.sessions, "s1", 0) is None
 
 
 class _ComposesADeck(AgentHook):
@@ -893,3 +991,97 @@ async def test_a_silent_turn_has_no_reply_to_learn_from(workspace, monkeypatch):
     await asyncio.gather(*list(agent._consolidation_tasks))
 
     assert learned == []
+
+
+class _SilentThenAnswers(LLMProvider):
+    """Says nothing on its first call and answers every one after, keeping each request."""
+
+    def __init__(self):
+        super().__init__(api_key="test")
+        self.requests: list[list[dict]] = []
+
+    async def chat(
+        self,
+        messages,
+        tools=None,
+        model=None,
+        max_tokens=4096,
+        temperature=0.7,
+        reasoning_effort=None,
+        tool_choice=None,
+    ):
+        self.requests.append([dict(m) for m in messages])
+        if len(self.requests) == 1:
+            return LLMResponse(content="", finish_reason="stop")
+        return LLMResponse(content="Both, then.", finish_reason="stop")
+
+    def get_default_model(self) -> str:
+        return "stub"
+
+
+@pytest.mark.asyncio
+async def test_the_call_after_a_silent_turn_carries_no_two_user_messages_in_a_row(workspace):
+    """A silent turn that called no tool leaves its question with no reply after it,
+    and the next question lands right behind it. Some providers refuse two user
+    messages in a row, and would refuse every call for the rest of the session.
+    The history keeps both; only what is sent folds them."""
+    provider = _SilentThenAnswers()
+    agent = _make_agent(workspace, provider)
+
+    await agent._process_message(_turn("first question"), session_key="s1")
+    await agent._process_message(_turn("second question"), session_key="s1")
+
+    roles = [m["role"] for m in provider.requests[-1]]
+    assert not any(a == b == "user" for a, b in zip(roles, roles[1:])), roles
+    sent = str(provider.requests[-1])
+    assert "first question" in sent and "second question" in sent
+    rows = agent.sessions.get_or_create("s1").messages
+    assert [m["role"] for m in rows] == ["user", "user", "assistant"]
+
+
+class _RecordsRequests(LLMProvider):
+    """Answers from a script, one response per call, keeping each request."""
+
+    def __init__(self, *responses: LLMResponse):
+        super().__init__(api_key="test")
+        self.requests: list[list[dict]] = []
+        self._responses = responses
+
+    async def chat(
+        self,
+        messages,
+        tools=None,
+        model=None,
+        max_tokens=4096,
+        temperature=0.7,
+        reasoning_effort=None,
+        tool_choice=None,
+    ):
+        self.requests.append([dict(m) for m in messages])
+        return self._responses[min(len(self.requests), len(self._responses)) - 1]
+
+    def get_default_model(self) -> str:
+        return "stub"
+
+
+@pytest.mark.asyncio
+async def test_the_wrap_up_after_a_silent_turn_carries_no_two_user_messages_in_a_row(workspace):
+    """The wrap-up of a turn that ran out of iterations is a call of its own, on
+    the turn's conversation plus one instruction, so it folds the same way."""
+    provider = _RecordsRequests(
+        LLMResponse(content="", finish_reason="stop"),
+        LLMResponse(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[ToolCallRequest(id="c1", name="list_dir", arguments={"path": "."})],
+        ),
+        LLMResponse(content="Here is what I found.", finish_reason="stop"),
+    )
+    agent = _make_agent(workspace, provider, max_iterations=1)
+
+    await agent._process_message(_turn("first question"), session_key="s1")
+    out = await agent._process_message(_turn("second question"), session_key="s1")
+
+    assert out[0] == "Here is what I found.", "the second turn ran out and was wrapped up"
+    roles = [m["role"] for m in provider.requests[-1]]
+    assert not any(a == b == "user" for a, b in zip(roles, roles[1:])), roles

@@ -58,8 +58,8 @@ def _emit_cron_event(
     ``last_error``).
 
     An explicit reply already used the spine's delivery path and clears any
-    earlier silent completion. Only silent successes need a completion event;
-    otherwise heartbeat can send the same reminder again.
+    earlier completion event. Only a success reported without one needs a
+    completion event; otherwise heartbeat can send the same reminder again.
 
     Best-effort like the ledger write: an emit failure must neither
     mask the original cron error (failure path re-raises it) nor turn a
@@ -170,11 +170,13 @@ def make_on_cron_job(
     ``system_events`` / ``wake`` are optional. When wired (gateway path),
     each failed cron run enqueues a system event and requests an early heartbeat
     tick, so the main heartbeat session learns what happened in the isolated
-    ``cron:<job_id>`` session and can decide on follow-ups; a successful run that
-    left reply text it never sent does the same. A successful turn that replied,
-    or whose model said nothing, clears its pending failure and completion events
-    without waking heartbeat: the reply is already on the delivery path, and the
-    silence is the model's answer.
+    ``cron:<job_id>`` session and can decide on follow-ups. A successful turn that
+    replied, or whose model said nothing, clears its pending failure and
+    completion events without waking heartbeat: the reply is already on the
+    delivery path, and the silence is the model's answer. Only a runner that
+    reports a success as unanswered while handing back reply text gets a
+    completion event for it; ``run_turn`` never does, since any reply text it
+    hands back is text it sent.
     Only effective for jobs executed in this process — a CLI test-fire
     runs in its own process and cannot reach the gateway's queue.
 
@@ -332,8 +334,8 @@ def make_on_cron_job(
             _record_cron_dispatch_to_ledger(sentinel_runner, job)
 
         # An explicit reply is already on the delivery path, and a model that said
-        # nothing has given its answer; only a silent completion that left a result
-        # behind needs heartbeat to decide whether to notify the user.
+        # nothing has given its answer; only a run reported as unanswered with a
+        # result left behind needs heartbeat to decide whether to notify the user.
         if system_events is not None and wake is not None:
             _emit_cron_event(
                 system_events,

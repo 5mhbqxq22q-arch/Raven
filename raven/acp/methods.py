@@ -904,18 +904,26 @@ class AcpMethods:
         before the turn's ending reaches the stream, so by the time the
         prompt's future settles the record is there. Only the messages this
         turn appended are read -- an earlier turn's stash must not answer this
-        prompt -- and only a non-empty table counts.
+        prompt -- and only a non-empty table counts. A turn that appended no
+        assistant message files its stash on the session instead, at where the
+        turn began, and is read there under the same scope.
         """
         if sessions is None:
             return None
-        messages = sessions.get_or_create(session_key).messages
-        for message in reversed(messages[filed_before:]):
+        session = sessions.get_or_create(session_key)
+        for message in reversed(session.messages[filed_before:]):
             if message.get("role") != "assistant":
                 continue
             observers = message.get("observers")
             if not isinstance(observers, dict):
                 continue
             meta = observers.get(ACP_META_OBSERVER)
+            if isinstance(meta, dict) and meta:
+                return dict(meta)
+        rowless = getattr(session, "metadata", {}).get("rowless_turn_observers")
+        if isinstance(rowless, dict) and isinstance(rowless.get("at"), int) and rowless["at"] >= filed_before:
+            observers = rowless.get("observers")
+            meta = observers.get(ACP_META_OBSERVER) if isinstance(observers, dict) else None
             if isinstance(meta, dict) and meta:
                 return dict(meta)
         return None

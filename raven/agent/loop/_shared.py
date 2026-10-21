@@ -389,6 +389,46 @@ def merge_mid_turn(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _plain_user(message: dict[str, Any]) -> bool:
+    return (
+        message.get("role") == "user"
+        and isinstance(message.get("content"), (str, list))
+        and not any(str(key).startswith("_") for key in message)
+    )
+
+
+def _parts(body: str | list) -> list:
+    return [{"type": "text", "text": body}] if isinstance(body, str) else list(body)
+
+
+def merge_adjacent_user(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One user message per adjacent run of plain user messages, on the payload only.
+
+    A turn the model ended without a reply, having called no tool, writes no
+    assistant row, so the next question lands right behind its own. Some providers
+    refuse two user messages in a row, and would refuse every call for the rest of
+    the session. History keeps one entry per message; the payload folds them, the
+    same way every time, so the prompt-cache prefix stays stable. A message that
+    carries one of the loop's own underscore marks rides its own message on
+    purpose and is left alone.
+    """
+    if not any(_plain_user(a) and _plain_user(b) for a, b in zip(messages, messages[1:])):
+        return messages
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        prev = out[-1] if out else None
+        if prev is not None and _plain_user(prev) and _plain_user(m):
+            head, tail = prev["content"], m["content"]
+            if isinstance(head, str) and isinstance(tail, str):
+                body: str | list = f"{head}\n\n{tail}"
+            else:
+                body = _parts(head) + _parts(tail)
+            out[-1] = {**prev, "content": body}
+            continue
+        out.append(m)
+    return out
+
+
 @dataclass(frozen=True)
 class SessionPolicy:
     """What one session's turns run under beyond the loop-wide defaults.

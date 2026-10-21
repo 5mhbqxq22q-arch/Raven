@@ -70,8 +70,8 @@ node succeeded, and it is what the verdict replaces.
 **How the call is made.** Following the established side-call shape in this repo,
 `session/title.py` plus `rpc/session_naming.py`:
 
-- `provider.chat_with_retry(...)` rather than `chat` -- it carries the empty-response
-  retry the agent loop depends on (`title.py:193`);
+- `provider.chat_with_retry(...)` rather than `chat` -- it retries a provider's
+  transient failures, an empty-content error among them (`title.py:193`);
 - the verdict comes back **through a tool call**, never as free text. A
   `report_verdict` tool takes `outcome` as an enum (`accomplished` /
   `not_accomplished`) and, when not accomplished, `category`, `what_is_missing` and
