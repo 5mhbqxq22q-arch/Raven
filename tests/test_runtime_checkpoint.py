@@ -1639,6 +1639,34 @@ async def test_a_sub_agent_listing_leaves_the_loops_own_agent_home_out(tmp_path)
     assert sorted(Path(path).relative_to(root.resolve()).as_posix() for path in listing) == ["proj/a.py"]
 
 
+@pytest.mark.parametrize(
+    "name", ["pro\nj", 'pro"j', "pro\\j", "pro\x01j"], ids=["newline", "quote", "backslash", "control"]
+)
+async def test_a_state_path_git_would_quote_is_still_filtered_from_the_changed_list(tmp_path, name):
+    """A repository made before the rule may already track a state path whose
+    name git quotes in its line output (a newline, a quote, a backslash, a
+    control character). Dropping it from the index shows as a change, and the
+    changed list -- which reaches the recovery prompt -- must still leave it
+    out, while a project file with such a character is reported as named."""
+    from raven.home import set_config_path
+
+    root = tmp_path / "ws"
+    data = root / name
+    data.mkdir(parents=True)
+    (data / "config.json").write_text('{"apiKey": "fake-quoted-config"}', encoding="utf-8")
+    project_file = root / 'a"b.py'
+    project_file.write_text("print(1)\n", encoding="utf-8")
+    earlier = CheckpointService(root)
+    assert (await earlier.commit_turn("before the rule"))[0] is not None
+
+    set_config_path(data / "config.json")
+    project_file.write_text("print(2)\n", encoding="utf-8")
+    cid, changed = await CheckpointService(root).commit_turn("after the rule")
+
+    assert cid is not None
+    assert changed == ['a"b.py']
+
+
 async def test_a_custom_shadow_dir_does_not_snapshot_itself(workspace):
     """The shadow repository is excluded by where it is, not by sitting under
     `.raven/`: a `shadow_dir` elsewhere in the tree would otherwise commit its

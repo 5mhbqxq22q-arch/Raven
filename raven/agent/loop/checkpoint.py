@@ -526,8 +526,16 @@ class CheckpointService:
                     logger.debug("checkpoint untrack failed: {}", err.strip())
                     return None, []
             # Files staged this turn = this turn's changes. Capture before commit.
-            rc, out, _ = await self._git("diff", "--cached", "--name-only")
-            changed = [ln for ln in out.splitlines() if ln.strip() and not self._is_state(ln)]
+            # NUL-separated and decoded as the names are held: in its line
+            # output git quotes a name with a newline, a quote, a backslash or
+            # a control character, and the quoted form matches no state path.
+            # What is kept is spelled for display, as the line output was.
+            rc, raw, _ = await self._run(("diff", "--cached", "--name-only", "-z"))
+            changed = [
+                name.encode(errors="surrogateescape").decode(errors="replace")
+                for name in raw.decode(errors="surrogateescape").split("\0")
+                if name and not self._is_state(name)
+            ]
             if not changed:
                 return None, []  # nothing to snapshot
             rc, _, err = await self._git(*_GIT_IDENT, "commit", "-m", label)
