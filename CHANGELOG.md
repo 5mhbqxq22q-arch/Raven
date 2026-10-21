@@ -369,6 +369,16 @@ All notable changes to Raven are documented here.
 
 ### Fixed
 
+- A sub-agent whose model ends its turn with nothing visible -- the one-space
+  reply OpenRouter hands back for an empty turn, or the empty reply of a
+  vendor that keeps no native finish reason -- no longer completes with that
+  as its answer. The in-process backend read only a missing reply as no
+  answer, so a blank one was recorded completed, a spawn told the parent it
+  returned, and a DAG node was left to its judge with nothing to judge. A
+  blank reply now gets the one wrap-up call a run out of rounds gets, worded
+  for what happened, and a run that answers nothing twice fails with
+  `SubagentNoAnswerError` saying so, rather than that it used all its rounds.
+
 - An empty reply from a model behind OpenRouter (`content: " "`,
   `finish_reason: stop`) is no longer reported as an upstream transport
   failure and retried for minutes before the verdict's own sentence is

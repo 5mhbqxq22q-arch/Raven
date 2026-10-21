@@ -543,6 +543,10 @@ class RavenLoopBackend:
         own_turns_from = len(messages)
 
         final_result: str | None = None
+        # Whether the run ended on a reply with nothing visible in it, as against
+        # running out of rounds: the one wrap-up call below is worded for each,
+        # and so is the failure if that call answers nothing either.
+        answered_blank = False
         # Whether the LAST model response of this run was cut at the output
         # ceiling, not whether any was: a round that was cut and then answered
         # in full delivered its answer, and the verdict reading this is asking
@@ -795,30 +799,43 @@ class RavenLoopBackend:
                     if isinstance(advice, str) and advice:
                         _append_participant_note(messages, advice)
             else:
-                final_result = response.content
+                # A reply with nothing visible in it is no answer, whatever its
+                # finish reason says: handed on as "", a spawn records it
+                # ``completed`` and a DAG node is left to its judge with nothing
+                # to judge (manager.py, dag_runner.py). The wrap-up below already
+                # reads its own blank reply as none; the first reply is read the
+                # same way. Measured with a real provider: a vendor's reply of
+                # one space, or empty, ended the run as the answer after one call.
+                final_result = response.content if (response.content or "").strip() else None
+                answered_blank = final_result is None
                 break
 
         if final_result is None:
-            # The rounds ran out while the model was still calling tools. What it
-            # gathered is all in ``messages``, so ask once more with no tools at
-            # all: unable to call another, it answers from what it has. Observed
-            # need -- a research node spent all fifteen rounds on web_fetch and
-            # wrote nothing, and the run's whole output was the placeholder that
-            # used to sit here.
-            logger.warning(
-                "Subagent [{}] used all {} rounds without answering; asking once with no tools",
-                task_id,
-                self._MAX_ITERATIONS,
-            )
+            # Either the rounds ran out while the model was still calling tools,
+            # or it ended its turn with nothing. What it gathered is all in
+            # ``messages``, so ask once more with no tools at all: unable to call
+            # another, it answers from what it has. Observed need -- a research
+            # node spent all fifteen rounds on web_fetch and wrote nothing, and
+            # the run's whole output was the placeholder that used to sit here.
+            if answered_blank:
+                logger.warning("Subagent [{}] ended its turn with an empty reply; asking once with no tools", task_id)
+                reason = "Your reply was empty."
+            else:
+                logger.warning(
+                    "Subagent [{}] used all {} rounds without answering; asking once with no tools",
+                    task_id,
+                    self._MAX_ITERATIONS,
+                )
+                reason = "You have used the whole tool budget for this task."
             wrap_up = await provider.chat_with_retry(
                 messages=[
                     *messages,
                     {
                         "role": "user",
                         "content": (
-                            "You have used the whole tool budget for this task. Answer now from what "
-                            "you already gathered above -- no more tool calls are available. If it is "
-                            "incomplete, say what you have and name what is missing."
+                            f"{reason} Answer now from what you already gathered above -- no more "
+                            "tool calls are available. If it is incomplete, say what you have and "
+                            "name what is missing."
                         ),
                     },
                 ],
@@ -850,8 +867,13 @@ class RavenLoopBackend:
         if final_result is None:
             # Nothing to hand back. Raised rather than returned, so the node
             # fails instead of completing with a sentence the next step would
-            # merge as if it were the work.
-            raise SubagentNoAnswerError(f"sub-agent used all {self._MAX_ITERATIONS} rounds and produced no answer")
+            # merge as if it were the work. Worded for what happened: a run that
+            # answered nothing twice did not use its rounds.
+            raise SubagentNoAnswerError(
+                "sub-agent's reply was empty, and so was its answer when asked once more"
+                if answered_blank
+                else f"sub-agent used all {self._MAX_ITERATIONS} rounds and produced no answer"
+            )
         logger.info("Subagent [{}] completed successfully", task_id)
         # The final state of the account, for whoever opens the node later. The
         # loop above already republished it after every tool result, so this call
