@@ -25,8 +25,6 @@ from raven.agent.loop._shared import (
     _TOOL_METADATA_KEY,
     _TOOL_PREVIEW_MAX_CHARS,
     _WALL_CLOCK_STATIC_FALLBACK,
-    OUTPUT_LIMIT_NUDGE,
-    POST_TOOL_NUDGE,
     SKIPPED_AFTER_BLOCKED_CALL,
     Any,
     AskUserTool,
@@ -41,7 +39,6 @@ from raven.agent.loop._shared import (
     NoProgressAction,
     NoProgressGuard,
     Origin,
-    RecoveryAction,
     Session,
     TurnSynthesisPolicy,
     _appended_by_hook,
@@ -56,7 +53,6 @@ from raven.agent.loop._shared import (
     append_hook_note,
     asyncio,
     autofill_resolver,
-    classify_empty_response,
     current_autofill,
     failure_class,
     is_hard_tool_failure,
@@ -83,7 +79,7 @@ from raven.agent.loop._shared import (
 from raven.agent.loop.dead_end import NO_RESPONSE_FALLBACK, dead_reasons
 from raven.agent.loop.failure_text import attach_full_detail, response_failure_text
 from raven.agent.loop.first_call import FirstCallGuard
-from raven.agent.loop.recovery import ContinuationGate, DraftGate, cut_reasoning_head, lower_reasoning_effort
+from raven.agent.loop.recovery import DraftGate, lower_reasoning_effort, stopped_in_thinking
 from raven.agent.tools.registry import call_failed
 from raven.agent.tools.removals import RemovalWatch
 from raven.agent.window import shrink
@@ -254,17 +250,12 @@ def _stamp_turn_observers(messages: list[dict[str, Any]], metadata: dict[str, An
 _SAID_LOG_MAX_CHARS = 2000
 
 
-# The scaffolding a turn raises and does not keep: empty-response recovery marks
-# its nudges and prefills, and an attached image rides its own key. They are
-# dropped before persistence, so a reader asking what the turn ended on has to
-# drop them too, or it answers about a message nobody is going to keep.
+# The scaffolding a turn raises and does not keep: a hook that sends a draft
+# back marks what it injects for the re-sample, and an attached image rides its
+# own key. They are dropped before persistence, so a reader asking what the turn
+# ended on has to drop them too, or it answers about a message nobody is going
+# to keep.
 _TURN_TRANSIENT_KEYS = ("_recovery_synthetic", ATTACHED_IMAGE_KEY)
-
-
-# How a turn reports the model saying nothing with no recovery behind it. The
-# exhausted-recovery exit words its own sentence from the budgets it spent;
-# this one has no counts to give, and says why there are none.
-_NO_CONTENT_UNRECOVERED = "The model returned no content, and this turn's empty-response recovery is switched off."
 
 
 def _log_what_the_model_said(response: Any) -> None:
@@ -291,28 +282,6 @@ def _log_what_the_model_said(response: Any) -> None:
     spent = (getattr(response, "usage", None) or {}).get("reasoning_tokens")
     if not (isinstance(thought, str) and thought.strip()) and spent:
         logger.info("Assistant thought for {} tokens the provider did not return", spent)
-
-
-def _reasoning_wire_keys(provider: Any, model: str | None) -> Any:
-    """The provider's "what would this effort send" answer, or None.
-
-    None when the provider cannot say -- a test double, or an adapter from
-    before the method existed -- and the retry descent then reads the labels on
-    their own, which is what it did before. Never allowed to be the thing that
-    fails: this is asked while recovering a turn that has already produced
-    nothing, and an exception here would replace an empty answer with an error.
-    """
-    ask = getattr(provider, "reasoning_wire_keys", None)
-    if not callable(ask):
-        return None
-
-    def shape(effort: str | None) -> object:
-        try:
-            return json.dumps(ask(model, effort), sort_keys=True, default=str)
-        except Exception:  # noqa: BLE001 - an unanswerable question is not a different request
-            return effort
-
-    return shape
 
 
 def _file_unanswered(messages: list[dict]) -> None:
@@ -481,8 +450,8 @@ class TurnPathMixin:
         nothing but tag debris: when a backend inlines its reasoning and the
         turn is cut off inside it, content arrives as a lone closing tag with
         no opener to pair against, so the substitution above finds nothing and
-        an eleven-character string reads as a real answer. Recovery is skipped
-        and the tag is what the user sees.
+        an eleven-character string reads as a real answer, and the tag is what
+        the user sees.
 
         The check is on residue, not on vendor spellings -- it does not matter
         which prefix a backend picked. Text that merely mentions a tag keeps
@@ -798,9 +767,9 @@ class TurnPathMixin:
         # ``status`` labels the shadow-git commit and, with ``error_detail`` --
         # the loop's own words for a model call it gave up on -- stamps the
         # ``LoopOutcome`` the caller fails the turn on. Both the provider-error
-        # exit and the exhausted empty-response exit set the pair: a turn that
-        # ran out of ways to get a word back has no answer either, and it is the
-        # caller that knows whether a tool has already delivered one.
+        # exit and the stopped-in-thinking exit set the pair: neither turn has an
+        # answer, and it is the caller that knows whether a tool has already
+        # delivered one.
         status = "completed"
         error_detail: str | None = None
         error_full: str | None = None
@@ -849,24 +818,6 @@ class TurnPathMixin:
         # as it opened: warm its directory here instead. Once per directory.
         if (target := workdir.current()) is not None and (warm := getattr(self.tools.get("exec"), "warm", None)):
             await warm(target)
-        # Empty-response recovery state, local to the turn — the AgentLoop is a
-        # long-lived singleton shared across sessions, so per-instance counters
-        # would leak across turns; resetting here gives clean per-turn budgets.
-        prev_had_tool_calls = False
-        post_tool_nudges = 0
-        prefill_retries = 0
-        # Set when a prefill re-feeds reasoning the ceiling cut: the next call
-        # continues mid-thought, and its opening fragment is not content.
-        cut_continuation = False
-        empty_retries = 0
-        # Sticky across a turn's empty retries: once the descent reaches a rung,
-        # a later retry must not read the turn's own effort again and hand back
-        # the value that already came up empty.
-        empty_retry_effort: str | None = None
-        # Said once per turn, not once per retry: three identical copies
-        # of it in one transcript are noise, and the escalation for advice
-        # that did not work is `loop_break_nudge`, not repetition.
-        output_limit_told = False
         # The watch-work judgement's state, owned by this turn: the loop is a
         # singleton and turns from other sessions run concurrently, so anything
         # on `self` here would let one session's dispatch silence another's
@@ -931,6 +882,7 @@ class TurnPathMixin:
         )
         iter_msg_base = 0
         pending_gen_overrides: dict[str, Any] | None = None
+        empty_retry_effort: str | None = None
 
         def _land_hook_note(decision) -> None:
             """Honor a hook's ``append_note``: the note joins the last message
@@ -1159,19 +1111,8 @@ class TurnPathMixin:
             call_messages = merge_mid_turn(call_messages)
             # A hook can send this whole response back, and a rollback pops the
             # history the stream has already left -- so where hooks are installed
-            # the deltas are held until something keeps the response. The draft
-            # gate owns the continuation head cut in that case: holding the whole
-            # text cuts it exactly, so the two gates never stack.
-            draft = (
-                DraftGate(on_token_delta, cut_head=cut_continuation)
-                if on_token_delta is not None and holds_drafts
-                else None
-            )
-            gate = (
-                ContinuationGate(on_token_delta)
-                if draft is None and cut_continuation and on_token_delta is not None
-                else None
-            )
+            # the deltas are held until something keeps the response.
+            draft = DraftGate(on_token_delta) if on_token_delta is not None and holds_drafts else None
             # Every provider call ``decide`` makes reaches the provider seam, and
             # an Action may make more than one (best-of-n, a critic pass: see
             # ActionRequest), so none of them is claimed here. The session and
@@ -1192,15 +1133,15 @@ class TurnPathMixin:
                         model=call_model,
                         fallback_models=fallback_models,
                         stream_call=self._llm_call_stream,
-                        # Spliced here rather than inside the module: both gates are
-                        # the shell's own, and which sink a delta reaches is not a
+                        # Spliced here rather than inside the module: the draft gate
+                        # is the shell's own, and which sink a delta reaches is not a
                         # strategy decision. The module reads the field it is handed,
                         # so the stream/retry branch stays exactly the one the loop
-                        # took -- neither gate is built unless ``on_token_delta``
+                        # took -- the gate is not built unless ``on_token_delta``
                         # already is, so the spliced value is None on exactly the
                         # turns the raw sink was, and a reasoning sink alone still
                         # streams.
-                        on_token_delta=draft or gate or on_token_delta,
+                        on_token_delta=draft or on_token_delta,
                         on_reasoning_delta=on_reasoning_delta,
                         generation_overrides=gen_overrides,
                     )
@@ -1216,11 +1157,6 @@ class TurnPathMixin:
             # a success claim instead.
             if hook_metadata is not None:
                 hook_metadata["output_limited"] = bool(getattr(response, "truncated", False))
-            if cut_continuation:
-                cut_continuation = False
-                if gate is not None:
-                    await gate.finish()
-                response.content = cut_reasoning_head(response.content)
             if draft is not None and response.tool_calls:
                 # A preamble beside tool calls is not the answer a hook holds back
                 # as final, and holding it would park it for the whole tool run.
@@ -1756,9 +1692,6 @@ class TurnPathMixin:
                             IMAGE_SOURCES_KEY: pending_sources,
                         }
                     )
-                # Dispatched before prev_had_tool_calls is set: a rollback means
-                # this iteration never happened, so the empty-response classifier
-                # must see the pre-iteration state on the re-sample.
                 if hook_ctx is not None:
                     hook_ctx.messages = messages
                     hook_ctx.response = response
@@ -1770,7 +1703,6 @@ class TurnPathMixin:
                         final_content = str(decision.short_circuit_result)
                         messages = self.context.add_assistant_message(messages, final_content)
                         break
-                prev_had_tool_calls = True
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history — they can
@@ -1824,157 +1756,28 @@ class TurnPathMixin:
                     error_full = response_failure_text(clean, response.call_record)
                     break
 
-                # Empty-response recovery: an empty assistant turn would
-                # otherwise end here as a turn with no answer, which fails.
-                # Try to recover before giving up. Synthetic scaffolding is
-                # marked ``_recovery_synthetic`` and stripped before persistence
-                # / extraction so it can't poison future context.
-                # Asked of the provider for the model this call went to: a
-                # prefill-refusing vendor (Anthropic with thinking on) must never
-                # be handed a request ending on an assistant message.
-                supports_prefill = getattr(self.provider, "supports_assistant_prefill", None)
-                action = classify_empty_response(
-                    response,
-                    clean,
-                    prev_had_tool_calls=prev_had_tool_calls,
-                    nudges_done=post_tool_nudges,
-                    prefill_retries=prefill_retries,
-                    empty_retries=empty_retries,
-                    limits=self._recovery_limits,
-                    prefill_supported=supports_prefill is None or supports_prefill(call_model),
-                )
-                if action is RecoveryAction.PREFILL:
-                    prefill_retries += 1
-                    logger.warning(
-                        "empty-recovery: thinking-only prefill {}/{}",
-                        prefill_retries,
-                        self._recovery_limits.thinking_prefill_max_retries,
-                    )
-                    # Re-feed the model its own reasoning (not stripped) so it
-                    # continues into the body. Marked synthetic → dropped before
-                    # persistence/extraction; the reasoning fields are stripped
-                    # from the wire request by the provider's key allowlist.
-                    messages = self.context.add_assistant_message(
-                        messages,
-                        response.content,
-                        reasoning_content=response.reasoning_content,
-                        thinking_blocks=response.thinking_blocks,
-                    )
-                    messages[-1]["_recovery_synthetic"] = True
-                    prev_had_tool_calls = False
-                    # Reasoning that ended on the ceiling was cut mid-thought, so
-                    # the continuation opens on the rest of that thought.
-                    cut_continuation = response.finish_reason == "length"
-                    continue
-                if action is RecoveryAction.NUDGE:
-                    post_tool_nudges += 1
-                    logger.warning("empty-recovery: post-tool empty nudge")
-                    # The (empty) assistant must sit between the tool result and
-                    # the nudge — a bare tool→user sequence is a 400 on most APIs.
-                    messages = self.context.add_assistant_message(messages, "(empty)")
-                    messages[-1]["_recovery_synthetic"] = True
-                    messages.append({"role": "user", "content": POST_TOOL_NUDGE, "_recovery_synthetic": True})
-                    prev_had_tool_calls = False
-                    continue
-                if action is RecoveryAction.RETRY:
-                    # Re-sent unchanged, this was the same bytes, so each retry
-                    # was a guaranteed repeat: measured, three of them behind
-                    # three truncations at exactly the output ceiling. An empty
-                    # body with reasoning behind it is a call whose thinking
-                    # spent the ceiling before the answer began, so what has to
-                    # change is how much of the ceiling thinking may take. The
-                    # descent rides the loop's existing per-call override lane
-                    # (``pending_gen_overrides``, which a hook rollback uses to
-                    # re-sample one call) rather than a second mechanism beside
-                    # it, and it is spent on the retry only -- a call that
-                    # answers leaves the turn's own effort standing.
-                    # Asked of the provider, not of the ladder: two labels can
-                    # be one request. ``reasoning_wire_keys`` says what a rung
-                    # would actually send, so a rung the wire cannot tell apart
-                    # from this one is skipped instead of paid for again.
-                    lowered = lower_reasoning_effort(
-                        empty_retry_effort or call_reasoning_effort,
-                        _reasoning_wire_keys(self.provider, effective_model),
-                    )
-                    if lowered is None:
-                        # The budget is not the only bound: a retry with nothing
-                        # left to change is the failure again at full price. Ending
-                        # here takes the FAIL exit below rather than falling into
-                        # the completion path -- running out of rungs is the same
-                        # outcome as running out of budget, and the completion path
-                        # is what filed a dead turn as a finished one.
+                # A reply with no text is settled here, before the hooks read it and
+                # before anything is appended -- where the turn ended is read off this
+                # list. A model that said nothing ends the turn without a reply. One
+                # that stopped while thinking spent its budget before the answer
+                # began, so the call is asked again a rung lower, through the same
+                # one-call override a hook rollback uses: a call that answers leaves
+                # the turn's own effort standing. With no rung left, it fails the turn.
+                if clean is None:
+                    if (failure := stopped_in_thinking(response)) is None:
+                        break
+                    if (lowered := lower_reasoning_effort(empty_retry_effort or call_reasoning_effort)) is not None:
                         logger.warning(
-                            "empty-recovery: not retrying at reasoning_effort {} -- no rung left to change",
+                            "Model stopped while thinking at reasoning_effort {}; asking again at {}",
                             empty_retry_effort or call_reasoning_effort or "unstated",
-                        )
-                        action = RecoveryAction.FAIL
-                    else:
-                        empty_retries += 1
-                        empty_retry_effort = lowered
-                        pending_gen_overrides = {"reasoning_effort": lowered}
-                        logger.warning(
-                            "empty-recovery: plain empty retry {}/{} (reasoning_effort {} -> {})",
-                            empty_retries,
-                            self._recovery_limits.empty_content_max_retries,
-                            call_reasoning_effort or "unstated",
                             lowered,
                         )
-                        if response.truncated and not output_limit_told:
-                            # The descent above changes how much thinking the next
-                            # call may buy, which is nothing to a model that does no
-                            # reasoning and nothing to a write whose payload is the
-                            # thing that overran. Neither case leaves a tool call for
-                            # `Tool.truncation_hint` to ride, so this is the only
-                            # channel that reaches the model at all.
-                            # Read off `response.truncated`, not `finish_reason`: the
-                            # contract has one field for "stopped at the ceiling" and
-                            # says an upstream may claim success instead.
-                            # Same assistant-then-user shape as the nudge above, for
-                            # the same reason: a bare tool->user pair is a 400 on most
-                            # APIs, and the prefill may have left an assistant last.
-                            output_limit_told = True
-                            messages = self.context.add_assistant_message(messages, "(empty)")
-                            messages[-1]["_recovery_synthetic"] = True
-                            messages.append(
-                                {"role": "user", "content": OUTPUT_LIMIT_NUDGE, "_recovery_synthetic": True}
-                            )
-                        prev_had_tool_calls = False
+                        empty_retry_effort = lowered
+                        pending_gen_overrides = {"reasoning_effort": lowered}
                         continue
-                if action is RecoveryAction.FAIL:
-                    # Same shape as the provider-error exit above, because it is
-                    # the same kind of outcome: the turn produced nothing and the
-                    # caller has to be able to act on that. What it buys is the
-                    # label every surface puts on the turn -- the web page, the
-                    # terminal, ``raven agent -p``'s exit code and a channel's
-                    # reply -- plus the marker filed in the session and the
-                    # failure a cron record and a trajectory reader keep. It is
-                    # not about ACP's stop reason: that answers ``end_turn`` with
-                    # the failure as text for every failed turn by design.
-                    # The counts go into the detail, because the reader who has
-                    # to decide whether to ask again is a person or a judging
-                    # model, and neither can see this log line.
-                    attempts = 1 + prefill_retries + post_tool_nudges + empty_retries
-                    logger.error(
-                        "empty-recovery: no content after {} attempt(s) "
-                        "(prefill {}, nudge {}, retry {}); ending the turn as an error",
-                        attempts,
-                        prefill_retries,
-                        post_tool_nudges,
-                        empty_retries,
-                    )
-                    error_detail = (
-                        f"The model returned no content on {attempts} attempt(s) "
-                        f"(prefill {prefill_retries}, post-tool nudge {post_tool_nudges}, "
-                        f"plain retry {empty_retries})."
-                    )
-                    # Kept, and read only where a tool has already answered: the
-                    # caller fails an unanswered turn on ``error`` above instead
-                    # of delivering this.
-                    final_content = (
-                        f"{error_detail} This turn's empty-response recovery is spent; "
-                        "the turn produced no answer of its own."
-                    )
+                    logger.error("Model reply ended the turn as a failure: {}", failure)
                     status = "error"
+                    error_detail = failure
                     break
 
                 # Before the text is persisted, so a short-circuit replaces it
@@ -2017,8 +1820,13 @@ class TurnPathMixin:
         if leftover is not None and (lost := leftover.pending_rows()):
             logger.info("question autofill: {} row(s) ended the turn unwritten", len(lost))
 
-        if final_content is None and (
-            stalled_tool is not None or iteration >= iteration_cap or stopped_by == "wall_clock"
+        # A turn that already failed is not an exhausted one, even when its failure
+        # landed on the last iteration: wrapping it up would replace the failure
+        # with a reply.
+        if (
+            final_content is None
+            and status != "error"
+            and (stalled_tool is not None or iteration >= iteration_cap or stopped_by == "wall_clock")
         ):
             if stalled_tool is not None:
                 stopped_by = "stalled_tool"
@@ -2065,10 +1873,9 @@ class TurnPathMixin:
             if final_content:
                 messages = self.context.add_assistant_message(messages, final_content)
 
-        # Drop transient empty-recovery scaffolding before persistence /
-        # extraction / return: empty recovery marks synthetic nudge/prefill
-        # messages with ``_recovery_synthetic``; strip them so they never
-        # persist. The after-turn pipeline (``context_engine.after_turn`` +
+        # Drop transient scaffolding before persistence / extraction / return: a
+        # hook that sends a draft back marks what it injects with
+        # ``_recovery_synthetic``; strip it so it never persists. The after-turn pipeline (``context_engine.after_turn`` +
         # ``backend.store`` in ``_process_message``) owns extraction.
         # Attached-image messages are dropped here for the same reason and at the
         # same point: the returned list feeds persistence, ``after_turn``
@@ -2625,8 +2432,8 @@ class TurnPathMixin:
         def _dead_reasons(final_content: str | None, msgs: list[dict], status: str) -> list[str]:
             # The scaffolding goes before the reading. This question used to be asked
             # after the attempt returned, on the list it had already been dropped from,
-            # and it is asked inside the attempt now; a recovery nudge left sitting at
-            # the end would otherwise become what the turn is judged to have ended on.
+            # and it is asked inside the attempt now; scaffolding left sitting at the
+            # end would otherwise become what the turn is judged to have ended on.
             turn = [m for m in msgs[turn_start_idx:] if not any(m.get(k) for k in _TURN_TRANSIENT_KEYS)]
             reasons = dead_reasons(messages=turn, final_content=final_content, status=status, ask_kind=ask_kind)
             if budgets.dead_end_reasons:
@@ -2723,16 +2530,8 @@ class TurnPathMixin:
                 # reports, not a reply for the outlets to deliver.
                 mt = self.tools.get("message")
                 answered = isinstance(mt, MessageTool) and mt.sent_in_turn
-                if not answered:
-                    if outcome.error:
-                        raise AnswerlessTurnError(outcome.error, full_detail=outcome.error_full)
-                    if final_content is None:
-                        # The other way a turn arrives here with nothing: recovery
-                        # switched off, so the empty response was taken at its word
-                        # and no budget was ever spent. Same fact as the exit above
-                        # -- the model said nothing -- so it is reported the same
-                        # way rather than dressed as a reply.
-                        raise AnswerlessTurnError(_NO_CONTENT_UNRECOVERED)
+                if not answered and outcome.error:
+                    raise AnswerlessTurnError(outcome.error, full_detail=outcome.error_full)
         except asyncio.CancelledError:
             # A stop is not a failure, but it is also not amnesia: what already
             # streamed is work the reader saw, so it lands in the session with a
@@ -2779,9 +2578,11 @@ class TurnPathMixin:
             raise
         self._stash_recovery(key, outcome)
 
-        if final_content is None:
-            # Only a turn a tool already answered reaches this now: the guard
-            # above fails an unanswered one. What follows is the record, the
+        # A model that said nothing ends its turn without a reply: there is no
+        # outbound text to edit, learn from or deliver.
+        silent = final_content is None and not answered
+        if final_content is None and answered:
+            # A tool already answered. What follows is the record, the
             # after_send chain and the log line, and each of them wants a string.
             final_content = NO_RESPONSE_FALLBACK
 
@@ -2792,7 +2593,7 @@ class TurnPathMixin:
         # user's intent — runs after_send); the Sentinel supersede notice is
         # SENTINEL and a subagent result is SUBAGENT (both skip).
         skip_after_send = origin in _SKIP_AFTER_SEND_ORIGINS
-        if len(self.hooks) > 0 and not skip_after_send:
+        if len(self.hooks) > 0 and not skip_after_send and not silent:
             from raven.agent.hook import AgentHookContext
 
             _send_ctx = AgentHookContext(
@@ -2838,7 +2639,7 @@ class TurnPathMixin:
         # ── Step 4: post-action learning (background, non-blocking) ─────────────
         # Skip for a subagent result re-injection (see the pre-turn flow above):
         # its content is a system-generated announce, not user input to learn from.
-        if self.personalization_enabled and origin is not Origin.SUBAGENT:
+        if self.personalization_enabled and origin is not Origin.SUBAGENT and not silent:
             from raven.agent.personalizer import Personalizer
 
             _p4 = Personalizer(MemoryStore(self.workspace), self.provider, self.model)
@@ -2868,6 +2669,10 @@ class TurnPathMixin:
                     sender_id,
                     preview,
                 )
+            return None
+
+        if silent:
+            logger.info("No reply to {}:{}: the model ended its turn without one", channel, sender_id)
             return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
@@ -3145,7 +2950,7 @@ class TurnPathMixin:
                     entry["trace_id"] = trace_id
                 first_user_pending = False
             if entry.get("_recovery_synthetic"):
-                continue  # #1a synthetic recovery nudge — never persist scaffolding
+                continue  # transient scaffolding is never persisted
             if entry.get(ATTACHED_IMAGE_KEY):
                 # Already filtered upstream; kept because this is the last gate
                 # before a write that cannot be undone, unlike the code above it.

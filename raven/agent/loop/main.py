@@ -256,7 +256,7 @@ class AgentLoop(TurnPathMixin, WiringMixin, McpGlueMixin, OrganGlueMixin):
         self._image_tool_result_ok: dict[str, bool] = {}
         self._vision_ok: dict[str, bool] = {}
         self._default_max_iterations = max_iterations
-        # Empty-response recovery budgets. None → enabled defaults.
+        # Retry limits: the model-error ladder and the image window. None → defaults.
         self._recovery_limits = empty_recovery if empty_recovery is not None else RecoveryLimits()
         self.search_api_key = search_api_key
         self.jina_api_key = jina_api_key

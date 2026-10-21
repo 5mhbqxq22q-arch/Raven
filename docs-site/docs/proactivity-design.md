@@ -294,9 +294,11 @@ while user work is busy. Wake drives Heartbeat, not Sentinel's tick loop.
 
 A successful Cron turn that explicitly replies uses the Spine's delivery
 path and does not enqueue a completion event or wake Heartbeat to repeat the
-reminder. Silent completions and failures still wake Heartbeat, as do missed
-reminders and automatic disabling. A successful retry clears its pending
-failure event; an explicit reply also clears any earlier silent completion.
+reminder. Neither does a turn whose model said nothing: the silence is its
+answer, and waking Heartbeat would have a second model speak in its place.
+Failures still wake Heartbeat, as do missed reminders and automatic
+disabling. A successful retry clears its pending failure event; a reply, or
+a turn that said nothing, also clears any earlier completion event.
 Unrelated events stay queued.
 
 The Spine's Scheduler routes turns into per-conversation Lanes and origin

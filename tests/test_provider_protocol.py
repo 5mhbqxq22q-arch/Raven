@@ -426,38 +426,6 @@ def test_anthropic_records_what_a_request_asks_for_without_the_key() -> None:
     assert provider.request_generation(model="z-ai/glm-5.3-flash")["reasoning_effort"] is None
 
 
-def test_every_wrapper_forwards_the_question_of_what_a_rung_sends() -> None:
-    """The empty-response retry asks the provider the loop holds, which in
-    production is a wrapper.
-
-    The base answer -- every label is its own request -- is the wrong answer for
-    the Anthropic wire, and answering it here would leave the retry re-sending an
-    unchanged request exactly where the collapse was measured. Pinned the way
-    ``wire_model_id`` and ``supports_assistant_prefill`` are pinned: by naming
-    the wrappers, so a new one cannot inherit the default silently.
-    """
-    from raven.providers.base import LLMProvider
-    from raven.providers.endpoint_rotor import EndpointRotorProvider
-    from raven.providers.lazy import LazyProvider
-    from raven.providers.per_model_provider import PerModelProvider
-    from raven.providers.resolving_provider import ResolvingProvider
-
-    for wrapper in (LazyProvider, PerModelProvider, ResolvingProvider, EndpointRotorProvider):
-        assert "reasoning_wire_keys" in wrapper.__dict__, (
-            f"{wrapper.__name__} would answer LLMProvider's label-only default, "
-            "which says two collapsed rungs are two different requests"
-        )
-
-    inner = AnthropicMessagesProvider(api_key="k", default_model="claude-opus-5")
-    lazy = LazyProvider.__new__(LazyProvider)
-    lazy._provider = inner
-    assert lazy.reasoning_wire_keys("claude-opus-5", "low") == inner.reasoning_wire_keys("claude-opus-5", "low")
-    assert lazy.reasoning_wire_keys("claude-opus-5", "minimal") == lazy.reasoning_wire_keys("claude-opus-5", "low")
-    assert LLMProvider.reasoning_wire_keys(inner, "claude-opus-5", "minimal") != LLMProvider.reasoning_wire_keys(
-        inner, "claude-opus-5", "low"
-    ), "the base default really does read the two rungs as different requests"
-
-
 def test_anthropic_replays_only_signed_thinking_blocks() -> None:
     """A stream cut at the output ceiling ends inside the thinking, so the block
     carries no signature; sent back, the API refused it as a modified thinking

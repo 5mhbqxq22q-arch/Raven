@@ -782,32 +782,29 @@ judged without a tree, so a file the checkpoint would not store has no diff and 
 it goes out `withheld`, which nothing else may fill in.
 _Avoid_: "shadow git" as the term — Checkpoint is the per-turn snapshot it produces.
 
-**Empty-Response Recovery** (`agent/loop/recovery.py`):
-The opt-in policy for when the model returns no text: re-feed its reasoning (PREFILL),
-inject a nudge after a tool call (NUDGE), or plain RETRY — each bounded by
-`RecoveryLimits`. A response with text in it, or recovery switched off, COMPLETEs;
-spending every budget with nothing ever returned is FAIL, and the Agent Loop ends the turn
-with status `error` and a sentence saying how many attempts went into it. Either way a turn
-that reaches its end with no text raises `AnswerlessTurnError` rather than replying -- unless
-one of its tools already put an answer in front of the reader (the message tool's
-`sent_in_turn`, or an inline research answer the turn itself streamed).
-PREFILL is asked of the provider first
-(`LLMProvider.supports_assistant_prefill`): the Anthropic family rejects a trailing
-assistant message while thinking is on, and through a gateway that rejection can arrive as
-a stream that never yields a byte, so a provider that answers no never gets PREFILL -- the
-same thinking-only turn takes NUDGE after a tool, else RETRY, and no request handed to it
-ends on an assistant message. RETRY descends the effort ladder by what a rung *sends*, not by
-its label: the provider is asked (`LLMProvider.reasoning_wire_keys`) and a rung whose request
-this wire cannot tell apart from the one that failed is skipped -- when none is left, the
-turn has nothing to change and FAILs rather than paying for the same call twice. A retry
-after a turn cut at the output ceiling also carries `OUTPUT_LIMIT_NUDGE`, once per turn. The
-descent changes what the request asks *for*; the nudge is the only thing that tells the model
-its last turn was cut and that a payload too large to finish has to be split -- which no
-effort rung can do, and which `Tool.truncation_hint` cannot reach because a turn cut before
-any call produced no tool result to carry it.
-_Avoid_: calling the whole mechanism a "nudge" — nudge is one of its modes; and reading
-FAIL as a fourth mode — it is the answer given when there is nothing left to try;
-`OUTPUT_LIMIT_NUDGE` rides RETRY rather than being the NUDGE mode.
+**Empty Reply** (`agent/loop/recovery.py`):
+A model reply with no text and no tool call. It is read for one fact -- whether the model stopped
+while thinking. A reply with nothing in it (no text, no tool call, no reasoning, not cut at the
+ceiling) is a model that said nothing: it is not asked again, and the turn ends as a **Silent
+Turn**. A reply that reasoned and never reached a body stopped while thinking, and so did one cut at
+the output ceiling: the call is asked again a rung at a time, high and then low -- below the effort
+the turn named on `REASONING_EFFORT_LADDER`, or both from the top when it named none -- each rung
+once a turn (`lower_reasoning_effort`); with no rung left, the turn fails with an
+`AnswerlessTurnError` naming which (`stopped_in_thinking`), even on its last iteration. Reasoning
+counts in whatever form a provider reports it: a structured field, thinking blocks, an inline
+`<think>` block, or a billed `reasoning_tokens` count when the text is withheld, as Codex withholds
+it. A tool call is never an empty reply, and neither is any text.
+_Avoid_: "empty reply" for a turn that called tools and then said nothing -- that turn ends as a
+Silent Turn, not a failure; and reading a Silent Turn as a failed turn.
+
+**Silent Turn**:
+A turn that ends with no reply because the model said nothing (see **Empty Reply**). Nothing is
+delivered and nothing is filed as a failure: the question and the turn's tool work are kept, no
+assistant row is written, and the outbound hooks (`after_send`, post-turn learning) do not run.
+What a reply would have ended is ended without one: a channel is told the turn is over
+(`ChannelBase.end_turn`) so a typing indicator stops, a cron run is recorded as done without
+waking heartbeat, and the TUI adds no row.
+_Avoid_: calling it an answerless turn; an answerless turn raises `AnswerlessTurnError`.
 
 **Model-Error Ladder** (`agent/loop/turn_path.py`, `RecoveryLimits.llm_error_retry_delays`):
 The waits the Agent Loop spends on a model call that came back an *error* before it gives the
@@ -817,8 +814,8 @@ same ask goes out again — the messages are untouched, so nothing is appended f
 call. The wait is announced as a `NoticeKind.LLM_RETRY` notice carrying the error *category*,
 which is how a surface can say the runtime is still working rather than showing nothing for
 minutes. A non-retryable verdict, or a spent ladder, ends the turn.
-_Avoid_: "retry" unqualified — Empty-Response Recovery's RETRY is a different mechanism, for a
-call that *succeeded* and returned no text; this one answers a call that failed.
+_Avoid_: reading it as the step-down an **Empty Reply** takes -- that one asks again with less
+thinking allowed; this ladder answers a call that failed, with the same ask.
 
 **Call Record** (`contracts/llm_provider.py`, `providers/call_record.py`):
 What the transport did on one model call, carried on `LLMResponse.call_record` and stored
@@ -908,8 +905,8 @@ those are emitted by the Spine worker, not a runner.
 **AnswerlessTurnError**:
 The exception a runner raises to say the turn it ran ended with no answer and that its message is
 already the report a reader should see — the model call the loop gave up on, in the provider's words,
-or the loop's when the provider gave none; or an empty-response recovery that spent its budgets, in the
-loop's one-sentence account of the attempts.
+or the loop's when the provider gave none; or a reply that stopped while thinking (see **Empty Reply**),
+in the loop's own sentence.
 `describe_failure` passes its text through unchanged (it arrives bounded from the layer that built
 it), and the `turn_ended` marker that says so is filed before the failure leaves the loop. The marker
 is worded twice, for its two readers: `turn_ended.reason` keeps the provider's account for whoever is

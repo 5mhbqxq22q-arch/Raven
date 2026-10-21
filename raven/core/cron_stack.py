@@ -146,13 +146,13 @@ def make_on_cron_job(
     trigger-time resolution, forwarding, or broadcast.
 
     ``readback_texts`` is build_gateway's per-conversation reply-text map, the
-    spine read-back channel for the return value and silent completion event:
+    spine read-back channel for the return value and the completion event:
     a CRON turn submits, then this reads back its reply from
     ``readback_texts[cron:<job_id>]`` (the runner stored
     it before result() resolved) and pops it. The submitter cannot pass run_turn's
     text_sink itself — text_sink is a runner-set per-call param, and cron is a
     submitter — so the gateway's capturing runner bridges it. Required whenever
-    ``submit`` is wired; without it the system event sees no reply text.
+    ``submit`` is wired; without it every run reads as one that left no reply text.
 
     ``default_channel`` is used when the job payload doesn't specify one
     (legacy pre-attribution jobs) — every runner passes "tui" so such a
@@ -168,11 +168,13 @@ def make_on_cron_job(
     fires AND Sentinel proactively reminds at 5/22).
 
     ``system_events`` / ``wake`` are optional. When wired (gateway path),
-    each silent completion or failed cron run enqueues a system event and
-    requests an early heartbeat tick, so the main heartbeat session learns what
-    happened in the isolated ``cron:<job_id>`` session and can decide on
-    follow-ups. A successful turn that explicitly replied clears its pending
-    failure and completion events without waking heartbeat again.
+    each failed cron run enqueues a system event and requests an early heartbeat
+    tick, so the main heartbeat session learns what happened in the isolated
+    ``cron:<job_id>`` session and can decide on follow-ups; a successful run that
+    left reply text it never sent does the same. A successful turn that replied,
+    or whose model said nothing, clears its pending failure and completion events
+    without waking heartbeat: the reply is already on the delivery path, and the
+    silence is the model's answer.
     Only effective for jobs executed in this process — a CLI test-fire
     runs in its own process and cannot reach the gateway's queue.
 
@@ -329,16 +331,17 @@ def make_on_cron_job(
         if sentinel_runner is not None:
             _record_cron_dispatch_to_ledger(sentinel_runner, job)
 
-        # An explicit reply is already on the delivery path; only a silent
-        # completion needs heartbeat to decide whether to notify the user.
+        # An explicit reply is already on the delivery path, and a model that said
+        # nothing has given its answer; only a silent completion that left a result
+        # behind needs heartbeat to decide whether to notify the user.
         if system_events is not None and wake is not None:
             _emit_cron_event(
                 system_events,
                 wake,
                 job,
-                (response or "(no response)").strip(),
+                (response or "").strip(),
                 failed=False,
-                explicit_reply=outcome.explicit_reply,
+                explicit_reply=outcome.explicit_reply or response is None,
             )
 
         return response

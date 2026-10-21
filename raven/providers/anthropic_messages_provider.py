@@ -928,16 +928,6 @@ class AnthropicMessagesProvider(LLMProvider):
         record.update(keys)
         return record
 
-    def reasoning_wire_keys(self, model: str | None, reasoning_effort: str | None) -> dict[str, Any]:
-        """See ``LLMProvider.reasoning_wire_keys``; this wire translates the label.
-
-        Which is why it has to answer for itself: ``_ADAPTIVE_EFFORTS`` maps both
-        ``minimal`` and ``low`` onto ``low``, so those two rungs serialize to one
-        request here -- ``output_config.effort: low`` on a model that thinks
-        adaptively, ``reasoning.effort: low`` otherwise.
-        """
-        return thinking_request(self.wire_model_id(model or self.default_model), reasoning_effort)
-
     def _body(
         self,
         *,

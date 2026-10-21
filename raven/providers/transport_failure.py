@@ -65,7 +65,7 @@ _NORMAL_STOP_ALIASES = frozenset(
 #: allow list is for -- so it is here to be *said*, not to decide. A rename this
 #: does not name is either a new failure dialect or the one thing the allow list
 #: gets wrong: a normal end spelled in a way nothing has mapped, reported as a
-#: failure when the loop's own silence recovery should have had it. Naming the
+#: failure when it was a model that said nothing. Naming the
 #: two apart in the log is the only signal that case has.
 _OBSERVED_FAILURE_REASONS = frozenset(
     {
@@ -169,10 +169,10 @@ def _accounting_is_absurd(usage: dict[str, Any] | None, sent_chars: int | None) 
 
     This is the whole verdict, not a decoration on it. Silence on its own does
     not distinguish a request that was never processed from a model that simply
-    said nothing, and the second is common enough to have its own recovery
-    (``raven.agent.loop.recovery``: prefill, a post-tool nudge, a plain retry).
-    Claiming transport failure without transport evidence takes that recovery
-    out of service and tells the reader something false about their own system.
+    said nothing, and the second ends its turn without a reply
+    (``raven.agent.loop.recovery``). Claiming transport failure without
+    transport evidence fails that turn instead and tells the reader something
+    false about their own system.
 
     Cached tokens are added back before comparing: a cache hit legitimately
     bills a fraction of the prompt, and reading ``prompt_tokens`` alone would
@@ -225,11 +225,10 @@ def flag_transport_failure(
     request cannot have been. That second signal needs the emptiness beside it,
     because either one alone is a different fault with a different owner:
 
-    * Silence with honest usage is a model that said nothing. The agent loop
-      recovers that by changing the request (a prefill, a post-tool nudge) or
-      retrying it, and none of that is reachable once a response is reported as
-      an error. Retrying the identical request, which is all this verdict can
-      ask for, is also the one thing that does not help there.
+    * Silence with honest usage is a model that said nothing, and the agent
+      loop ends its turn without a reply. Reported as an error it would fail
+      that turn, and retrying the identical request, which is all this verdict
+      can ask for, would not change what the model chose to say.
     * An answer with strange accounting is an answer. Gateways under-report
       usage, and a verdict that overrode a real reply would trade this fault
       for a worse one.
@@ -241,7 +240,7 @@ def flag_transport_failure(
 
     So a laundered failure whose accounting looks ordinary is not caught here.
     That is deliberate: locally it is indistinguishable from a silent model,
-    and the loop already has a recovery for exactly that shape.
+    and it is read as one.
 
     ``finish_reason`` must be the value the upstream actually sent, not one
     synthesised when it sent none. A stream that yields no terminal delta at

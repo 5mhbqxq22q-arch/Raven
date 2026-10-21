@@ -21,7 +21,7 @@ from raven.utils.images import is_image_part, is_inline_image
 # path, so the only thing this message would add to the transcript is a user turn
 # saying "[image]" that the user never sent -- misleading on resume and in
 # session export. Deliberately a different key from ``_recovery_synthetic``:
-# that one marks empty-response recovery scaffolding, and collapsing the two
+# that one marks what a hook's rollback injects, and collapsing the two
 # would make either meaning impossible to reason about separately.
 ATTACHED_IMAGE_KEY = "_attached_image"
 #: Where each picture in a message came from, one entry per image part in content

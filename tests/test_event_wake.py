@@ -525,10 +525,10 @@ async def test_cron_reply_is_delivered_once_when_heartbeat_checks(tmp_path: Path
         await hub.aclose()
 
 
-@pytest.mark.parametrize("response", ["cron result text", None])
-async def test_silent_cron_completion_enqueues_event_and_wakes(response: str | None):
+async def test_silent_cron_completion_enqueues_event_and_wakes():
     from raven.core.cron_stack import make_on_cron_job
 
+    response = "cron result text"
     submit, readback = _spine_submit([response], explicit_reply=False)
 
     queue = SystemEventQueue()
@@ -542,12 +542,31 @@ async def test_silent_cron_completion_enqueues_event_and_wakes(response: str | N
     assert events[0].source == "cron"
     assert events[0].context_key == "cron:job_wake"
     assert "wake_test" in events[0].text
-    assert (response or "(no response)") in events[0].text
+    assert response in events[0].text
     assert readback == {}
 
     await asyncio.sleep(0.05)
     assert wake.wake_event.is_set()
     assert wake.consume_reasons() == ["cron:job_wake"]
+
+
+async def test_a_cron_turn_whose_model_said_nothing_wakes_nobody():
+    """A model that said nothing has given its answer: nothing reaches the user,
+    and no second model is woken to decide whether something should. The run
+    still succeeded, so a failure queued by an earlier fire is cleared."""
+    from raven.core.cron_stack import make_on_cron_job
+
+    submit, readback = _spine_submit([None], explicit_reply=False)
+    queue = SystemEventQueue()
+    queue.enqueue(SystemEvent(text="earlier failure", source="cron", context_key="cron:job_wake:fail"))
+    wake = WakeScheduler(coalesce_s=0.01)
+    on_job = make_on_cron_job(submit=submit, readback_texts=readback, system_events=queue, wake=wake)
+
+    assert await on_job(_make_job()) is None
+
+    assert queue.peek_all() == []
+    assert wake.consume_reasons() == []
+    wake.stop()
 
 
 async def test_cron_failure_enqueues_failure_event_and_reraises():

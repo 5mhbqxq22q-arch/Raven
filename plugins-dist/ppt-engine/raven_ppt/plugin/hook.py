@@ -494,7 +494,7 @@ class PptParticipant(AgentParticipant):
             return Accept()
         text = str(getattr(response, "content", None) or "").strip()
         if not text:
-            # Nothing said at all is the empty-recovery's case, not this one.
+            # Nothing said at all is an empty reply, which the loop settles first.
             return Accept()
         if bound is None or self._deck_mtimes_before is None:
             return Accept()

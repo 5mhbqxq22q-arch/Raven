@@ -15,6 +15,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TurnEvent, TurnSendParams, TurnSendResult, TurnSubscribeParams } from '../rpc/index.js'
+import type { Msg } from '../types.js'
 
 import { createChatStream, type ChatStreamRpcClient } from '../app/chatStream.js'
 import { turnController } from '../app/turnController.js'
@@ -152,6 +153,25 @@ describe('createChatStream', () => {
 
     await stream.detach()
     expect(fake.__unsubscribeCalls).toBe(1)
+  })
+
+  it('adds no row when the turn ended without a reply', async () => {
+    const appended: Msg[] = []
+    const fake = makeFakeRpc()
+    const stream = createChatStream({
+      appendMessage: msg => appended.push(msg),
+      rpcClient: fake,
+      sessionKey: 'tui:default'
+    })
+    await stream.attach()
+    await stream.send('routine report')
+
+    fake.__pushEvent({ type: 'message.start', payload: { turn_id: 'turn-1' } })
+    fake.__pushEvent({ type: 'message.complete', payload: { turn_id: 'turn-1' } })
+
+    expect(appended).toEqual([])
+    expect(getUiState().busy).toBe(false)
+    await stream.detach()
   })
 
   it('restores the input prompt when the server reports cancelled_by_client', async () => {

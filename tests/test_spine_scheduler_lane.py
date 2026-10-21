@@ -317,14 +317,14 @@ async def test_a_turn_the_runner_worded_itself_is_marked_reported():
 
     class ReportingRunner:
         async def run(self, req, emit, drain) -> TurnOutcome:
-            raise AnswerlessTurnError("The model returned no content on 4 attempts.")
+            raise AnswerlessTurnError("The model stopped while still thinking, before producing any reply.")
 
     events, sink = _collector()
     lane = Lane(runner=ReportingRunner(), pools=OriginPools(user=1, system=1), sink=sink, conversation_id="c")
     await lane.submit(_req())
     failed = next(e for e in events if isinstance(e, TurnFailed))
     assert failed.reported is True
-    assert failed.error == "The model returned no content on 4 attempts."
+    assert failed.error == "The model stopped while still thinking, before producing any reply."
 
 
 async def test_a_failure_with_no_message_still_names_itself():

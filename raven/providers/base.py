@@ -863,22 +863,6 @@ class LLMProvider(_LLMProviderPaper):
             record["provider_fence"] = fence
         return record
 
-    def reasoning_wire_keys(self, model: str | None, reasoning_effort: str | None) -> dict[str, Any]:
-        """The reasoning keys a request for this effort would carry.
-
-        Asked when a caller needs to know whether two efforts are the *same
-        request*, which is not answerable from the labels: the empty-response
-        retry only pays for itself if the request it re-sends differs, and on a
-        wire that collapses two rungs onto one value the second retry is the
-        first failure again at full price.
-
-        Here the effort travels as the label the caller named, so the label is
-        the shape and every rung is its own request. An adapter that translates
-        the label before sending it overrides this -- ``anthropic_messages``
-        does, and is the wire the collapse was measured on.
-        """
-        return {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
-
     def _provider_fence(self, model: str | None) -> Any:
         """The backend pin a request will carry, from the two places a config puts it.
 

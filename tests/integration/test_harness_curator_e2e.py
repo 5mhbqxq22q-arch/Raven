@@ -531,7 +531,6 @@ async def test_salvage_is_reached_when_the_native_turn_has_no_answer(baseline, t
     from functools import partial
 
     baseline.config.agents.defaults.max_tool_iterations = 1
-    baseline.config.agents.defaults.empty_recovery_enabled = False
     from raven.contracts.llm_provider import ErrorClassification
 
     factory = partial(

@@ -232,6 +232,15 @@ describe('createGatewayEventHandler', () => {
     expect(toolTrails[0]?.tools?.[1]).toContain('Read File')
   })
 
+  it('adds no row for a turn that ended without a reply', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { text: '' }, type: 'message.complete' } as any)
+
+    expect(appended).toEqual([])
+  })
+
   it('keeps tool tokens across handler recreation mid-turn', () => {
     const appended: Msg[] = []
 

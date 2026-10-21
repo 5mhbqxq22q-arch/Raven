@@ -34,7 +34,7 @@ from raven.providers.base import (
 )
 from raven.providers.reasoning import split_orphan_think
 from raven.providers.tool_names import normalized_tool_name
-from raven.providers.transport_failure import flag_transport_failure, prompt_chars
+from raven.providers.transport_failure import flag_transport_failure, prompt_chars, transport_failure_message
 from raven.providers.truncation import flag_truncation
 from raven.providers.usage import merge_usage
 
@@ -199,6 +199,7 @@ async def stream_llm_call(
     error_content: str | None = None
     error_classification: ErrorClassification | None = None
     upstream_finish_reason: str | None = None
+    transport_evidence: str | None = None
 
     for attempt in range(max_reconnects + len(retry_delays) + 1):
         attempt_t0 = time.monotonic()
@@ -267,8 +268,8 @@ async def stream_llm_call(
             # deliverable had arrived: a reply cut mid-thought, not a model that
             # chose silence. Measured on 2026-09-06: nine deck-build calls ended
             # this way at 307-314 s each with 11-15k reasoning tokens and no
-            # content, and the empty-reply recovery re-sent the same request
-            # five more times because the cut looked like a finished reply. Handed
+            # content, and the loop re-sent the same request five more times
+            # because the cut looked like a finished reply. Handed
             # back as a retryable network error instead, so the loop's error
             # ladder owns it and the log says what happened. Content that did
             # arrive is delivered as it is, with the finish reason left unknown.
@@ -310,13 +311,11 @@ async def stream_llm_call(
             # Asked inside the attempt loop so the answer can be acted on. The
             # verdict requires that nothing was emitted, so a second attempt
             # duplicates no rendered output -- the same condition the reconnect
-            # below already tests before retrying a mid-stream error. Returning
-            # `finish_reason="error"` here instead would end the turn: this path
-            # has no ladder of its own, and the loop breaks on an error response
-            # before `classify_empty_response` can recover it.
-            if attempt < max_reconnects and _transport_failed(
+            # below already tests before retrying a mid-stream error.
+            transport_evidence = _transport_failed(
                 upstream_finish_reason, content_buf, reasoning_buf, tool_call_slots, final_usage, messages
-            ):
+            )
+            if attempt < max_reconnects and transport_evidence:
                 logger.warning(
                     "upstream reported a failed call as a normal end (attempt {}/{}), reconnecting",
                     attempt + 1,
@@ -443,6 +442,23 @@ async def stream_llm_call(
             call_record=record,
         )
 
+    if transport_evidence:
+        # The reconnects are spent and the verdict still stands. Reported the
+        # way the non-streaming exit reports it: handed back empty, the loop
+        # would end the turn as a model that said nothing.
+        logger.warning("upstream reported a failed call as a normal end: {}", transport_evidence)
+        return LLMResponse(
+            content=transport_failure_message(transport_evidence),
+            finish_reason="error",
+            usage=final_usage or {},
+            error_classification=ErrorClassification(
+                category="upstream_transport_failure",
+                retryable=True,
+                should_fallback=True,
+            ),
+            call_record=record,
+        )
+
     tool_calls = _finalize_tool_calls(tool_call_slots)
 
     # Asked of the same owner the request body asks, rather than passed in: the
@@ -479,10 +495,6 @@ async def stream_llm_call(
         split_reasoning, content = split_orphan_think(content)
         reasoning_content = split_reasoning
 
-    # No verdict here: it was asked inside the attempt loop, where a reconnect
-    # is still possible. Once the reconnects are spent the response is returned
-    # as what it is -- an empty one -- so the loop's own empty-response
-    # recovery still owns it rather than being pre-empted by an error.
     return LLMResponse(
         content=content,
         tool_calls=tool_calls,

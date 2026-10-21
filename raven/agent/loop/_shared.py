@@ -31,11 +31,7 @@ from raven.agent.loop.failure_streak import (
 )
 from raven.agent.loop.no_progress import NoProgressAction, NoProgressGuard
 from raven.agent.loop.recovery import (
-    OUTPUT_LIMIT_NUDGE,
-    POST_TOOL_NUDGE,
-    RecoveryAction,
     RecoveryLimits,
-    classify_empty_response,
     is_only_think_debris,
     strip_think_blocks,
 )
@@ -217,12 +213,11 @@ class LoopOutcome:
     next turn's recovery prompt.
 
     ``error`` is the loop's own account of why this turn has no answer, in the
-    words a reader is shown: a model call it gave up on, or an empty-response
-    recovery that spent every budget without a word coming back. None when the
-    turn produced an answer or a hook salvaged one, and also when the turn
-    returned no text at all with the recovery switched off, which the caller
-    fails on by itself. The caller fails the turn on it unless one of the
-    turn's tools has already put an answer in front of the reader.
+    words a reader is shown: a model call it gave up on, or a reply that
+    stopped while thinking. None when the turn produced an answer or a hook
+    salvaged one, and also when the model said nothing, which ends the turn
+    without a reply. The caller fails the turn on it unless one of the turn's
+    tools has already put an answer in front of the reader.
 
     ``error_full`` is the same failure at length: the failed call's content
     unbounded, then the body its call record kept. The caller raises it with

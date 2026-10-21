@@ -275,21 +275,22 @@ async def test_a_model_call_the_loop_gives_up_on_fails_the_turn_and_leaves_the_m
 
 
 @pytest.mark.asyncio
-async def test_an_exhausted_empty_response_recovery_leaves_the_same_marker(workspace):
-    """A turn whose model never sent a word fails like a model call the loop gave
-    up on, so the transcript ends the same way: on a marker saying the turn
+async def test_a_reply_that_stopped_while_thinking_leaves_the_same_marker(workspace):
+    """A turn whose model stopped while thinking fails like a model call the loop
+    gave up on, so the transcript ends the same way: on a marker saying the turn
     failed and why, not on the question alone and not on a manufactured reply.
 
     The reason is the loop's own sentence rather than a vendor's, so the model's
     copy of it is that sentence -- there is no category to summarise.
     """
-    agent = _agent_without_ladder(workspace, DyingProvider([LLMResponse(content="", finish_reason="stop")] * 8))
+    stopped = LLMResponse(content="", reasoning_content="first I need to", finish_reason="stop")
+    agent = _agent_without_ladder(workspace, DyingProvider([stopped] * 8))
 
     with pytest.raises(AnswerlessTurnError) as failed:
         await agent._process_message(_make_msg("hello"))
 
     reason = str(failed.value)
-    assert reason == "The model returned no content on 3 attempt(s) (prefill 0, post-tool nudge 0, plain retry 2)."
+    assert "thinking" in reason
     msgs = _persisted(workspace)
     assert [m["role"] for m in msgs] == ["user", "assistant"]
     assert msgs[-1]["turn_ended"] == {"status": "failed", "reason": reason}

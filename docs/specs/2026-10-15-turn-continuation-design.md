@@ -52,7 +52,7 @@ model request: the `llm.input` artifact of the turn's trace. It is a turn of its
 (its own `turn_id` and lifecycle events) that the transcript draws as the rest of the
 failed one.
 _Avoid_: "retry" unqualified (`CONTEXT.md` already reserves it for the Model-Error
-Ladder and Empty-Response Recovery); "continuation" unqualified (the DAG runner's node
+Ladder); "continuation" unqualified (the DAG runner's node
 continuations, `max_continuations`).
 
 **Continuation seed.** The message list read from that artifact, resolved to full

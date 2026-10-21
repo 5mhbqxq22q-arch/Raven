@@ -53,9 +53,9 @@ SUMMARY_MARKER = "[Context summary — earlier steps were compacted to fit the c
 #: session of hundreds of long messages, and the note says when it was hit.
 WORDS_CAP_CHARS = 24_000
 
-# The loop writes user-role messages of its own -- the synthetic message that
-# carries a tool's pictures, and empty-response recovery scaffolding -- and marks
-# each with a private key, which is how the trunk keeps them out of a filed turn.
+# Some user-role messages never came from the user -- the synthetic message that
+# carries a tool's pictures, and the scaffolding a gate injects for a re-sample --
+# and each carries a private key, which is how the trunk keeps them out of a filed turn.
 # Read the mark rather than the prose: a live run put 29 image-withdrawal notices
 # and nothing else into a journal of 34 items, and matching their wording would
 # only hold until the wording changed. Spelled here so the plugin does not import

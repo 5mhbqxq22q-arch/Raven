@@ -21,9 +21,9 @@ cannot drift apart.
 A dead turn has no answer to damage. "Empty answer implies wrong" is a scoring
 rule, not an observation, so the count of correct answers among dead turns is
 structurally zero and a second attempt can only move it up. That is the same
-argument recorded for the empty-response recovery (measured +3.33pp corpus /
-+1.99pp web) and it is why this is the one mechanism that could be switched on
-by class default without a fresh batch behind it.
+argument once recorded for the loop's empty-reply retries (measured +3.33pp
+corpus / +1.99pp web) and it is why this is the one mechanism that could be
+switched on by class default without a fresh batch behind it.
 
 The argument covers *re-running*, not *salvaging*. Squeezing an answer out of
 the first attempt's leftovers was measured and it **loses** points: 23 of 25

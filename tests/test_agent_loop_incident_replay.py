@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import tempfile
 import time
 from dataclasses import dataclass, fields
@@ -42,6 +43,7 @@ import pytest
 from raven.agent.loop import AgentLoop
 from raven.agent.loop.bundles import EngineWiring, ToolWiring, TurnPolicy
 from raven.agent.loop.recovery import has_thinking
+from raven.config.live import LiveConfig
 from raven.config.schema import Config
 from raven.providers.factory import make_provider
 from raven.spine.message import ChatType, Source
@@ -189,7 +191,7 @@ def _turn() -> TurnRequest:
 
 
 def _agent(workspace: Path, provider) -> AgentLoop:
-    return AgentLoop(
+    agent = AgentLoop(
         provider=provider,
         workspace=workspace,
         model="anthropic/claude-opus-5",
@@ -199,11 +201,18 @@ def _agent(workspace: Path, provider) -> AgentLoop:
         # in production rather than a guess for an unknown model.
         engine=EngineWiring(context_window_tokens=DEPLOYED_CONFIG["agents"]["defaults"]["contextWindowTokens"]),
     )
+    # The deployed file, which is where a running loop reads its effort from:
+    # the provider's copy is frozen at construction, so without this the loop
+    # would see no effort at all where production sees high.
+    config_file = workspace / "config.json"
+    config_file.write_text(json.dumps(DEPLOYED_CONFIG))
+    agent._live_config = LiveConfig(config_file)
+    return agent
 
 
 @pytest.mark.asyncio
-async def test_the_streaming_path_hands_the_classifier_a_thinking_only_stop(workspace, monkeypatch):
-    """What the recovery saw: over the streaming call the incident's response
+async def test_the_streaming_path_hands_the_loop_a_thinking_only_stop(workspace, monkeypatch):
+    """What the loop saw: over the streaming call the incident's response
     arrives as reasoning with no body and a plain ``stop``."""
     monkeypatch.setattr("raven.providers.litellm_provider.acompletion", _Gateway())
     agent = _agent(workspace, _deployed_provider())
@@ -224,7 +233,8 @@ async def test_the_streaming_path_hands_the_classifier_a_thinking_only_stop(work
 async def test_a_thinking_only_turn_on_the_deployed_route_recovers_instead_of_hanging(workspace, monkeypatch):
     """The incident, replayed: thinking-only first response, gateway that
     swallows a prefill. The turn must never send a request ending on an
-    assistant message, and must still deliver its answer -- promptly."""
+    assistant message, and must still deliver its answer -- promptly, asked
+    again with less thinking allowed than the deployed high."""
     gateway = _Gateway()
     monkeypatch.setattr("raven.providers.litellm_provider.acompletion", gateway)
     agent = _agent(workspace, _deployed_provider())
@@ -235,6 +245,7 @@ async def test_a_thinking_only_turn_on_the_deployed_route_recovers_instead_of_ha
 
     assert "assistant" not in gateway.last_roles, f"a prefill went to the gateway: {gateway.last_roles}"
     assert out is not None and out[0] == "real answer", out
+    assert [r.get("reasoning_effort") for r in gateway.turn_requests] == ["high", "low"]
     assert elapsed < 1.5, f"turn took {elapsed:.1f}s of a {BUDGET}s budget: it waited on a swallowed request"
 
 

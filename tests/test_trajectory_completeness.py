@@ -293,18 +293,27 @@ def test_control_flow_exhaustion_is_unreplayable(tmp_path, shape):
     assert any("exhausted" in r for r in reasons)
 
 
-@pytest.mark.parametrize("recovery", ["empty-output", "thinking-only"])
-def test_empty_response_recovery_consumes_more_recording(tmp_path, recovery):
-    """AgentLoop retries/prefills after an empty response — one output is not enough."""
-    output = (
-        _llm_output(content=None)
-        if recovery == "empty-output"
-        else _llm_output(content=None, reasoning_content="thinking...")
-    )
-    tree = _bundle(tmp_path, llm_calls=((_llm_input(), output),))
-    status, reasons = _evaluate(tree)
+def test_a_reply_that_said_nothing_ends_the_turn_on_the_one_recording(tmp_path):
+    """A model that said nothing is not asked again, so the one recorded output
+    is all a replay needs."""
+    tree = _bundle(tmp_path, llm_calls=((_llm_input(), _llm_output(content=None)),))
+    assert _evaluate(tree) == ("complete", [])
+
+
+def test_a_reply_that_stopped_while_thinking_needs_its_retries_recorded_too(tmp_path):
+    """One that stopped while thinking is asked again a rung lower each time, so
+    two recorded outputs run out before the low rung is reached."""
+    stuck = _llm_output(content=None, reasoning_content="thinking...")
+    status, reasons = _evaluate(_bundle(tmp_path, llm_calls=((_llm_input(), stuck),) * 2))
     assert status == "unreplayable"
     assert any("exhausted" in r for r in reasons)
+
+
+def test_a_reply_that_stopped_while_thinking_replays_with_its_retries(tmp_path):
+    """A turn that named no effort is asked again at high and then at low."""
+    stuck = _llm_output(content=None, reasoning_content="thinking...")
+    tree = _bundle(tmp_path, llm_calls=((_llm_input(), stuck),) * 3)
+    assert _evaluate(tree) == ("complete", [])
 
 
 # ── unreplayable: explicit contract validation ─────────────────────────

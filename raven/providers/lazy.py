@@ -174,15 +174,6 @@ class LazyProvider(LLMProvider):
         """
         return self._built().supports_prompt_caching(model)
 
-    def reasoning_wire_keys(self, model: str | None, reasoning_effort: str | None) -> Any:
-        """Forwarded post-materialization, like ``request_generation``: only the
-        inner provider knows whether its wire can tell two efforts apart, and the
-        base answer says every label is its own request -- which is the answer
-        that let the retry re-send an unchanged one."""
-        if self._provider is None:
-            return super().reasoning_wire_keys(model, reasoning_effort)
-        return self._provider.reasoning_wire_keys(model, reasoning_effort)
-
     def supports_assistant_prefill(self, model: str | None = None) -> bool:
         """Forwarded through a build, like ``supports_prompt_caching``: the
         question is asked once a response has come back, so the build it forces

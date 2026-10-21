@@ -52,8 +52,8 @@ class ErrorClassification:
 #: transport can map a thinking budget for, and the set OpenRouter accepts in
 #: its native reasoning object, so a rung taken from here is a value every
 #: backend the loop talks to already understands. Here rather than beside the
-#: loop's recovery because the window's head summary reads its floor too, and
-#: neither the loop nor the window is allowed to import the other.
+#: loop's recovery because the loop places a turn's effort on it before stepping
+#: down, and neither the loop nor the window is allowed to import the other.
 REASONING_EFFORT_LADDER: tuple[str, ...] = ("max", "xhigh", "high", "medium", "low", "minimal")
 
 
@@ -416,11 +416,9 @@ class LLMProvider(ABC):
 
         Anthropic rejects a trailing assistant message once thinking is on, and
         behind a gateway that rejection can surface as a stream that never
-        produces a byte rather than as an error. Empty-response recovery asks
-        this before re-feeding a model its own reasoning (the prefill), and
-        picks a repair that leaves a user or tool message last when the answer
-        is no. Default True: every other vendor accepts the continuation, and
-        the base class knows no dialect. ``None`` asks about the default model.
+        produces a byte rather than as an error. Default True: every other
+        vendor accepts the continuation, and the base class knows no dialect.
+        ``None`` asks about the default model.
         """
         return True
 

@@ -165,7 +165,9 @@ async def test_spine_path_returns_reply_without_waking_heartbeat():
 
 
 @pytest.mark.parametrize("explicit_reply", [True, False])
-async def test_spine_path_missing_readback_uses_turn_reply_state(explicit_reply: bool):
+async def test_spine_path_missing_readback_wakes_nobody(explicit_reply: bool):
+    # No reply text is either a reply already on the delivery path or a model
+    # that said nothing; neither leaves heartbeat anything to decide.
     system_events = MagicMock()
     wake = MagicMock()
 
@@ -182,13 +184,8 @@ async def test_spine_path_missing_readback_uses_turn_reply_state(explicit_reply:
 
     assert await handler(_make_job(channel="telegram", to="c1", name="t2")) is None
 
-    if explicit_reply:
-        system_events.enqueue.assert_not_called()
-        wake.request_wake_now.assert_not_called()
-    else:
-        system_events.enqueue.assert_called_once()
-        assert "(no response)" in system_events.enqueue.call_args.args[0].text
-        wake.request_wake_now.assert_called_once_with("cron:job_t2")
+    system_events.enqueue.assert_not_called()
+    wake.request_wake_now.assert_not_called()
 
 
 # ─────────────────────────────────────────────────────────────────────

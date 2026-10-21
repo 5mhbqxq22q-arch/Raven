@@ -114,27 +114,28 @@ class _Scripted(LLMProvider):
         return "stub"
 
 
-#: How many empty replies the loop's own empty-response recovery spends before it
-#: gives up. A turn that spends them ends with ``status="error"`` and no answer,
-#: which is the shape every dead-end test below needs.
-_RECOVERY_BUDGET = 3
-
-
 def _dead() -> list[LLMResponse]:
-    """An attempt that answers nothing at all and exhausts empty-response recovery."""
-    return [LLMResponse(content="", finish_reason="stop")] * _RECOVERY_BUDGET
+    """An attempt that answers nothing at all: the model said nothing, which ends
+    the attempt on its first call with no answer and a dead end to read."""
+    return [LLMResponse(content="", finish_reason="stop")]
 
 
-def _thinks_and_says_nothing() -> list[LLMResponse]:
-    """The same dead attempt, reached through the recovery path that leaves scaffolding.
-
-    A reply that is all reasoning and no body sends recovery down its prefill branch,
-    which feeds the model back its own thinking as an assistant message of the loop's
-    own making. Six is more than the two prefills and three retries recovery will
-    spend, so the attempt ends the way ``_dead`` does -- with one of those synthetic
-    messages sitting at the end of the list.
-    """
-    return [LLMResponse(content="", reasoning_content="Let me weigh it.", finish_reason="stop")] * 6
+def _works_then_dies() -> list[LLMResponse]:
+    """A dead attempt that spends three calls getting there: two tool calls, then
+    nothing. The clock tests below need an attempt that costs several calls."""
+    return [
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCallRequest(id="look-1", name="list_dir", arguments={"path": "."})],
+            finish_reason="tool_calls",
+        ),
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCallRequest(id="look-2", name="list_dir", arguments={"path": "."})],
+            finish_reason="tool_calls",
+        ),
+        *_dead(),
+    ]
 
 
 def _answers(text: str) -> list[LLMResponse]:
@@ -229,14 +230,15 @@ async def test_a_live_turn_is_never_re_run(tmp_path):
 
 @pytest.mark.asyncio
 async def test_an_agent_that_asks_for_nothing_is_never_re_run(tmp_path):
-    """Every other agent on this loop. A dead turn stays dead, exactly as before."""
+    """Every other agent on this loop. A dead turn ends as it would have anyway:
+    the model said nothing, and the turn ends without a reply."""
     provider = _Scripted(_dead())
     agent = _loop(tmp_path, provider)
 
-    failure = await _run_answerless(agent)
+    out = await agent._process_message(_req(), session_key="s1")
 
     assert provider.attempts_used == 1
-    assert "returned no content" in failure, "the dead turn was reported as it was"
+    assert out is None
 
 
 @pytest.mark.asyncio
@@ -244,9 +246,10 @@ async def test_switching_it_off_restores_the_old_behaviour(tmp_path):
     provider = _Scripted(_dead(), _answers("Alice Smith won it."))
     agent = _loop(tmp_path, provider, [_Budgeted(dead_end_retries=0)])
 
-    await _run_answerless(agent)
+    out = await agent._process_message(_req(), session_key="s1")
 
     assert provider.attempts_used == 1
+    assert out is None
 
 
 @pytest.mark.asyncio
@@ -255,10 +258,10 @@ async def test_the_budget_is_a_ceiling_not_a_loop(tmp_path):
     provider = _Scripted(_dead(), _dead(), _dead())
     agent = _loop(tmp_path, provider, [_Budgeted(dead_end_retries=1)])
 
-    failure = await _run_answerless(agent)
+    out = await agent._process_message(_req(), session_key="s1")
 
     assert provider.attempts_used == 2
-    assert "returned no content" in failure, "still dead after the one retry it was allowed"
+    assert out is None, "still dead after the one retry it was allowed"
 
 
 @pytest.mark.asyncio
@@ -286,7 +289,7 @@ async def test_the_reason_filter_narrows_the_trigger(tmp_path):
     provider = _Scripted(_dead(), _answers("Alice Smith won it."))
     agent = _loop(tmp_path, provider, [_Budgeted(dead_end_retries=1, dead_end_reasons=["refusal_string"])])
 
-    await _run_answerless(agent)
+    await agent._process_message(_req(), session_key="s1")
 
     assert provider.attempts_used == 1, "no reason matched, so nothing was re-run"
 
@@ -303,16 +306,17 @@ async def test_a_spent_wall_clock_stops_the_retry(tmp_path, monkeypatch):
     """
     ticks = iter(range(1000))
     monkeypatch.setattr(turn_path, "monotonic", lambda: float(next(ticks)))
-    provider = _Scripted(_dead(), _answers("Alice Smith won it."))
+    provider = _Scripted(_works_then_dies(), _answers("Alice Smith won it."))
     agent = _loop(tmp_path, provider, [_Budgeted(dead_end_retries=1, wall_clock_seconds=5.0)])
 
-    await _run_answerless(agent)
+    out = await agent._process_message(_req(), session_key="s1")
 
     assert provider.attempts_used == 1, "the spent clock stopped the rerun"
-    # Not vacuous: the first attempt must have run to empty-response exhaustion. If
-    # the loop's own clock had cut it short instead, the turn would have wrapped up
-    # with an answer and there would have been no dead end to decline to re-run.
-    assert provider.calls == _RECOVERY_BUDGET
+    # Not vacuous: the first attempt must have run to its dead end. If the loop's
+    # own clock had cut it short instead, the turn would have wrapped up with an
+    # answer and there would have been no dead end to decline to re-run.
+    assert provider.calls == 3
+    assert out is None
 
 
 @pytest.mark.asyncio
@@ -348,7 +352,7 @@ async def test_the_rerun_spends_the_turn_s_clock_not_a_fresh_copy(tmp_path, monk
     The clock reads off the work done rather than off how many times it is read, so the
     test says what a model call costs and nothing depends on how often the loop looks.
     """
-    provider = _Scripted(_dead(), _dead())
+    provider = _Scripted(_works_then_dies(), _works_then_dies())
     monkeypatch.setattr(turn_path, "monotonic", lambda: 3.0 * provider.calls)
     agent = _loop(tmp_path, provider, [_Budgeted(dead_end_retries=1, wall_clock_seconds=10.0)])
 
@@ -418,7 +422,7 @@ async def test_the_iteration_cap_names_itself(tmp_path):
     """``stopped_by`` exists because ``status`` cannot answer this: the cap and a
     spent clock both land on ``interrupted`` and both produce a wrap-up that reads
     like an ordinary answer."""
-    provider = _Scripted([LLMResponse(content="", finish_reason="stop")])
+    provider = _Scripted(_works_then_dies())
     agent = _loop(tmp_path, provider, [_Present()], max_iterations=2)
     meta: dict = {}
 
@@ -438,7 +442,7 @@ async def test_the_turn_end_record_says_which_attempt_it_counted(tmp_path, monke
     reader tell them apart -- one iteration beside twelve seconds otherwise reads as
     a single very slow call.
     """
-    provider = _Scripted(_dead(), _answers("Alice Smith won it."))
+    provider = _Scripted(_works_then_dies(), _answers("Alice Smith won it."))
     monkeypatch.setattr(turn_path, "monotonic", lambda: 3.0 * provider.calls)
     hook = _Watches(dead_end_retries=1, wall_clock_seconds=3600)
     agent = _loop(tmp_path, provider, [hook])
@@ -653,13 +657,13 @@ async def test_the_last_attempt_keeps_the_salvage_the_clock_denies_it_a_rerun_fo
     with nothing at all.
 
     Ten seconds a call against a twenty-five second turn, and the third call -- the
-    last one empty-response recovery has -- both ends the attempt with no answer and
-    carries the clock past the budget, which is the only way the two conditions meet.
+    one that says nothing -- both ends the attempt with no answer and carries the
+    clock past the budget, which is the only way the two conditions meet.
     """
     clock = {"now": 0.0}
     monkeypatch.setattr(turn_path, "monotonic", lambda: clock["now"])
     hook = _Salvages(dead_end_retries=1, wall_clock_seconds=25.0)
-    provider = _Timed(clock, 10.0, _dead(), _answers("Alice Smith won it."))
+    provider = _Timed(clock, 10.0, _works_then_dies(), _answers("Alice Smith won it."))
     agent = _loop(tmp_path, provider, [hook])
 
     out = await agent._process_message(_req(), session_key="s1")
@@ -669,23 +673,59 @@ async def test_the_last_attempt_keeps_the_salvage_the_clock_denies_it_a_rerun_fo
     assert out[0] == _Salvages.answer
 
 
+class _InjectsScaffoldingOnce(_Budgeted):
+    """A product's gate that sends the first draft back with scaffolding of its own,
+    marked transient the way the research flow's report-shape gate marks it."""
+
+    def __init__(self, **budgets) -> None:
+        super().__init__(**budgets)
+        self.injected = False
+
+    async def after_iteration(self, ctx) -> HookDecision:
+        if self.injected:
+            return HookDecision()
+        self.injected = True
+        return HookDecision(
+            rollback=True,
+            rollback_inject=[
+                {"role": "assistant", "content": "A first pass.", "_recovery_synthetic": True},
+                {"role": "user", "content": "Rewrite it as a report.", "_recovery_synthetic": True},
+            ],
+        )
+
+
 @pytest.mark.asyncio
-async def test_the_dead_end_reading_drops_the_recovery_scaffolding_first(tmp_path):
-    """Where a turn ended is read off the trajectory it leaves behind, and the loop's
-    own recovery messages are not part of that: they are dropped before anything is
-    persisted. The reading used to happen after the drop, because it happened after
-    the attempt returned. It happens inside the attempt now, so it has to do the drop
-    itself -- or a product that re-runs turns ending on the question is told they
-    ended on a prefill the loop wrote, and never re-runs one.
+async def test_the_dead_end_reading_drops_the_transient_scaffolding_first(tmp_path):
+    """Where a turn ended is read off the trajectory it leaves behind, and the
+    scaffolding a gate injects for a re-sample is not part of that: it is dropped
+    before anything is persisted. The reading happens inside the attempt, so it has
+    to do the drop itself -- or a product that re-runs turns ending on the question
+    is told they ended on the gate's own ask, and never re-runs one.
     """
-    hook = _Budgeted(dead_end_retries=1, dead_end_reasons=("stranded:question",))
-    provider = _Scripted(_thinks_and_says_nothing(), _answers("Alice Smith won it."))
+    hook = _InjectsScaffoldingOnce(dead_end_retries=1, dead_end_reasons=("stranded:question",))
+    provider = _Scripted(_drafts_then_dies(), _answers("Alice Smith won it."))
     agent = _loop(tmp_path, provider, [hook])
 
     out = await agent._process_message(_req(), session_key="s1")
 
+    assert hook.injected, "the gate never injected, so this pins nothing"
     assert provider.attempts_used == 2, "the scaffolding was read as where the turn ended"
     assert out[0] == "Alice Smith won it."
+
+
+@pytest.mark.asyncio
+async def test_the_scaffolding_a_gate_injects_is_never_persisted(tmp_path):
+    """The answer the scaffolding led to is saved; the scaffolding is not."""
+    hook = _InjectsScaffoldingOnce()
+    provider = _Scripted([LLMResponse(content="A first pass.", finish_reason="stop"), *_answers("The report.")])
+    agent = _loop(tmp_path, provider, [hook])
+
+    out = await agent._process_message(_req(), session_key="s1")
+
+    assert hook.injected, "the gate never injected, so this pins nothing"
+    assert out[0] == "The report."
+    rows = agent.sessions.get_or_create("s1").messages
+    assert [(m["role"], m["content"]) for m in rows][1:] == [("assistant", "The report.")]
 
 
 @pytest.mark.asyncio

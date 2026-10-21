@@ -1,50 +1,27 @@
-"""Empty-response recovery for the agent loop.
+"""How the agent loop reads a model reply, and the limits its retries spend.
 
-Pure decision logic, no I/O — the loop owns the side effects (appending
-messages, incrementing counters, ``continue``). Kept separate from the loop so
-the branching can be unit-tested in isolation, mirroring the repo's other small
-policy units (nudge_policy, decision_router).
+A reply with no text and no tool call is read for one fact: whether the model
+stopped while thinking (:func:`stopped_in_thinking`). One with nothing in it at
+all is a model that said nothing: its turn ends without a reply and it is not
+asked again, since a second ask cannot tell a chosen silence from a stall. One
+that reasoned and never reached a body, or was cut at the output ceiling, spent
+its budget thinking: it is asked again a rung at a time, high and then low
+(:func:`lower_reasoning_effort`), and fails its turn once no rung is left.
 
-A turn that ends with no visible text would otherwise surface a canned
-"no response to give" dud — a zero-score turn on weaker models. This recovers
-the turn before giving up, in three bounded modes:
-
-  PREFILL  thinking-only — the model emitted only reasoning (a structured field
-           or an inline <think> block) and no body. Re-feed its own reasoning so
-           it continues into the answer.
-  NUDGE    post-tool empty — the model ran a tool then returned nothing. Inject a
-           short user nudge so it processes the tool result.
-  RETRY    plain empty — re-request with less reasoning asked for than the
-           call that came back empty (:func:`lower_reasoning_effort`), and less
-           on the wire rather than only in the label. Re-sent as-is it was the
-           same bytes, so three retries were three guaranteed repeats of one
-           failure.
-
-A provider that refuses a trailing assistant message (its
-``supports_assistant_prefill`` answers False: Anthropic with thinking on) never
-gets PREFILL. The same thinking-only turn takes NUDGE after a tool, else RETRY,
-so the request handed back never ends on an assistant message.
-
-Spending every budget without a word coming back is FAIL, and the loop ends the
-turn as an error the caller fails the turn on -- unless one of the turn's tools
-has already put an answer in front of the reader. It is not a fourth mode --
-there is nothing left to try -- it is the answer to the question the caller asks
-next, which is whether this turn produced anything.
-
-This is distinct from Sentinel's NudgeInjector / NudgePolicy, which inject
-*proactive suggestions* onto an outbound reply; this module instead recovers an
-empty turn before it is ever sent.
+The think-tag helpers decide what counts as text, because reasoning some
+backends inline in ``content`` is not a reply. :class:`RecoveryLimits` carries
+the waits the loop spends on a model call that came back an error, and
+:class:`DraftGate` holds a streamed draft until a hook has decided to keep it.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum, auto
 
 from raven.config import schema as config_schema
 from raven.contracts.llm_provider import REASONING_EFFORT_LADDER, LLMResponse
+from raven.providers.usage import token_count
 
 # In-content thinking markers. Some models (Ollama, certain Qwen gateways) put
 # the reasoning in ``content`` as <think>…</think> rather than in the structured
@@ -61,106 +38,10 @@ _THINK_BLOCK_RE = re.compile(
 )
 
 
-def lower_reasoning_effort(
-    current: str | None,
-    wire_keys: Callable[[str | None], object] | None = None,
-) -> str | None:
-    """One rung less reasoning than ``current``, or None when there is none left.
-
-    The plain empty retry's way of asking a different question. An empty body
-    with reasoning behind it is a call whose thinking spent the output ceiling
-    before the answer began -- measured, five in a row at exactly the ceiling --
-    so the request that has to change is the one deciding how much of that
-    ceiling thinking may take.
-
-    ``None`` in means the turn named no effort and the backend applied its own,
-    which is the case the log showed: not a low request, an unstated one. It
-    descends to the lowest rung this repo documents in config rather than to the
-    floor, so the first retry is a stated request for little thinking and the
-    next one can still differ from it.
-
-    An effort this ladder does not carry returns None: a value a caller invented
-    is not one we can reason about a rung below.
-
-    ``wire_keys`` is the provider's answer to "what would a request for this
-    effort carry" (``LLMProvider.reasoning_wire_keys``), and a rung whose answer
-    equals ``current``'s is skipped rather than sent: a request that has not
-    changed gets the answer that has not changed. It is a rung the label hides
-    -- on the Anthropic Messages wire ``minimal`` and ``low`` both serialize to
-    ``effort: low``, so descending by label alone bought a second retry that was
-    the first failure again at full price. Skipping is not descending twice:
-    when every rung below collapses onto this one there is nothing left to
-    change and this returns None, which the caller reads as the same dead end as
-    a spent budget. Without ``wire_keys`` the labels stand on their own, which is
-    right for every wire that sends the effort as the caller named it.
-    """
-    candidate = _next_rung(current)
-    if candidate is None or wire_keys is None:
-        return candidate
-    here = wire_keys(current)
-    while candidate is not None and wire_keys(candidate) == here:
-        candidate = _next_rung(candidate)
-    return candidate
-
-
-def _next_rung(current: str | None) -> str | None:
-    """The next label down, before any question about what it sends."""
-    if current is None:
-        return "low"
-    try:
-        index = REASONING_EFFORT_LADDER.index(current.strip().lower())
-    except (AttributeError, ValueError):
-        return None
-    if index + 1 >= len(REASONING_EFFORT_LADDER):
-        return None
-    return REASONING_EFFORT_LADDER[index + 1]
-
-
-POST_TOOL_NUDGE = (
-    "You executed tool calls but returned an empty response. Use the tool "
-    "results above to continue the task, or give your final answer now."
-)
-
-# A turn that ended empty at the output ceiling: no visible text, no tool call,
-# nothing kept. The effort descent above changes what the next request asks
-# *for*; this is the only thing that tells the model what happened, and the only
-# place a payload too large to finish is named -- no rung of the ladder can
-# shrink a write. `Tool.truncation_hint` says the same thing better but rides a
-# refused tool call, and a turn cut before any call produced none.
-#
-# Every sentence here is held to what the trigger proves, which is only that an
-# empty turn hit the ceiling. It does not say the reasoning spent the budget:
-# true for a reasoning model and false for one whose answer simply ran long, and
-# the trigger cannot tell them apart. It does not name a tool call as the owed
-# reply either -- a plain question arrives here too. Both were review findings,
-# in that order; a third would be the same mistake again.
-OUTPUT_LIMIT_NUDGE = (
-    "Your previous turn was cut off at the output token limit before it produced "
-    "any reply or tool call, so nothing from it was kept. Keep this turn short: "
-    "answer briefly, or make the tool call the task needs. If a payload you were "
-    "writing is too large to finish in one call, send it across several smaller "
-    "calls instead of one."
-)
-
-
-class RecoveryAction(Enum):
-    """What the loop should do about an empty assistant response."""
-
-    COMPLETE = auto()  # visible text present, or recovery off → finish the turn
-    PREFILL = auto()  # thinking-only → re-feed reasoning, re-request
-    NUDGE = auto()  # post-tool empty → inject (empty) + user nudge, re-request
-    RETRY = auto()  # plain empty → re-request as-is
-    FAIL = auto()  # budgets spent with nothing to show → the turn fails, it does not reply
-
-
 @dataclass(frozen=True)
 class RecoveryLimits:
     """Per-turn retry budgets."""
 
-    enabled: bool = True
-    post_tool_empty_max_nudges: int = 1
-    thinking_prefill_max_retries: int = 2
-    empty_content_max_retries: int = 3
     #: How long the loop waits, and how many times, when a model call comes back as
     #: a retryable error after the provider's own ladder gave up. The provider's
     #: ladder is seconds long -- right for a dropped connection, and too short for
@@ -191,10 +72,6 @@ def limits_from_defaults(defaults: object) -> RecoveryLimits:
     construction sites don't each repeat the field plumbing.
     """
     return RecoveryLimits(
-        enabled=getattr(defaults, "empty_recovery_enabled", True),
-        post_tool_empty_max_nudges=getattr(defaults, "post_tool_empty_max_nudges", 1),
-        thinking_prefill_max_retries=getattr(defaults, "thinking_prefill_max_retries", 2),
-        empty_content_max_retries=getattr(defaults, "empty_content_max_retries", 3),
         llm_error_retry_delays=_ladder(getattr(defaults, "llm_error_retry_delays", None)),
         llm_retry_after_output=bool(getattr(defaults, "llm_retry_after_output", False)),
         image_window_budget_bytes=max(0, int(getattr(defaults, "image_window_budget_bytes", 12_000_000))),
@@ -250,134 +127,71 @@ def has_thinking(response: LLMResponse) -> bool:
     return bool(response.reasoning_content or response.thinking_blocks or has_inline_thinking(response.content))
 
 
-def classify_empty_response(
-    response: LLMResponse,
-    visible: str | None,
-    *,
-    prev_had_tool_calls: bool,
-    nudges_done: int,
-    prefill_retries: int,
-    empty_retries: int,
-    limits: RecoveryLimits,
-    prefill_supported: bool = True,
-) -> RecoveryAction:
-    """Decide how to handle a no-tool-call assistant response.
+OUTPUT_LIMIT_FAILURE = "The model reached its output limit before producing any reply."
+STOPPED_THINKING_FAILURE = "The model stopped while still thinking, before producing any reply."
 
-    ``visible`` is ``response.content`` after stripping <think> blocks — i.e. the
-    user-facing text. Non-empty ``visible`` (or recovery disabled) means the turn
-    is done.
 
-    Ordering puts PREFILL before NUDGE so a thinking-only response is continued
-    via prefill rather than spending the post-tool nudge on it; the
-    ``not thinking`` guard on NUDGE keeps them mutually exclusive.
+def stopped_in_thinking(response: LLMResponse) -> str | None:
+    """Why a reply with no text and no tool call stopped while thinking, or None.
 
-    Spending the budgets without ever getting a word back returns FAIL, not
-    COMPLETE. The two used to be the same answer, which is how a measured deck
-    run reported ``end_turn`` for a turn that never produced a token: five calls
-    of about 16.8 MB each came back HTTP 200 with empty content and usage all
-    zeros, the ladder ran itself out, and the turn was filed as a completion
-    holding a canned line. Nothing downstream could then tell "the model
-    finished" from "the model never answered". COMPLETE keeps the two cases that
-    really are ends: a response with text in it, and a turn whose recovery is
-    switched off -- where no budget was spent and there is nothing to have
-    exhausted. The second of those still leaves the turn with no answer, and the
-    loop's caller fails it on that; this function is only asked which repair to
-    try, and for a turn nobody asked to repair the answer is none.
+    None is a model that said nothing, and its turn ends without a reply. A
+    reply cut at the output ceiling, or one that reasoned and never reached a
+    body, stopped while thinking: every measured empty reply behind this module
+    was reasoning that filled the budget. The reason is what the turn fails with
+    once no lower rung is left to ask at. Reasoning counts in whatever form the
+    provider reports it, the billed token count included, because Codex
+    returns none of the text; a count is read the way the usage normalizer reads
+    one, so a value that is not a token count is no sign of thinking.
     """
-    if visible or not limits.enabled:
-        return RecoveryAction.COMPLETE
-
-    thinking = has_thinking(response)
-
-    # The provider refuses a trailing assistant message (Anthropic with
-    # thinking on): PREFILL would build a request the vendor rejects, and behind
-    # a gateway that rejection can arrive as a stream that never yields a byte,
-    # so the turn hangs to the wall-clock cap instead of failing. Decided before
-    # PREFILL, with only the actions that leave a user or tool message last:
-    # the post-tool nudge (its synthetic assistant sits before the nudge), then
-    # the plain retry budget, then give up.
-    if thinking and not prefill_supported:
-        if prev_had_tool_calls and nudges_done < limits.post_tool_empty_max_nudges:
-            return RecoveryAction.NUDGE
-        if empty_retries < limits.empty_content_max_retries:
-            return RecoveryAction.RETRY
-        return RecoveryAction.FAIL
-
-    # thinking-only prefill — the model reasoned but produced no body.
-    if thinking and prefill_retries < limits.thinking_prefill_max_retries:
-        return RecoveryAction.PREFILL
-
-    # post-tool empty nudge — exclude thinking-only (handled above).
-    if prev_had_tool_calls and not thinking and nudges_done < limits.post_tool_empty_max_nudges:
-        return RecoveryAction.NUDGE
-
-    # Fallback plain retry. The ``prefill_exhausted`` clause is load-bearing:
-    # some models (e.g. mimo-v2-pro via OpenRouter) always populate a reasoning
-    # field, so gating retry on ``not thinking`` alone would permanently block
-    # retries for every reasoning model once prefill is spent.
-    prefill_exhausted = thinking and prefill_retries >= limits.thinking_prefill_max_retries
-    if empty_retries < limits.empty_content_max_retries and (not thinking or prefill_exhausted):
-        return RecoveryAction.RETRY
-
-    return RecoveryAction.FAIL
+    if response.truncated:
+        return OUTPUT_LIMIT_FAILURE
+    if has_thinking(response) or (token_count((response.usage or {}).get("reasoning_tokens")) or 0) > 0:
+        return STOPPED_THINKING_FAILURE
+    return None
 
 
-# A continuation after reasoning cut at the output ceiling picks up mid-thought:
-# the model was fed its own truncated reasoning and carries on from the cut,
-# so the first fragment of what it now emits as *content* is the tail of that
-# thought (measured 2026-09-08: " Lägg in an token. Let me start researching."
-# streamed as the head of a research answer). The fragment ends at the first
-# sentence boundary. Only a fragment that reads as mid-sentence is dropped --
-# it starts with whitespace or a lowercase letter -- so an answer that opens on
-# a heading, a list marker or a capitalised sentence is left whole.
-# The second class is the CJK full stop, exclamation and question marks. A
-# Han character has no case, so a continuation that opens directly on CJK
-# never passes the gate above and is left whole -- deliberately: without case
-# there is no way to tell a mid-sentence opening from a sentence's first word,
-# and losing an answer's first sentence costs more than keeping a fragment.
-# The CJK stops are therefore where an admitted fragment ENDS: one that opens
-# on whitespace, or on a lowercase Latin word running into CJK text, stops at
-# the first CJK mark instead of running on to a Latin period or a newline.
-_CUT_BOUNDARY = re.compile(r"\n|[.!?](?=\s|$)|[\u3002\uff01\uff1f]")
-_CUT_HEAD_MAX_CHARS = 200
+#: The efforts a reply that stopped while thinking is asked again at, strongest
+#: first: the two levels nearly every reasoning backend takes as sent. The
+#: ladder's floor, minimal, is not one of them -- the Codex backend refuses it
+#: on every model with an HTTP 400.
+_STEP_DOWN_RUNGS = ("high", "low")
 
 
-def cut_reasoning_head(text: str | None) -> str | None:
-    """``text`` without a leading mid-sentence fragment, when it has one.
+def lower_reasoning_effort(current: str | None) -> str | None:
+    """The rung to ask again at after a call that stopped while thinking at
+    ``current``, or None when no rung is below it.
 
-    The rule the stream gate and the stored content both apply, so what the
-    reader saw and what the session keeps agree.
+    The strongest of ``_STEP_DOWN_RUNGS`` below ``current`` on
+    ``REASONING_EFFORT_LADDER``, so a step down from a named effort never asks
+    for more thinking. ``None`` in means the turn named no effort and the
+    backend applied its own default, which the loop cannot see, so the
+    step-down walks every rung from the top, as it would from max. Where that
+    default sits below high, the first step asks for more thinking rather than
+    less. An effort the ladder does not carry has no rung below it.
     """
-    if not text or not (text[0].isspace() or text[0].islower()):
-        return text
-    match = _CUT_BOUNDARY.search(text)
-    if match is None:
-        return text
-    head, rest = text[: match.start()], text[match.end() :]
-    if len(head) > _CUT_HEAD_MAX_CHARS or not rest.strip():
-        return text
-    return rest.lstrip()
+    if current is None:
+        return _STEP_DOWN_RUNGS[0]
+    try:
+        here = REASONING_EFFORT_LADDER.index(current.strip().lower())
+    except (AttributeError, ValueError):
+        return None
+    below = [rung for rung in _STEP_DOWN_RUNGS if REASONING_EFFORT_LADDER.index(rung) > here]
+    return below[0] if below else None
 
 
 class DraftGate:
     """Holds a response's deltas until something has decided to keep it.
 
-    `ContinuationGate` below holds only until a rule can be decided from the
-    text. This holds until a caller says so, because the decision is not in the
-    text: a hook reading state the response does not carry can send the whole
-    thing back (`HookDecision.rollback`), and a rollback pops history the stream
-    has already left. A draft the loop discarded and a reader who saw it are not
-    the same turn -- on the ACP lane `_TurnCollector` concatenates every chunk,
-    so the rejected draft and its replacement arrive as one answer.
-
-    `cut_head` folds in `ContinuationGate`'s job for the iteration that follows a
-    length-truncated response. Holding the whole text makes that cut exact rather
-    than a rule decided on a prefix, which is why the two do not stack.
+    The decision is not in the text: a hook reading state the response does not
+    carry can send the whole thing back (`HookDecision.rollback`), and a
+    rollback pops history the stream has already left. A draft the loop
+    discarded and a reader who saw it are not the same turn -- on the ACP lane
+    `_TurnCollector` concatenates every chunk, so the rejected draft and its
+    replacement arrive as one answer.
     """
 
-    def __init__(self, deliver, *, cut_head: bool = False) -> None:
+    def __init__(self, deliver) -> None:
         self._deliver = deliver
-        self._cut_head = cut_head
         self._held = ""
         self._open = False
         self._dropped = False
@@ -395,7 +209,7 @@ class DraftGate:
         if self._dropped or self._open:
             return
         self._open = True
-        text = cut_reasoning_head(self._held) if self._cut_head else self._held
+        text = self._held
         self._held = ""
         if text:
             await self._deliver(text)
@@ -404,39 +218,3 @@ class DraftGate:
         """Drop the held draft. Nothing kept it, so nobody reads it."""
         self._held = ""
         self._dropped = True
-
-
-class ContinuationGate:
-    """Streams a continuation's deltas with :func:`cut_reasoning_head` applied.
-
-    Deltas are held until the rule can be decided -- a boundary followed by
-    content, or more text than a fragment could be -- then released; ``finish``
-    releases whatever is still held once the response has ended.
-    """
-
-    def __init__(self, deliver) -> None:
-        self._deliver = deliver
-        self._held = ""
-        self._open = False
-
-    async def __call__(self, delta: str) -> None:
-        if self._open:
-            await self._deliver(delta)
-            return
-        self._held += delta
-        match = _CUT_BOUNDARY.search(self._held)
-        decided = (match is not None and self._held[match.end() :].strip()) or len(self._held) > _CUT_HEAD_MAX_CHARS
-        if not decided:
-            return
-        await self._release()
-
-    async def finish(self) -> None:
-        if not self._open:
-            await self._release()
-
-    async def _release(self) -> None:
-        self._open = True
-        text = cut_reasoning_head(self._held) or ""
-        self._held = ""
-        if text:
-            await self._deliver(text)

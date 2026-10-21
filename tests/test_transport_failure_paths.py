@@ -126,11 +126,10 @@ def test_silence_with_honest_usage_is_left_to_the_loop() -> None:
     """The review's finding, as a test.
 
     An empty response whose prompt was billed truthfully is a model that said
-    nothing -- `recovery.py` recovers that by changing the request (a prefill,
-    a post-tool nudge, a note that the output limit cut the turn) or retrying it. Reporting it as an error takes all of
-    that out of service, because the loop breaks on an error response before
-    `classify_empty_response` runs. Retrying the identical request, the only
-    thing this verdict can ask for, is also the one thing that does not help.
+    nothing, and the loop ends its turn without a reply. Reporting it as an
+    error would fail that turn instead, and retrying the identical request, the
+    only thing this verdict can ask for, would not change what the model chose
+    to say.
     """
     silent = _Response(
         choices=[_Choice(message=_Msg())],
@@ -271,11 +270,10 @@ class _EmptyStream:
 async def test_the_streaming_path_reconnects_instead_of_ending_the_turn() -> None:
     """The regression the review measured, pinned.
 
-    This path has no retry ladder, and the loop breaks the turn on an error
-    response before empty-recovery can run -- so returning an error here made
-    a blip that `main` recovered from end the turn on the first call. The
-    verdict requires that nothing was emitted, which is exactly the condition
-    the reconnect below it already tests, so it reconnects instead.
+    Returning an error on the first attempt made a blip that `main` recovered
+    from end the turn on the first call. The verdict requires that nothing was
+    emitted, which is exactly the condition the reconnect below it already
+    tests, so it reconnects instead.
     """
     from raven.providers.streaming import stream_llm_call
 
@@ -292,9 +290,9 @@ async def test_the_streaming_path_reconnects_instead_of_ending_the_turn() -> Non
     assert response.content == "the answer"
 
 
-async def test_a_stream_that_stays_empty_ends_as_empty_not_as_an_error() -> None:
-    """Once the reconnects are spent, the response is what it is. An error
-    here would pre-empt the loop's own empty-response recovery."""
+async def test_a_stream_that_stays_empty_is_reported_as_the_failure_it_is() -> None:
+    """Once the reconnects are spent the verdict still stands. Handed back as an
+    empty reply, the loop would end the turn as a model that said nothing."""
     from raven.providers.streaming import stream_llm_call
 
     response = await stream_llm_call(
@@ -304,8 +302,9 @@ async def test_a_stream_that_stays_empty_ends_as_empty_not_as_an_error() -> None
         model="stub",
     )
 
-    assert response.finish_reason == "stop"
-    assert response.content == ""
+    assert response.finish_reason == "error"
+    assert response.error_classification is not None
+    assert response.error_classification.retryable
 
 
 # ---------- what the verdict is worth: the ladder acts on it ------------------
@@ -582,8 +581,8 @@ def test_a_rename_never_seen_before_says_so_without_being_judged_differently() -
     """The one case the allow list can get wrong, made visible.
 
     A normal end spelled in a way nothing has mapped is recorded as a rename, is
-    absent from the allow list, and is reported as a failure -- taking a turn
-    that the loop's own silence recovery should have had. The verdict cannot tell
+    absent from the allow list, and is reported as a failure -- failing a turn
+    the model chose to end without a reply. The verdict cannot tell
     that apart from a new failure dialect and does not try: both are refused, for
     the reason the allow list exists. What it can do is say which one it is
     looking at, so the case has a signal at all rather than only a retry nobody
@@ -742,8 +741,8 @@ def test_a_zero_prompt_beside_a_real_count_is_the_strongest_evidence() -> None:
 
 def test_a_usage_block_of_nothing_but_zeros_is_not_evidence() -> None:
     """That is a provider not reporting usage. Read as evidence, every empty
-    response it ever returns would be called a transport failure -- and the
-    loop's own recovery for a silent model would be unreachable behind it."""
+    response it ever returns would be called a transport failure, and every
+    turn its model chose to end without a reply would fail."""
     from raven.providers.transport_failure import flag_transport_failure
 
     assert (

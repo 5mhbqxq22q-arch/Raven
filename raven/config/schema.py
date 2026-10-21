@@ -250,14 +250,6 @@ class AgentDefaults(Base):
     # auto-recovers, so it never permanently locks out heavy legitimate use.
     # Counted per session so one busy session can't throttle others.
     max_subagent_spawns_per_hour: int = Field(default=30, ge=1)
-    # Empty-response recovery: recover turns the model ends with no visible text
-    # (post-tool empty / thinking-only) instead of surfacing a dud "no response
-    # to give". Budgets are per-turn; spending them all without ever getting a
-    # word back ends the turn as an error rather than as a completion.
-    empty_recovery_enabled: bool = True
-    post_tool_empty_max_nudges: int = 1
-    thinking_prefill_max_retries: int = 2
-    empty_content_max_retries: int = 3
     # Seconds to wait before asking the model again when a call fails with a
     # retryable error the provider's own short ladder could not clear; one entry per
     # further attempt, per turn. Empty disables it. A long autonomous run wants a

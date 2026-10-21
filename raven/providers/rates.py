@@ -97,14 +97,13 @@ MIN_PROMPT_TOKENS = 16_384
 # no reply reaches: a model declaring 131000 inside a 204800 window leaves the
 # prompt 73800, and a 73878-token prompt is a 400 no retry can fix.
 #
-# Asking short is the cheaper way to be wrong, not a free one. The loop
-# continues a reply that came back *empty* at the ceiling -- prefill, a
-# reasoning-effort descent, ``OUTPUT_LIMIT_NUDGE`` -- and it refuses a tool call
+# Asking short is the cheaper way to be wrong, not a free one. A reply that
+# came back *empty* at the ceiling is asked again with less thinking allowed and
+# fails its turn once no lower rung is left, and the loop refuses a tool call
 # whose arguments were cut so ``Tool.truncation_hint`` reaches the model. A
-# non-empty reply that stopped at the ceiling gets none of that:
-# ``classify_empty_response`` answers COMPLETE on any visible text, so the loop
-# persists it, ends the turn, and the caller reads a truncated answer as a whole
-# one. Set this too low and that is what it buys.
+# non-empty reply that stopped at the ceiling is neither: the loop takes any
+# visible text as the answer, persists it, ends the turn, and the caller reads a
+# truncated answer as a whole one. Set this too low and that is what it buys.
 #
 # Measured over 4437 recorded calls: p95 is 7389, p99 is 16084, and the single
 # call past this number spent 45132 of its 45330 tokens reasoning to emit 198.

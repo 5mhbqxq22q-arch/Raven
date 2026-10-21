@@ -25,7 +25,6 @@ from raven.agent import workdir
 from raven.agent.loop import AgentLoop
 from raven.agent.loop.bundles import EngineWiring, ToolWiring, TurnPolicy
 from raven.agent.loop.checkpoint import CheckpointService
-from raven.agent.loop.recovery import RecoveryLimits
 from raven.config.raven import CheckpointConfig, RuntimeConfig
 from raven.providers.base import LLMProvider, LLMResponse
 
@@ -204,10 +203,7 @@ def _agent_with_checkpoint(workspace: Path) -> AgentLoop:
         provider=_NoopProvider(),
         workspace=workspace,
         model="stub",
-        # These checkpoint tests use a no-op model only as a "turn ends" stub;
-        # empty-recovery is an orthogonal feature they don't exercise, so
-        # disable it (a plain-empty response then completes immediately).
-        policy=TurnPolicy(max_iterations=2, empty_recovery=RecoveryLimits(enabled=False)),
+        policy=TurnPolicy(max_iterations=2),
         tools=ToolWiring(restrict_to_workspace=True),
         engine=EngineWiring(runtime_config=RuntimeConfig(checkpoint=CheckpointConfig(policy="always"))),
     )
@@ -338,10 +334,7 @@ def _agent(workspace: Path, *, policy: str, interactive: bool) -> AgentLoop:
         provider=_NoopProvider(),
         workspace=workspace,
         model="stub",
-        # These checkpoint tests use a no-op model only as a "turn ends" stub;
-        # empty-recovery is an orthogonal feature they don't exercise, so
-        # disable it (a plain-empty response then completes immediately).
-        policy=TurnPolicy(max_iterations=2, empty_recovery=RecoveryLimits(enabled=False), interactive=interactive),
+        policy=TurnPolicy(max_iterations=2, interactive=interactive),
         tools=ToolWiring(restrict_to_workspace=True),
         engine=EngineWiring(runtime_config=RuntimeConfig(checkpoint=CheckpointConfig(policy=policy))),
     )
@@ -586,10 +579,7 @@ async def test_d9_agent_loop_degrades_when_shadow_dir_invalid(workspace):
         provider=_NoopProvider(),
         workspace=workspace,
         model="stub",
-        # These checkpoint tests use a no-op model only as a "turn ends" stub;
-        # empty-recovery is an orthogonal feature they don't exercise, so
-        # disable it (a plain-empty response then completes immediately).
-        policy=TurnPolicy(max_iterations=2, empty_recovery=RecoveryLimits(enabled=False), interactive=True),
+        policy=TurnPolicy(max_iterations=2, interactive=True),
         tools=ToolWiring(restrict_to_workspace=True),
         engine=EngineWiring(runtime_config=bad_cfg),
     )

@@ -159,11 +159,10 @@ def test_config_safe_defaults():
     assert cfg.skill_forge.auto_detect is False
     assert cfg.skill_forge.auto_evolve is False
     # Baseline memory/skill feature layer defaults ON: a
-    # fresh install runs the everos memory backend, the SkillForgeRouter, and
-    # empty-response recovery. Pinned so a future silent flip gets caught.
+    # fresh install runs the everos memory backend and the SkillForgeRouter.
+    # Pinned so a future silent flip gets caught.
     assert cfg.memory.backend == "everos"
     assert cfg.skill_forge.router.enabled is True
-    assert cfg.base.agents.defaults.empty_recovery_enabled is True
     # Safe/cheap defaults can be ON.
     assert cfg.token_wise.usage_tracking is True
     assert cfg.token_wise.cache_optimization is True

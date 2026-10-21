@@ -590,7 +590,8 @@ const onMessageComplete = (
   clearRunning(null)
   const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete({})
   if (!wasInterrupted && appendMessage) {
-    const msgs: Msg[] = finalMessages.length > 0 ? finalMessages : [{ role: 'assistant', text: finalText }]
+    const msgs: Msg[] =
+      finalMessages.length > 0 ? finalMessages : finalText.trim() ? [{ role: 'assistant', text: finalText }] : []
     msgs.forEach(appendMessage)
     appendArtifacts(state, appendMessage)
   }

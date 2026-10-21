@@ -165,12 +165,6 @@ class ResolvingProvider(LLMProvider):
         """Asked of the vendor adapter that would serve this model."""
         return self._pick(model).supports_assistant_prefill(model)
 
-    def reasoning_wire_keys(self, model: str | None, reasoning_effort: str | None) -> Any:
-        """Forwarded for ``request_generation``'s reason: the streamed call's span
-        and the empty-response retry both see this router rather than the adapter,
-        and only the adapter knows which efforts its wire sends as one request."""
-        return self._pick(model).reasoning_wire_keys(model, reasoning_effort)
-
     def request_generation(self, **asked: Any) -> dict[str, Any]:
         """Forwarded for ``wire_model_id``'s reason: the record of what a request
         asked for has to come from the adapter that will send it, or the reasoning
