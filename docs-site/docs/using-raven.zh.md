@@ -32,7 +32,9 @@
 `agents/` 下的 Agent 定义），
 `--config` 指定的配置文件旁 Raven 保存的状态，
 或既包含这些目录、又不是用户主目录及其更高层的目录启动，会输出警告并改用
-`<instance>/tmp/<channel>`。合法的 `--workspace` 覆盖优先；显式指定受保护目录
+`<agent home>/../tmp/<channel>`（默认 Agent home 对应 `~/.raven/tmp/<channel>`）。
+若 Agent home 直接位于文件系统根目录下，则同级目录以它命名，例如 `/workspace`
+使用 `/workspace-tmp/<channel>`。合法的 `--workspace` 覆盖优先；显式指定受保护目录
 则会报错。此后无论实例目录叫什么名字、`--config` 路径怎样拼写，checkpoint 和
 shell 命令的文件列表都会把这些状态排除在外：在忽略大小写与 Unicode 规范化的卷上
 （macOS 默认），拼写不同的路径按文件系统的判断匹配。在此之前 checkpoint 已经记录的历史不会被改写：如果 Raven 提示

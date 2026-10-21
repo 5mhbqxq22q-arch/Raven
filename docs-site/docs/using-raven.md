@@ -36,7 +36,10 @@ state in `<instance>` (such as `oauth/`, `credentials/`, `cron/`, and the agent
 definitions under `agents/`), inside the
 state Raven keeps beside a config file passed with `--config`, or at an ancestor
 other than your user home or a higher root produces a warning and uses
-`<instance>/tmp/<channel>` instead. A valid `--workspace` override takes
+`<agent home>/../tmp/<channel>` instead (`~/.raven/tmp/<channel>` with the
+default Agent home). For an Agent home directly under the filesystem root,
+the sibling is named after it: `/workspace` uses `/workspace-tmp/<channel>`.
+A valid `--workspace` override takes
 precedence; a protected explicit override is rejected. From then on, checkpoints
 and the file list of a shell command leave Raven's own state out wherever it
 sits, whatever the instance directory is called and however a `--config` path
