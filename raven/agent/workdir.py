@@ -263,17 +263,47 @@ def _contains(path: Path, target: Path) -> bool:
     return any(_same(path, parent) for parent in target.parents)
 
 
+def _folds_case(directory: Path) -> bool:
+    """Whether the volume holding ``directory`` takes two spellings that differ in case for one entry.
+
+    Asked of the nearest existing directory with a letter in its name, by
+    swapping that name's case. With none to ask, the answer is yes: a state
+    name stays protected rather than being let through.
+    """
+    for candidate in (directory, *directory.parents):
+        swapped = candidate.name.swapcase()
+        if swapped == candidate.name or not candidate.exists():
+            continue
+        try:
+            return os.path.samefile(candidate, candidate.with_name(swapped))
+        except OSError:
+            return False
+    return True
+
+
 def _names_state(anchor: Path, entry: str, names: frozenset[str]) -> bool:
     """Whether ``entry`` under ``anchor`` is one of Raven's own ``names``.
 
     Exactly, or as a spelling the volume itself takes for one of them: on a
     volume that folds case `Media/` is Raven's `media/`, on one that does not
-    it is the user's own directory beside it.
+    it is the user's own directory beside it. Asked of the two directories
+    when they exist; when neither does yet, of the volume, so the answer does
+    not change once Raven creates its own.
     """
     if entry in names:
         return True
     folded = _fold(entry)
-    return any(_fold(name) == folded and _same(anchor / entry, anchor / name) for name in names)
+    for name in names:
+        if _fold(name) != folded:
+            continue
+        variant, own = anchor / entry, anchor / name
+        try:
+            return os.path.samefile(variant, own)
+        except OSError:
+            if variant.exists() or own.exists():
+                return False
+            return _folds_case(anchor)
+    return False
 
 
 def _inside_state(path: Path, homes: tuple[Path, ...]) -> str | None:

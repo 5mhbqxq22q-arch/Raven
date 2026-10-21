@@ -493,6 +493,63 @@ def test_a_case_variant_of_a_state_name_is_state_where_the_volume_folds_case(
         validate_override(data / "Media" / "sub", home)
 
 
+def _case_insensitive_samefile(a: object, b: object) -> bool:
+    """`samefile` as a case-folding volume answers it, simulated on Linux (not
+    native): each path is looked up entry by entry ignoring case, and a path
+    with no such entry raises as `stat` would."""
+    import os
+
+    def on_disk(path: object) -> str:
+        parts = os.path.abspath(os.fspath(path)).split(os.sep)[1:]
+        found = os.sep
+        for part in parts:
+            names = os.listdir(found)
+            match = part if part in names else next((n for n in names if n.casefold() == part.casefold()), None)
+            if match is None:
+                raise FileNotFoundError(path)
+            found = os.path.join(found, match)
+        return found
+
+    return os.stat(on_disk(a)) == os.stat(on_disk(b)) if on_disk(a) == on_disk(b) else False
+
+
+@pytest.mark.parametrize("created", [False, True], ids=["not-yet", "created"])
+def test_a_case_variant_of_a_state_name_is_judged_alike_before_and_after_it_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, created: bool
+) -> None:
+    """On a case-folding volume `Credentials/` is Raven's `credentials/`
+    whether or not it has been created yet: an answer that flipped when the
+    directory appeared would refuse an override it had accepted."""
+    from raven.agent import workdir
+    from raven.home import set_config_path
+
+    monkeypatch.setattr(workdir.os.path, "samefile", _case_insensitive_samefile)
+    data = tmp_path / "proj"
+    data.mkdir()
+    if created:
+        (data / "credentials").mkdir()
+    set_config_path(data / "config.json")
+    home = tmp_path / "agent"
+    home.mkdir()
+
+    with pytest.raises(ValueError, match="Raven's own state"):
+        validate_override(data / "Credentials" / "sub", home)
+
+
+def test_a_case_variant_not_yet_created_stays_usable_where_the_volume_keeps_case(tmp_path: Path) -> None:
+    """On a case-sensitive volume (this one, natively) neither directory
+    existing yet is no reason to refuse the user's own `Media/`."""
+    from raven.home import set_config_path
+
+    data = tmp_path / "proj"
+    data.mkdir()
+    set_config_path(data / "config.json")
+    home = tmp_path / "agent"
+    home.mkdir()
+
+    assert validate_override(data / "Media" / "sub", home) == (data / "Media" / "sub").resolve()
+
+
 def test_a_channel_workspace_in_instance_state_falls_back(instance: Path) -> None:
     resolver = WorkdirResolver(
         WorkdirPolicy.PER_CHANNEL,
