@@ -341,10 +341,10 @@ class AgentHook(ABC):
         """Fires once, after the loop has ended with no visible answer.
 
         The iteration phases only see turns that reached a text response; a
-        turn can also end through a provider error or an exhausted budget
-        whose wrap-up came back empty, and those exits reach the user with
-        reasoning but no answer. This is the one seam where a terminal gate
-        can still commit one.
+        turn can also end on a provider error, a model that said nothing, or
+        an exhausted budget whose wrap-up came back empty, and none of those
+        reaches the user with an answer. This is the one seam where a
+        terminal gate can still commit one.
 
         ``short_circuit_result`` replaces the final answer and is persisted
         as the turn's last assistant message; ``rollback`` and

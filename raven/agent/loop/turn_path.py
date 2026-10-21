@@ -1899,8 +1899,10 @@ class TurnPathMixin:
         # extraction and ``backend.store`` alike, so filtering once upstream of
         # all three is the only place that covers them.
         # The terminal seam: a turn that ended with nothing a reader can see --
-        # a provider error, or an exhausted budget whose wrap-up came back
-        # empty -- gets one last chance to commit an answer.
+        # a provider error, a model that said nothing, or an exhausted budget
+        # whose wrap-up came back empty -- gets one last chance to commit an
+        # answer. Whether a Silent Turn wants one is the product's call: a loop
+        # with no gate here leaves it silent, and Raven-Research salvages it.
         answerless = status == "error" or not (final_content or "").strip()
         if hook_ctx is not None:
             # Written for every turn, not only an answerless one. "This turn was cut

@@ -812,7 +812,13 @@ question into the one after it, since some providers refuse two user messages in
 What a reply would have ended is ended without one: a channel is told the turn is over
 (`ChannelBase.end_turn`) so a typing indicator stops, a cron run is recorded as done without
 waking heartbeat, and the TUI adds no row.
-_Avoid_: calling it an answerless turn; an answerless turn raises `AnswerlessTurnError`.
+A product may still read a Silent Turn as a turn with no answer, and Raven-Research does, by the
+owner's choice: its dead-end rerun (`deadEndRetry`) runs the turn again from the question, and
+its terminal salvage (`forceFinalize`, at the `terminal_answerless` seam) then writes an answer.
+Only when the salvage comes back with nothing does the turn reach the `after_send` chain with no
+reply, and the research trail the flow appends to every research turn then goes out on its own.
+_Avoid_: calling it a failed turn; a failed turn raises `AnswerlessTurnError`. The
+`terminal_answerless` seam and a dead-end rerun still see it as a turn with no answer.
 
 **Model-Error Ladder** (`agent/loop/turn_path.py`, `RecoveryLimits.llm_error_retry_delays`):
 The waits the Agent Loop spends on a model call that came back an *error* before it gives the
