@@ -1617,6 +1617,28 @@ async def test_a_state_path_with_a_newline_is_still_kept_out(tmp_path):
     assert writes == ()
 
 
+async def test_a_sub_agent_listing_leaves_the_loops_own_agent_home_out(tmp_path):
+    """A sub-agent's listing names no skip, and a launch kept at the user's
+    home can hold an agent home kept outside Raven's home. The loop that owns
+    that agent home makes it known, so the listing does not report the
+    session's transcript or memory as files a command wrote."""
+    from raven.agent.tools import snapshot
+
+    root = tmp_path / "home"
+    agent_home = root / "myagent"
+    for rel in ("sessions/s1.jsonl", "user_memory/m.md"):
+        (agent_home / rel).parent.mkdir(parents=True, exist_ok=True)
+        (agent_home / rel).write_text("{}\n", encoding="utf-8")
+    (root / "proj").mkdir()
+    (root / "proj" / "a.py").write_text("print(1)\n", encoding="utf-8")
+    AgentLoop(provider=_ToolLoopProvider(), workspace=agent_home, model="stub")
+
+    listing = snapshot.take(root)
+
+    assert listing is not None
+    assert sorted(Path(path).relative_to(root.resolve()).as_posix() for path in listing) == ["proj/a.py"]
+
+
 async def test_a_custom_shadow_dir_does_not_snapshot_itself(workspace):
     """The shadow repository is excluded by where it is, not by sitting under
     `.raven/`: a `shadow_dir` elsewhere in the tree would otherwise commit its

@@ -225,6 +225,9 @@ class AgentLoop(TurnPathMixin, WiringMixin, McpGlueMixin, OrganGlueMixin):
         self._deliverables = deliverables
         self._workdir_resolver = workdir_resolver
         self.workspace = workspace
+        # A sub-agent's file listing names no skip; it learns this loop's agent
+        # home from here, which may sit outside Raven's home.
+        workdir.note_agent_home(workspace)
         # The model a turn runs on is per session, so it cannot live in two
         # attributes on a process-wide loop. ``_default_binding`` is what a
         # session starts on; ``provider``/``model`` below read whichever

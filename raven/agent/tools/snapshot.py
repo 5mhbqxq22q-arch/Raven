@@ -61,8 +61,9 @@ def take(root: Path | str, *, skip: Collection[str] | None = None) -> Snapshot |
     wrote, and following one leaves the tree being described. ``skip`` names
     absolute paths left out with everything under them; a caller that names
     none still has Raven's own state under ``root`` left out
-    (``workdir.state_within``), so no listing reports a transcript or a token
-    as a file a command wrote.
+    (``workdir.state_within``, with every agent home this process's loops run
+    with), so no listing reports a transcript or a token as a file a command
+    wrote.
     """
     try:
         start = Path(root).resolve()
@@ -73,7 +74,8 @@ def take(root: Path | str, *, skip: Collection[str] | None = None) -> Snapshot |
     if skip is None:
         from raven.agent import workdir
 
-        skip = frozenset(str(path) for path in workdir.state_within(start))
+        homes = workdir.noted_agent_homes() or (None,)
+        skip = frozenset(str(path) for home in homes for path in workdir.state_within(start, home))
     entries: Snapshot = {}
     for dirpath, dirnames, filenames in os.walk(start, followlinks=False):
         dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS and os.path.join(dirpath, name) not in skip]

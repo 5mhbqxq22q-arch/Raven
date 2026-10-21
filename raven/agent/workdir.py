@@ -103,6 +103,10 @@ _DATA_DIR_STATE = frozenset(
     }
 )
 
+# Agent homes this process's loops run with, for a listing whose caller does
+# not know it (a sub-agent's): one kept outside Raven's home is still state.
+_NOTED_AGENT_HOMES: dict[Path, None] = {}
+
 _CURRENT: ContextVar[Path | None] = ContextVar("raven_session_workdir", default=None)
 
 
@@ -172,6 +176,16 @@ def is_within(path: Path, root: Path) -> bool:
     can disagree about a directory that is, on disk, the very same place.
     """
     return path.resolve().is_relative_to(root.resolve())
+
+
+def note_agent_home(agent_home: Path) -> None:
+    """Record an agent home a loop in this process runs with (see ``noted_agent_homes``)."""
+    _NOTED_AGENT_HOMES[Path(agent_home).expanduser().resolve()] = None
+
+
+def noted_agent_homes() -> tuple[Path, ...]:
+    """Every agent home a loop in this process has recorded, oldest first."""
+    return tuple(_NOTED_AGENT_HOMES)
 
 
 def _raven_home() -> Path:
