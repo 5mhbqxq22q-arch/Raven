@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -356,6 +357,36 @@ async def test_run_turn_refuses_a_workdir_outside_the_mount(tmp_path, monkeypatc
 
     with pytest.raises(RuntimeError, match="Session working directory is invalid"):
         await loop.run_turn(_req("hi"), _EmitCollector(), _drain, stream=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direct", [False, True])
+async def test_a_rejected_saved_workdir_gives_recovery_guidance(tmp_path, direct):
+    home = tmp_path / "home"
+    sessions = SessionManager(home)
+    session = sessions.get_or_create("web:abc")
+    session.metadata["workdir"] = str(home / "sessions")
+    sessions.save(session)
+    resolver = WorkdirResolver(
+        WorkdirPolicy.PER_CHANNEL,
+        agent_home=home,
+        session_root=tmp_path / "chanwork",
+        sessions=sessions,
+    )
+    loop = AgentLoop(
+        provider=_FakeReplyProvider(LLMResponse(content="ok", finish_reason="stop")),
+        workspace=home,
+        subagents=SubagentWiring(workdir_resolver=resolver),
+    )
+    _stub_edges(loop)
+    req = _req("hi")
+    if direct:
+        req = replace(req, direct_target=("test-agent", "test-handle"))
+
+    with pytest.raises(RuntimeError, match="Session working directory is invalid") as error:
+        await loop.run_turn(req, _EmitCollector(), _drain, stream=False)
+    assert "clear this session's working directory override from the web UI" in str(error.value)
+    assert isinstance(error.value.__cause__, ValueError)
 
 
 def test_a_multi_round_plan_works_the_session_s_directory_not_the_agent_home(tmp_path: Path) -> None:

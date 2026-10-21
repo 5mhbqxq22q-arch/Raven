@@ -354,6 +354,15 @@ class TurnPathMixin:
     """The turn execution path: dispatch, the agent loop, streaming, recovery,
     persistence."""
 
+    def _turn_workdir(self, cid: str) -> Path:
+        try:
+            return self.session_workdir(cid)
+        except Exception as exc:
+            raise RuntimeError(
+                "Session working directory is invalid; clear this session's working "
+                "directory override from the web UI to recover."
+            ) from exc
+
     @staticmethod
     def _checkpoint_active(policy: str, interactive: bool) -> bool:
         """Resolve ``runtime.checkpoint.policy`` against the call-site's
@@ -3349,7 +3358,7 @@ class TurnPathMixin:
                     # raven's memory and skills rather than the work: a direct
                     # chat about the checkout the user is sitting in ran `git
                     # status` against raven's own home and answered about that.
-                    workspace=self.session_workdir(session_key),
+                    workspace=self._turn_workdir(session_key),
                     # A non-streaming outlet (the REPL) gets no deltas to
                     # assemble, exactly as it gets none from a normal turn.
                     on_delta=on_direct_delta if stream else None,
@@ -3503,13 +3512,7 @@ class TurnPathMixin:
             # Resolve inside the try so a bad persisted override (deleted
             # directory, permission change) still releases the cron token
             # below via the outer finally, instead of stranding it.
-            try:
-                turn_workdir = self.session_workdir(cid)
-            except Exception as exc:
-                raise RuntimeError(
-                    "Session working directory is invalid; clear this session's working "
-                    "directory override from the web UI to recover."
-                ) from exc
+            turn_workdir = self._turn_workdir(cid)
             # Bind the session's working directory around the whole turn body (not
             # just the _set_tool_context call inside _process_message) so every
             # path-aware tool sees it, including on the exception and cancellation
