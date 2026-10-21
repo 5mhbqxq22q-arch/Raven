@@ -1381,6 +1381,56 @@ async def test_a_moved_config_keeps_its_data_directory_state_out(tmp_path, monke
         assert secret not in stored
 
 
+@pytest.mark.parametrize("project_sidecars", [False, True])
+async def test_a_moved_config_keeps_its_sidecars_out_of_the_object_store(tmp_path, project_sidecars):
+    """Residual config bytes and state sidecars never enter either staging path."""
+    from raven.acp_client import capabilities
+    from raven.agent.subagent.instances import default_registry_path
+    from raven.agent.subagent.probe_state import default_state_path
+    from raven.config import loader
+    from raven.home import set_config_path
+    from raven.utils.atomic_io import atomic_replace
+
+    root = tmp_path / "project"
+    root.mkdir()
+    cfg = root / "raven.json"
+    set_config_path(cfg)
+    atomic_replace(cfg, '{"apiKey": "fake-sidecar-secret"}')
+    loader._write_migration_version(cfg)
+    files = [
+        cfg,
+        loader._stamp_path(cfg),
+        default_registry_path(),
+        default_state_path(),
+        root / capabilities._FILENAME,
+    ]
+    for path in files[2:]:
+        atomic_replace(path, "{}\n")
+    for path in files:
+        path.with_name(path.name + ".tmp").write_text('{"apiKey": "fake-sidecar-secret-residual"}', encoding="utf-8")
+    (root / ".gitignore").write_text("!.raven/\n!.raven/**\n", encoding="utf-8")
+    (root / "main.py").write_text("print(1)\n", encoding="utf-8")
+    expected = [".gitignore", "main.py"]
+    if project_sidecars:
+        for name in (".lock/project.lock", "project.tmp"):
+            (root / name).write_text("project-owned\n", encoding="utf-8")
+            expected.append(name)
+    expected.sort()
+
+    svc = CheckpointService(root)
+    cid, changed = await svc.commit_turn("turn")
+    tree = await svc.stage_tree()
+    assert cid is not None
+    assert tree is not None
+    assert "fake-sidecar-secret" not in await _object_store(svc)
+    for ref in (cid, tree):
+        _, tracked, _ = await svc._git("ls-tree", "-r", "--name-only", ref)
+        assert tracked.splitlines() == expected
+    assert sorted(changed) == expected
+    shown = await svc.trackable([str(root / name) for name in expected] + [str(path) for path in files])
+    assert shown == {str(root / name) for name in expected}
+
+
 def _fold(path) -> str:
     return unicodedata.normalize("NFC", os.fspath(path)).casefold()
 

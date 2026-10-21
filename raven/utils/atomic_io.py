@@ -22,6 +22,11 @@ T = TypeVar("T")
 _held = threading.local()
 
 
+def sidecars(path: Path) -> tuple[Path, Path]:
+    """The lock and temporary file owned by an atomic writer of ``path``."""
+    return path.parent / ".lock" / (path.name + ".lock"), path.with_name(path.name + ".tmp")
+
+
 @contextmanager
 def _locked(path: Path) -> Iterator[None]:
     # Reentrant within a thread: a helper called from inside write_transaction
@@ -32,7 +37,7 @@ def _locked(path: Path) -> Iterator[None]:
     held: set[str] = getattr(_held, "paths", None) or set()
     _held.paths = held
     path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.parent / ".lock" / (path.name + ".lock")
+    lock_path, _ = sidecars(path)
     key = str(lock_path)
     if key in held:
         yield
@@ -189,7 +194,7 @@ def _create_like(tmp_path: Path, path: Path, preserve: int | None) -> int:
 
 
 def _replace_unlocked(path: Path, data: str, create_mode: int | None = None, newline: str | None = None) -> None:
-    tmp_path = path.with_name(path.name + ".tmp")
+    _, tmp_path = sidecars(path)
     # Callers hold path's lock, so a tmp already here is a dead writer's: it
     # would lend its old mode through O_CREAT, or refuse the open outright
     # when it was left read-only.
@@ -238,7 +243,8 @@ def remove_with_lock(path: Path) -> None:
     files leave lock litter behind.
     """
     path.unlink(missing_ok=True)
-    (path.parent / ".lock" / (path.name + ".lock")).unlink(missing_ok=True)
+    lock_path, _ = sidecars(path)
+    lock_path.unlink(missing_ok=True)
 
 
 def atomic_replace(path: Path, data: str, *, mode: int | None = None, newline: str | None = None) -> None:

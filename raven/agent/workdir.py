@@ -98,6 +98,9 @@ _DATA_DIR_STATE = frozenset(
         "render",
         "sandbox",
         "sentinel",
+        "subagent_acp_capabilities.json",
+        "subagent_instances.json",
+        "subagent_test_state.json",
         "weixin",
         "whatsapp-auth",
     }
@@ -393,13 +396,18 @@ def state_within(root: Path, agent_home: Path | None = None) -> tuple[Path, ...]
     entries are on disk, since the excludes, pathspecs and listing built from
     it compare names as stored.
     """
+    from raven.config.loader import _stamp_path
     from raven.home import get_config_path
+    from raven.utils.atomic_io import sidecars
 
     root = Path(root).expanduser().resolve()
     data = _data_dir()
+    cfg = Path(get_config_path()).expanduser().resolve()
+    files = [cfg, _stamp_path(cfg), *(data / name for name in sorted(_DATA_DIR_STATE) if Path(name).suffix)]
     candidates = [
         *_state_roots(),
-        Path(get_config_path()).expanduser().resolve(),
+        *files,
+        *(sidecar for path in files for sidecar in sidecars(path)),
         *(data / name for name in sorted(_DATA_DIR_STATE)),
     ]
     if agent_home is not None:

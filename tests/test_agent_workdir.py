@@ -574,6 +574,9 @@ _HOME_FILES = {
     "import_state.json",
     "redaction_history.json",
     "serve.json",
+    "subagent_acp_capabilities.json",
+    "subagent_instances.json",
+    "subagent_test_state.json",
     "upgrade.json",
     "web.json",
     "web.log",
@@ -607,8 +610,9 @@ def _entries_created_under_the_home() -> dict[str, dict[str, set[str]]]:
     """Every top-level name the runtime puts under Raven's home, by where it is anchored.
 
     ``"home"`` is ``raven_home()`` or ``Path.home() / ".raven"``; ``"data"`` is
-    the data directory beside the config file (``get_data_dir()`` and
-    ``get_runtime_subdir()``), which ``--config`` moves away from the home.
+    the data directory beside the config file (``get_data_dir()``,
+    ``get_config_path().parent`` and ``get_runtime_subdir()``), which
+    ``--config`` moves away from the home.
     Reached directly, through ``joinpath``, or through a local name bound to
     one of those roots first; in ``raven/`` and in the ``plugins-dist``
     packages alike.
@@ -652,6 +656,8 @@ def _entries_created_under_the_home() -> dict[str, dict[str, set[str]]]:
             if called(expr) == "raven_home":
                 return "home"
             if called(expr) == "get_data_dir":
+                return "data"
+            if isinstance(expr, ast.Attribute) and expr.attr == "parent" and called(expr.value) == "get_config_path":
                 return "data"
             if (
                 isinstance(expr, ast.BinOp)
@@ -716,13 +722,14 @@ def test_every_directory_raven_creates_in_its_home_is_known_state() -> None:
 def test_the_scan_sees_each_way_a_path_reaches_the_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The completeness test is only as good as its scan: it must see a name
     joined with `joinpath`, one joined after the root was bound to a local
-    name, and one in a plugin package."""
+    name, one beside the config file, and one in a plugin package."""
     (tmp_path / "raven").mkdir()
     (tmp_path / "plugins-dist" / "demo").mkdir(parents=True)
     (tmp_path / "raven" / "a.py").write_text(
         "RUNS = ('alpha', 'runs')\n"
         "def f():\n    return raven_home().joinpath(*RUNS)\n"
-        "def g():\n    root = raven_home()\n    return root / 'beta'\n",
+        "def g():\n    root = raven_home()\n    return root / 'beta'\n"
+        "def state():\n    return get_config_path().parent / 'delta.json'\n",
         encoding="utf-8",
     )
     (tmp_path / "plugins-dist" / "demo" / "b.py").write_text(
@@ -735,5 +742,6 @@ def test_the_scan_sees_each_way_a_path_reaches_the_home(tmp_path: Path, monkeypa
     assert {name: sorted(sites) for name, sites in found.items()} == {
         "alpha": ["home"],
         "beta": ["home"],
+        "delta.json": ["data"],
         "gamma": ["data"],
     }
