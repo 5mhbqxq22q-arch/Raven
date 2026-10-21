@@ -308,6 +308,60 @@ async def test_what_after_send_appends_is_not_sent_twice_on_the_non_streamed_pat
     assert not any(isinstance(e, EvStreamDelta) for e in sink.events)
 
 
+class _AnnounceOnSilence(AgentHook):
+    """The deck engine's outbound, written for a turn that may have no reply."""
+
+    async def after_send(self, ctx):
+        return HookDecision(modified_content=f"{ctx.outbound_content or ''}\n\nDeck: /out/deck.pptx")
+
+
+async def test_what_a_hook_composes_on_a_silent_turn_is_sent_as_the_reply(tmp_path):
+    """A channel turn: nothing streamed, so the composed lines go out as the one
+    Text, and the turn counts as replied to."""
+    loop = AgentLoop(
+        provider=_FakeChatProvider([LLMResponse(content="", finish_reason="stop")]),
+        workspace=tmp_path,
+        host=HostWiring(hooks=[_AnnounceOnSilence()]),
+    )
+    _stub_edges(loop)
+    sink = _EmitCollector()
+
+    outcome = await loop.run_turn(_req("hi"), sink, _drain, stream=False)
+
+    assert [e.content for e in sink.events if isinstance(e, EvText)] == ["Deck: /out/deck.pptx"]
+    assert outcome.explicit_reply is True
+
+
+async def test_what_a_hook_composes_after_streamed_text_follows_it_as_one_more_delta(tmp_path):
+    """The model said something beside its tool call and nothing after it. What
+    streamed is on screen already, so the composed lines follow it with the
+    hook's own separator rather than running into it."""
+    provider = _FakeStreamToolProvider(
+        [
+            [
+                ChatDelta(content="Building it."),
+                ChatDelta(
+                    content=None,
+                    tool_call_delta={
+                        "tool_calls": [{"index": 0, "id": "t1", "function": {"name": "faketool", "arguments": "{}"}}]
+                    },
+                ),
+            ],
+            [ChatDelta(content="")],
+        ]
+    )
+    loop = AgentLoop(provider=provider, workspace=tmp_path, host=HostWiring(hooks=[_AnnounceOnSilence()]))
+    _stub_edges(loop)
+    loop.tools.register(_FakeTool())
+    sink = _EmitCollector()
+
+    await loop.run_turn(_req("hi"), sink, _drain)
+
+    deltas = [e.delta for e in sink.events if isinstance(e, EvStreamDelta)]
+    assert deltas == ["Building it.", "\n\nDeck: /out/deck.pptx"]
+    assert not any(isinstance(e, EvText) for e in sink.events)
+
+
 async def test_run_emits_reasoning_then_stream(tmp_path):
     chunks = [
         ChatDelta(content=None, reasoning_content="think"),

@@ -737,6 +737,8 @@ def test_the_factory_loop_surface_is_versioned() -> None:
             ],
         },
     }
+    # 4 changed when ``after_send`` fires (on a turn with no reply too), not the vocabulary.
+    pinned[4] = pinned[3]
 
     assert lh.FACTORY_LOOP_SURFACE_VERSION in pinned, (
         "a new surface version needs its roster pinned here in the same change"

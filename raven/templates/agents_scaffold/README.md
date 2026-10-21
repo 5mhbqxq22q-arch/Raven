@@ -73,7 +73,7 @@ Config for your tools lives in `config.json` under
 | `before_execute_tools` | after the LLM proposes tool calls, before they run |
 | `after_iteration` | after each iteration completes |
 | `terminal_answerless` | the turn ended with no answer |
-| `after_send` | after the outbound text is sent |
+| `after_send` | after the outbound text is sent; `outbound_content` is None when the model ended the turn without a reply |
 
 All default to pass-through; override only what you need and return a
 `HookDecision` (short-circuit / rewrite / withhold tools / leave a note /

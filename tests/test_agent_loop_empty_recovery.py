@@ -770,17 +770,103 @@ async def test_running_out_of_rungs_on_the_last_iteration_still_fails_the_turn(w
 
 
 @pytest.mark.asyncio
-async def test_a_silent_turn_offers_nothing_to_the_after_send_hooks(workspace):
-    """``after_send`` edits an outbound reply; a silent turn has none, and a
-    hook such as the nudge injector would spend its queue on a message that is
-    never sent."""
+async def test_a_silent_turn_still_runs_the_after_send_chain_with_no_reply(workspace):
+    """The chain is also where a turn's hooks do their bookkeeping, so it runs
+    on a silent turn too -- handed no reply, rather than an empty one."""
     agent = _make_agent(workspace, _AlwaysEmptyProvider())
     hook = _RecordsAfterSend()
     agent.hooks.append(hook)
 
-    await agent._process_message(_turn(), session_key="s1")
+    out = await agent._process_message(_turn(), session_key="s1")
 
-    assert hook.seen == []
+    assert hook.seen == [None]
+    assert out is None
+
+
+class _FilesAHold(AgentHook):
+    """What the oncall flow does once its campaign has a wake pending."""
+
+    async def after_send(self, ctx):
+        from raven.acp.methods import ACP_META_OBSERVER, HOLD_TURN_META
+
+        observers = ctx.metadata.setdefault("observers", {})
+        observers.setdefault(ACP_META_OBSERVER, {})[HOLD_TURN_META] = {
+            "untilMs": None,
+            "why": "waiting for the next look",
+        }
+        return HookDecision()
+
+
+@pytest.mark.asyncio
+async def test_a_hold_filed_on_a_silent_turn_reaches_the_acp_client(workspace):
+    from raven.acp.methods import HOLD_TURN_META, AcpMethods
+
+    agent = _make_agent(workspace, _EmptyAfterToolProvider())
+    agent.hooks.append(_FilesAHold())
+
+    out = await agent._process_message(_turn("watch the deploy"), session_key="s1")
+
+    assert out is None
+    assert AcpMethods._turn_meta(agent.sessions, "s1", 0) == {
+        HOLD_TURN_META: {"untilMs": None, "why": "waiting for the next look"}
+    }
+
+
+class _ComposesADeck(AgentHook):
+    """A deck engine's outbound: whatever the reply was, the deck lines after it."""
+
+    async def after_send(self, ctx):
+        return HookDecision(modified_content=(ctx.outbound_content or "") + "\n\nPublished a deck.\nMEDIA: /out/d.pptx")
+
+
+@pytest.mark.asyncio
+async def test_what_a_hook_composes_on_a_silent_turn_is_the_reply(workspace):
+    """The deck was built this turn; the model saying nothing about it does not
+    make it undelivered. With no reply of the model's own, the separator the
+    hook put in front of its lines separates nothing, so the reply starts at
+    the lines -- but a reply that streamed text earlier in the turn still gets
+    the tail as composed, separator included."""
+    agent = _make_agent(workspace, _EmptyAfterToolProvider())
+    agent.hooks.append(_ComposesADeck())
+    sink: dict[str, str] = {}
+
+    out = await agent._process_message(_turn("make the deck"), session_key="s1", hook_sink=sink)
+
+    assert out == ("Published a deck.\nMEDIA: /out/d.pptx", [])
+    assert sink["appended"] == "\n\nPublished a deck.\nMEDIA: /out/d.pptx"
+
+
+class _ComposesWhitespace(AgentHook):
+    async def after_send(self, ctx):
+        return HookDecision(modified_content="\n\n")
+
+
+@pytest.mark.asyncio
+async def test_a_hook_that_composes_only_whitespace_leaves_the_turn_silent(workspace):
+    agent = _make_agent(workspace, _AlwaysEmptyProvider())
+    agent.hooks.append(_ComposesWhitespace())
+
+    out = await agent._process_message(_turn(), session_key="s1")
+
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_a_queued_nudge_waits_out_a_silent_turn(workspace):
+    """A nudge rides on a reply. A turn with none would otherwise send the
+    nudge alone, as a message the model never wrote."""
+    from raven.agent.hook.adapters import ResponseModifierAdapter
+    from raven.proactive_engine.sentinel.executor.injector import NudgeInjector
+
+    injector = NudgeInjector()
+    injector.queue("s1", "Your build finished.")
+    agent = _make_agent(workspace, _AlwaysEmptyProvider())
+    agent.hooks.append(ResponseModifierAdapter(injector))
+
+    out = await agent._process_message(_turn(), session_key="s1")
+
+    assert out is None
+    assert injector.peek("s1") == ["Your build finished."]
 
 
 @pytest.mark.asyncio

@@ -799,8 +799,11 @@ Silent Turn, not a failure; and reading a Silent Turn as a failed turn.
 
 **Silent Turn**:
 A turn that ends with no reply because the model said nothing (see **Empty Reply**). Nothing is
-delivered and nothing is filed as a failure: the question and the turn's tool work are kept, no
-assistant row is written, and the outbound hooks (`after_send`, post-turn learning) do not run.
+filed as a failure: the question and the turn's tool work are kept, and no assistant row is
+written. The `after_send` chain still runs, with no outbound content, so the turn's hooks file
+their bookkeeping (an oncall hold, a research record). Text a hook composes there -- a deck built
+this turn -- is sent as the reply, and the turn is then not silent; a hook that only decorates a
+reply, such as a queued nudge, leaves it for the next one. Post-turn learning does not run.
 What a reply would have ended is ended without one: a channel is told the turn is over
 (`ChannelBase.end_turn`) so a typing indicator stops, a cron run is recorded as done without
 waking heartbeat, and the TUI adds no row.

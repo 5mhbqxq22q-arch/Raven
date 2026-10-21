@@ -1984,8 +1984,9 @@ class TurnPathMixin:
         """Process a single turn request and return its reply.
 
         Returns ``(reply_content, media_paths)`` for a turn that produced an
-        outbound reply, or ``None`` for a silent turn (the message tool already
-        sent, or a hook short-circuit chose to return None). ``origin`` is the
+        outbound reply, or ``None`` for a silent turn (the model ended it
+        without a reply and no ``after_send`` hook composed one, the message
+        tool already sent, or a hook short-circuit chose to return None). ``origin`` is the
         spine TurnRequest's origin. ``hook_sink``, when given, receives under
         ``"appended"`` whatever the ``after_send`` chain added to the end of the
         reply: a streamed reply has already left as deltas by then, so the
@@ -2578,8 +2579,8 @@ class TurnPathMixin:
             raise
         self._stash_recovery(key, outcome)
 
-        # A model that said nothing ends its turn without a reply: there is no
-        # outbound text to edit, learn from or deliver.
+        # A model that said nothing ends its turn without a reply. The after_send
+        # chain below can still give it one.
         silent = final_content is None and not answered
         if final_content is None and answered:
             # A tool already answered. What follows is the record, the
@@ -2591,9 +2592,12 @@ class TurnPathMixin:
         # for system-originated turns (Sentinel / subagent) so their reply
         # doesn't get a nudge layered on. A menu pick is USER (its reply IS the
         # user's intent — runs after_send); the Sentinel supersede notice is
-        # SENTINEL and a subagent result is SUBAGENT (both skip).
+        # SENTINEL and a subagent result is SUBAGENT (both skip). A silent turn
+        # runs it too, with no outbound content: the chain also files the turn's
+        # bookkeeping, and what a hook composes there, a deck built this turn,
+        # is still this turn's to deliver.
         skip_after_send = origin in _SKIP_AFTER_SEND_ORIGINS
-        if len(self.hooks) > 0 and not skip_after_send and not silent:
+        if len(self.hooks) > 0 and not skip_after_send:
             from raven.agent.hook import AgentHookContext
 
             _send_ctx = AgentHookContext(
@@ -2603,10 +2607,16 @@ class TurnPathMixin:
                 metadata=turn_hook_meta,
             )
             _send_decision = await self.hooks.after_send(_send_ctx)
-            if _send_decision.modified_content is not None:
+            composed = _send_decision.modified_content
+            if composed is not None and (not silent or composed.strip()):
                 if hook_sink is not None:
-                    hook_sink["appended"] = _appended_by_hook(final_content, _send_decision.modified_content)
-                final_content = _send_decision.modified_content
+                    hook_sink["appended"] = _appended_by_hook(final_content, composed)
+                # With no reply of the model's own, the separator a hook put in
+                # front of its text separates nothing. The tail handed to a
+                # streaming caller keeps it: text the model said beside a tool
+                # call may be on screen already.
+                final_content = composed.lstrip() if silent else composed
+                silent = False
 
         # A hook chain's per-turn observer record files onto the turn's last
         # substantive assistant message at persist time -- after the send fire,

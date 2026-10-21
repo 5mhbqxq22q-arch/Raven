@@ -29,7 +29,8 @@ class FlowHook(AgentHook):
         """Observe the outbound turn; decide nothing.
 
         A real agent reads ``ctx.outbound_content`` here (a report filed,
-        a budget noted). Returning a default HookDecision passes through.
+        a budget noted); it is None when the model ended the turn without a
+        reply. Returning a default HookDecision passes through.
         """
         self._ctx.logger.debug("my-agent after_send observed session %s", ctx.session_key)
         return HookDecision()

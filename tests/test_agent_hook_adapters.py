@@ -210,7 +210,7 @@ class TestResponseModifierAdapter:
             called.append((key, content))
             return content + " appended"
 
-        ctx = AgentHookContext(session_key="cli:test", outbound_content=None)
+        ctx = AgentHookContext(session_key="cli:test", outbound_content="")
         adapter = ResponseModifierAdapter(cb)
         decision = await adapter.after_send(ctx)
 
@@ -218,6 +218,21 @@ class TestResponseModifierAdapter:
         # inject into an otherwise empty reply).
         assert called == [("cli:test", "")]
         assert decision.modified_content == " appended"
+
+    async def test_no_reply_leaves_the_callback_unasked(self):
+        # A turn the model ended without a reply sends nothing; a modifier
+        # asked here would make its addition the whole message.
+        called = []
+
+        def cb(key, content):
+            called.append((key, content))
+            return content + " appended"
+
+        ctx = AgentHookContext(session_key="cli:test", outbound_content=None)
+        decision = await ResponseModifierAdapter(cb).after_send(ctx)
+
+        assert called == []
+        assert decision.modified_content is None
 
     async def test_exception_swallowed(self):
         def boom(k, c):
