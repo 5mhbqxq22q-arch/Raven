@@ -552,6 +552,10 @@ class RavenLoopBackend:
         # in full delivered its answer, and the verdict reading this is asking
         # what the run has to show for itself.
         cut_at_ceiling = False
+        # Whether the answer this run hands back was drawn by the stream, and so
+        # has already gone out through ``on_delta``: the wrap-up's has not, and
+        # neither has a waited-for call's after a cut stream.
+        answer_streamed = False
         # What this run has written, so a command of its own that removes one of
         # those files reaches the record. Per run, like everything else here: the
         # backend object is shared and other runs write beside this one.
@@ -562,6 +566,7 @@ class RavenLoopBackend:
                 advice = await participant_answer("advise", participant_step("iteration"))
                 if isinstance(advice, str) and advice:
                     _append_participant_note(messages, advice)
+            reply_streamed = False
             if on_delta is None:
                 response = await provider.chat_with_retry(
                     messages=messages,
@@ -606,6 +611,7 @@ class RavenLoopBackend:
                     retry_after_output=self.retry_after_output,
                     **generation_kwargs(provider),
                 )
+                reply_streamed = True
                 if response.finish_reason == "error" and not response.has_tool_calls:
                     # An error reply has two sources: a stream that died before
                     # anything deliverable arrived (still retryable), or one that
@@ -648,6 +654,7 @@ class RavenLoopBackend:
                         tools=tools.get_definitions(),
                         model=model,
                     )
+                    reply_streamed = False
                     if response.finish_reason == "error" and not response.has_tool_calls:
                         await activity.note_provider_usage(
                             response.usage,
@@ -808,6 +815,7 @@ class RavenLoopBackend:
                 # one space, or empty, ended the run as the answer after one call.
                 final_result = response.content if (response.content or "").strip() else None
                 answered_blank = final_result is None
+                answer_streamed = reply_streamed and not answered_blank
                 break
 
         if final_result is None:
@@ -857,11 +865,6 @@ class RavenLoopBackend:
                 task_id=task_id,
             )
             cut_at_ceiling = wrap_up.truncated
-            # Waited for rather than streamed, so a watching caller is handed the
-            # answer here: once anything has streamed the turn sends no closing
-            # text, and an answer kept from ``on_delta`` is recorded but never shown.
-            if final_result is not None and on_delta is not None:
-                await on_delta(final_result)
         # Reported before the raise below, so a run that ends with no answer at
         # all carries the reason as well -- that is the shape this exists for.
         if cut_at_ceiling:
@@ -886,6 +889,11 @@ class RavenLoopBackend:
         # for keeping the last write the complete one. The reader supplies the
         # prompt and the answer itself, so only the middle goes here.
         activity.note_transcript(messages[own_turns_from:])
+        if on_delta is not None and not answer_streamed:
+            # What streams has to end with the reply the record stores: once
+            # anything has streamed the turn sends no closing text, so an answer
+            # kept from ``on_delta`` would be recorded and never shown.
+            await on_delta(final_result)
         if note := grant.note_text():
             notice = f"\n\n[raven] {note}."
             if on_delta is not None:
