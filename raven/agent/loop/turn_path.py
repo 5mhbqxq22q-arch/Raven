@@ -2018,13 +2018,13 @@ class TurnPathMixin:
                     await asyncio.sleep(delay)
                     continue
                 if action is RecoveryAction.STEP_DOWN:
-                    # A thinking-only reply is a call whose thinking took the whole
-                    # ceiling (measured: five in a row cut at exactly the ceiling),
-                    # so the request that has to change is the one saying how much
-                    # of it thinking may take. The descent rides the loop's per-call
-                    # override lane (``pending_gen_overrides``, which a hook
-                    # rollback uses to re-sample one call) and is spent on this
-                    # re-ask only -- a call that answers leaves the turn's own
+                    # A thinking-only reply is a call whose thinking spent the output
+                    # ceiling before the answer began (measured: five in a row, each
+                    # cut at exactly the ceiling), so the request that has to change
+                    # is the one saying how much of it thinking may take. The descent
+                    # rides the loop's per-call override lane (``pending_gen_overrides``,
+                    # which a hook rollback uses to re-sample one call) and is spent on
+                    # this re-ask only -- a call that answers leaves the turn's own
                     # effort standing. Each rung is asked for once.
                     recovery.rungs_used.add(next_rung)
                     empty_retry_effort = next_rung
@@ -2039,7 +2039,6 @@ class TurnPathMixin:
                     # given up: left in, the request would end on an assistant
                     # message, which a prefill-refusing provider rejects.
                     _drop_trailing_prefills(messages)
-                    cut_continuation = False
                     pending_gen_overrides = {"reasoning_effort": next_rung}
                     iteration -= 1
                     await asyncio.sleep(delay)
@@ -2058,7 +2057,6 @@ class TurnPathMixin:
                         "empty-recovery: {} reply on {}; trying fallback model {}", kind.name, previous, active_model
                     )
                     _drop_trailing_prefills(messages)
-                    cut_continuation = False
                     iteration -= 1
                     continue
                 if action is RecoveryAction.CONTINUE and kind is ReplyKind.NETWORK_CUT:
