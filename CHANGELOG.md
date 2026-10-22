@@ -382,6 +382,12 @@ All notable changes to Raven are documented here.
   from the library; every key in the spec block is now read as the text it is
   written as. Values keep their YAML types.
 
+- Generating a dag playbook can produce a branch. The generator's instructions
+  for dag mode called `dependsOn` the whole graph language and never named
+  `routes`, `select` or `when`, though the schema it fills offers them; they
+  now describe a decision node and the rule that a node depending on one names
+  it in its `when`.
+
 - A decision node's card on the tasks board keeps its first selected route
   whole. The agent line gave the selection all of its overflow, so a long agent
   name and a tool count cut it down to its arrow; now the instance handle and
