@@ -126,7 +126,11 @@ class _FakeChatProvider:
 
 class _FakeStreamProvider:
     """Yields scripted stream chunks via ``chat_stream`` (the streaming path that
-    ``run(req, emit)`` takes when emitting ChatDelta tokens)."""
+    ``run(req, emit)`` takes when emitting ChatDelta tokens).
+
+    Every scripted stream in this module ends with the terminal chunk a real
+    provider sends: a stream that closes without one reads as cut off, and the
+    loop asks the model to continue it."""
 
     def __init__(self, chunks: list[ChatDelta]) -> None:
         self._chunks = chunks
@@ -134,6 +138,7 @@ class _FakeStreamProvider:
     async def chat_stream(self, **kwargs):
         for chunk in self._chunks:
             yield chunk
+        yield ChatDelta(content=None, finish_reason="stop")
 
     def get_default_model(self) -> str:
         return "fake/model"
@@ -153,6 +158,7 @@ class _FakeStreamToolProvider:
         self._i += 1
         for chunk in script:
             yield chunk
+        yield ChatDelta(content=None, finish_reason="stop")
 
     def get_default_model(self) -> str:
         return "fake/model"
@@ -561,6 +567,7 @@ async def test_inject_message_merged_before_next_iteration(tmp_path):
             self._i += 1
             for chunk in script:
                 yield chunk
+            yield ChatDelta(content=None, finish_reason="stop")
 
         def get_default_model(self) -> str:
             return "fake/model"
@@ -614,6 +621,7 @@ class _RecordingStreamProvider:
         self._i += 1
         for chunk in script:
             yield chunk
+        yield ChatDelta(content=None, finish_reason="stop")
 
     def get_default_model(self) -> str:
         return "fake/model"
@@ -828,6 +836,7 @@ async def test_a_row_recorded_during_a_tool_call_reaches_the_next_llm_call(tmp_p
             self._i += 1
             for chunk in script:
                 yield chunk
+            yield ChatDelta(content=None, finish_reason="stop")
 
         def get_default_model(self) -> str:
             return "fake/model"
