@@ -2780,6 +2780,9 @@ class TurnPathMixin:
         # every attempt is this turn spending, and so is every sub-agent it
         # dispatches, which bills in from its own session by this key.
         spend = TurnSpend(key)
+        # The step-down rungs are asked for once a turn, and a rerun is the same
+        # turn: a set per attempt would pay for ``high`` and ``low`` again.
+        rungs_used: set[str] = set()
 
         async def _attempt(seed: list[dict], attempt: int):
             pending.update(rerun=False, reasons=[])
@@ -2809,6 +2812,7 @@ class TurnPathMixin:
                 attempt=attempt,
                 rerun_pending=_rerun_pending,
                 spend=spend,
+                rungs_used=rungs_used,
             )
 
         # Taken BEFORE the first attempt, because the loop appends to the list it is
