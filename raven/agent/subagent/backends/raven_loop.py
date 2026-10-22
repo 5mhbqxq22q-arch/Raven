@@ -857,6 +857,11 @@ class RavenLoopBackend:
                 task_id=task_id,
             )
             cut_at_ceiling = wrap_up.truncated
+            # Waited for rather than streamed, so a watching caller is handed the
+            # answer here: once anything has streamed the turn sends no closing
+            # text, and an answer kept from ``on_delta`` is recorded but never shown.
+            if final_result is not None and on_delta is not None:
+                await on_delta(final_result)
         # Reported before the raise below, so a run that ends with no answer at
         # all carries the reason as well -- that is the shape this exists for.
         if cut_at_ceiling:

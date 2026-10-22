@@ -378,6 +378,10 @@ All notable changes to Raven are documented here.
   blank reply now gets the one wrap-up call a run out of rounds gets, worded
   for what happened, and a run that answers nothing twice fails with
   `SubagentNoAnswerError` saying so, rather than that it used all its rounds.
+  In a direct chat the wrap-up's answer, on either path, now streams like
+  any other reply: it was waited for and never streamed, so once anything
+  had streamed before it the turn sent no closing text and the answer was
+  recorded but never shown.
 
 - An empty reply from a model behind OpenRouter (`content: " "`,
   `finish_reason: stop`) is no longer reported as an upstream transport
