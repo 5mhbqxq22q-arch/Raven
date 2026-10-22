@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from raven.acp.mirasim.stream import SessionView, TurnStream, is_running, replay, tool_kind
+from raven.acp.mirasim.stream import SessionView, TurnStream, background_running, is_running, replay, tool_kind
 from tests.acp_schema import validate_def
 
 
@@ -110,6 +110,15 @@ def test_a_patch_before_any_snapshot_is_a_gap_and_malformed_frames_are_ignored()
 def test_the_running_phases_are_queued_and_streaming() -> None:
     assert is_running({"phase": "queued"}) and is_running({"phase": "streaming"})
     assert not is_running({"phase": "done"}) and not is_running({"phase": "idle"}) and not is_running({})
+
+
+def test_background_work_runs_while_any_job_says_it_is_running() -> None:
+    ended = {"id": "b1", "kind": "local_bash", "status": "completed"}
+    assert background_running({"phase": "done", "backgroundJobs": [ended, {"id": "b2", "status": "running"}]})
+    assert not background_running({"phase": "done", "backgroundJobs": [ended, {"id": "b3", "status": "killed"}]})
+    assert not background_running({}) and not background_running({"backgroundJobs": None})
+    assert not background_running({"backgroundJobs": "running"})
+    assert not background_running({"backgroundJobs": ["running", None, {"status": "Running"}]})
 
 
 # -- TurnStream -----------------------------------------------------------------

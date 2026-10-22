@@ -71,7 +71,7 @@ def test_the_entry_reports_and_exits_by_what_is_missing(
     good.write_text(bundle())
     bad.write_text(bundle(drop="interact"))
     assert check.main([str(good)]) == 0
-    assert "all 13 sent frames" in capsys.readouterr().out
+    assert "all 14 sent frames" in capsys.readouterr().out
     assert check.main([str(bad), "--against", str(good)]) == 1
     out = capsys.readouterr().out
     assert "case labels removed: interact" in out and "MISSING sent frames (no case label): interact" in out

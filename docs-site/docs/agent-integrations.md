@@ -219,7 +219,9 @@ resumed, loaded with their whole history, closed and deleted. Deleting one
 also deletes its Mirasim conversation; the agent's own transcript files stay
 where it keeps them. A turn Mirasim starts on its own in a session Raven holds,
 such as a background job's report, is forwarded to Raven too, and what it stops
-to ask is left to the Mirasim app.
+to ask is left to the Mirasim app. Raven holds a session while a turn or a
+background job of it runs, and for five minutes after; once it holds none, the
+adapter closes its connection to the host until Raven uses a session again.
 
 The adapter looks for the host in this order: the socket of the host Mirasim
 keeps on a machine it reaches over SSH (`~/.mirasim-remote/run/server.sock`,

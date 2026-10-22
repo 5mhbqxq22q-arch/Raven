@@ -30,6 +30,11 @@ rule is tested against recorded shapes. Measured on Mirasim 0.0.465 and 0.0.537:
 - the plan is ``{explanation, steps: [{text, status}]}``, a step's status
   ``pending``, ``inProgress`` or ``completed``;
 - a steer the turn took is a ``steers`` entry with no ``pending`` flag;
+- a background job Claude Code started is a ``backgroundJobs`` entry
+  ``{id, kind, status}``, its status ``running``, ``completed``, ``failed`` or
+  ``killed``. It can outlive the turn: the list keeps changing after the phase is
+  ``done``, and a job that ends wakes the agent into a turn of its own, with a
+  new ``taskId`` (measured on 0.0.597: 9.7 s after the job ended);
 - a live snapshot has no ``segments``: the host's patches never carry that key,
   and only a settled turn of ``getHistory`` records how its text, reasoning and
   calls interleaved. :class:`TurnStream` orders live updates without it.
@@ -69,6 +74,12 @@ Only an icon rides on it, so anything unnamed here is ``other`` rather than a gu
 
 def is_running(snapshot: dict[str, Any]) -> bool:
     return snapshot.get("phase") in RUNNING_PHASES
+
+
+def background_running(snapshot: dict[str, Any]) -> bool:
+    """Whether a background job the session's agent started is still running, its turn ended or not."""
+    jobs = snapshot.get("backgroundJobs")
+    return isinstance(jobs, list) and any(isinstance(job, dict) and job.get("status") == "running" for job in jobs)
 
 
 def tool_kind(name: Any) -> str:
@@ -482,4 +493,4 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-__all__ = ["RUNNING_PHASES", "SessionView", "TurnStream", "is_running", "replay", "tool_kind"]
+__all__ = ["RUNNING_PHASES", "SessionView", "TurnStream", "background_running", "is_running", "replay", "tool_kind"]

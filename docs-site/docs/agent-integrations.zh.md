@@ -183,7 +183,9 @@ Kimi Code 和 ZCode CLI 的自有模型，因此这四个 Agent 的这些模型�
 图片时得到该文件的路径，内联图片则会被拒绝。会话可以列出（指定目录下该 Agent 的对话，
 包括在 Mirasim 中开启的）、续接、连同全部历史载入、关闭和删除；删除时 Mirasim 中的对话
 一并删除，Agent 自己保存的转录文件不会删除。Raven 持有的会话里由 Mirasim 自行发起的轮次
-（例如后台任务的报告）也会转给 Raven，这类轮次中的提问留给 Mirasim 应用处理。
+（例如后台任务的报告）也会转给 Raven，这类轮次中的提问留给 Mirasim 应用处理。会话里有轮次
+或后台任务在运行时，以及结束后的五分钟内，Raven 持有该会话；一个会话都不再持有时，适配器
+断开与 host 的连接，直到 Raven 再次使用某个会话。
 
 适配器按以下顺序查找 host：Mirasim 经 SSH 接入的机器上的 host socket
 （`~/.mirasim-remote/run/server.sock`，仅限 Linux 和 macOS），然后是桌面端在

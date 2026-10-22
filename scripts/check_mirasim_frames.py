@@ -34,6 +34,7 @@ from pathlib import Path
 
 SENT = (
     "setStreamCadence",
+    "clientVisibility",
     "listClis",
     "getCatalog",
     "getCommands",
@@ -91,6 +92,7 @@ FIELDS = (
     "value",
     "coalesceMs",
     "statusMs",
+    "visible",
     # what it reads from the answers and the queue
     "ok",
     "error",

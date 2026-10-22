@@ -35,7 +35,14 @@ request by what the host echoes, which differs per frame: ``clientRef`` on
 key. Every frame, answered or not, also goes to ``on_frame``. A connection that
 drops is made again in the background while ``wanted`` says something depends
 on it; a turn the host is running goes on regardless, and the sessions are
-subscribed to again once it is back (``on_connect``).
+subscribed to again once it is back (``on_connect``). One nothing depends on is
+closed (:meth:`HostConnection.release`), and the next frame sent makes it again.
+
+Each connection tells the host that no one looks through it
+(``clientVisibility``). For a client someone looks through, the host polls the
+run state of every session it subscribed to, every ten seconds, and counts it as
+someone viewing; the adapter needs neither, and a session's patches reach it all
+the same (read in 0.0.597).
 """
 
 from __future__ import annotations
@@ -250,6 +257,7 @@ class HostConnection:
             await self._send(
                 {"type": "setStreamCadence", "coalesceMs": STREAM_CADENCE_MS, "statusMs": STREAM_CADENCE_MS}
             )
+            await self._send({"type": "clientVisibility", "visible": False})
             logger.info("Mirasim adapter: connected to the Mirasim host {} at {}", version or "?", address.describe())
         if self._on_connect is not None:
             await self._on_connect()
@@ -278,6 +286,30 @@ class HostConnection:
             yield queue
         finally:
             self._listeners.remove(entry)
+
+    async def release(self, idle: Callable[[], bool]) -> bool:
+        """Close the connection while nothing depends on it; whether it did. The next ``send`` makes it again.
+
+        Unlike a drop, nothing waiting is failed and nothing is made again in the
+        background. ``idle`` is asked once the connect lock is held, and a request
+        still waiting for its answer keeps the connection too: the answer could
+        only come on this one.
+        """
+        async with self._connect_lock:
+            ws, session, reader = self._ws, self._session, self._reader
+            if ws is None or ws.closed or self._listeners or not idle():
+                return False
+            # Cleared before the close, so the reader's end is not taken as the connection dropping.
+            self._ws, self._session, self._reader = None, None, None
+        with contextlib.suppress(Exception):
+            await ws.close()
+        if reader is not None:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        if session is not None:
+            await session.close()
+        logger.info("Mirasim adapter: let go of the connection to the Mirasim host while nothing depends on it")
+        return True
 
     async def close(self) -> None:
         self._closed = True

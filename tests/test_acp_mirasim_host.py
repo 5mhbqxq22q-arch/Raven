@@ -148,8 +148,9 @@ async def test_a_request_is_answered_by_the_frame_its_predicate_takes(fake: Fake
         assert catalog["defaultModel"] == "sonnet"
         assert conn.version == "0.0.537"
         assert conn.address == fake.address
-        # The host was asked to merge patches before anything else, and the token travelled.
-        assert [frame["type"] for frame in fake.received] == ["setStreamCadence", "getCatalog"]
+        # The host was asked to merge patches and told no one looks through this client before
+        # anything else, and the token travelled.
+        assert [frame["type"] for frame in fake.received] == ["setStreamCadence", "clientVisibility", "getCatalog"]
         assert any(frame.get("type") == "catalog" for frame in seen)
     finally:
         await conn.close()
@@ -421,6 +422,61 @@ async def test_a_connection_nothing_depends_on_is_made_again_only_when_used(fake
         assert not conn.connected
         await conn.send({"type": "ping"})
         assert conn.connected
+    finally:
+        await conn.close()
+
+
+async def test_each_connection_tells_the_host_no_one_is_looking_through_it(fake: FakeHost) -> None:
+    conn = HostConnection(on_frame=lambda f: None, locate=lambda: fake.address)
+    try:
+        await conn.connect()
+        await fake.wait_for(lambda: fake.frames("clientVisibility"))
+        await fake.drop()
+        await fake.wait_for(lambda: not conn.connected)
+        await conn.send({"type": "ping"})
+        await fake.wait_for(lambda: fake.frames("ping"))
+        assert fake.frames("clientVisibility") == [{"type": "clientVisibility", "visible": False}] * 2
+    finally:
+        await conn.close()
+
+
+async def test_a_connection_let_go_is_not_lost_and_is_made_again_only_when_used(fake: FakeHost) -> None:
+    lost: list[bool] = []
+    conn = HostConnection(
+        on_frame=lambda f: None, locate=lambda: fake.address, on_lost=lambda: lost.append(True), wanted=lambda: True
+    )
+    try:
+        await conn.connect()
+        assert await conn.release(lambda: True)
+        await fake.wait_for(lambda: not fake.clients)
+        await asyncio.sleep(0.3)
+        assert not conn.connected
+        assert lost == []
+        assert conn.lost_at is None
+        await conn.send({"type": "ping"})
+        assert conn.connected
+        await fake.wait_for(lambda: fake.frames("ping"))
+        assert len(fake.frames("setStreamCadence")) == 2
+    finally:
+        await conn.close()
+
+
+async def test_a_connection_is_kept_while_its_owner_is_busy_or_a_request_waits(fake: FakeHost) -> None:
+    conn = HostConnection(on_frame=lambda f: None, locate=lambda: fake.address)
+    try:
+        assert not await conn.release(lambda: True)
+        await conn.connect()
+        assert not await conn.release(lambda: False)
+        fake.silent.add("getCatalog")
+        waiting = asyncio.ensure_future(
+            conn.request({"type": "getCatalog", "agent": "claude"}, lambda f: f.get("type") == "catalog", timeout=10)
+        )
+        await fake.wait_for(lambda: fake.frames("getCatalog"))
+        assert not await conn.release(lambda: True)
+        assert conn.connected
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+        assert await conn.release(lambda: True)
     finally:
         await conn.close()
 

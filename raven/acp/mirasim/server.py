@@ -54,6 +54,13 @@ update -- how Raven's client reads a turn it did not start
 (``raven/acp_client/unprompted.py``). Its questions are left to the app: only a
 turn this adapter started is answered from here.
 
+A session is held while anything of it runs -- a turn, or a background job its
+agent started, which wakes the agent into a turn of its own when it ends -- and
+for :data:`IDLE_RELEASE_S` after. Past that it is let go: not subscribed to again
+when the connection returns, so what happens in it next reaches Raven only once
+Raven uses the session again. The connection is closed as soon as no session is
+held, and the next request makes it again.
+
 A question a turn stops on -- a tool to approve, or one the agent asks -- goes
 out as ``session/request_permission`` or, to a client that declared forms,
 ``elicitation/create``, and the answer goes back as ``interact``. A client that
@@ -111,7 +118,7 @@ from raven.acp.mirasim.interactions import (
     read_permission,
 )
 from raven.acp.mirasim.store import Binding, BindingStore, store_path
-from raven.acp.mirasim.stream import SessionView, TurnStream, is_running, replay
+from raven.acp.mirasim.stream import SessionView, TurnStream, background_running, is_running, replay
 from raven.acp.outbound import ConnectionClosedError, OutboundRequests, RequestFailedError
 from raven.acp.protocol import (
     CANCEL_REQUEST_METHOD,
@@ -180,6 +187,19 @@ LOST_TURN_S = 60.0
 The connection is made again in the background and the session subscribed to
 anew, which brings its snapshot back at once if the host still runs the turn; a
 host that restarted runs it no more."""
+
+IDLE_RELEASE_S = 5 * 60.0
+"""How long a session with nothing running stays held before the adapter lets it go.
+
+A held session is subscribed to again whenever the connection returns, and keeps the connection up.
+Nothing running means no turn and no background job its agent started still running: a job that
+ends wakes the agent into a turn of its own, which reaches Raven like any other turn nobody here
+prompted. A frame of the session counts as activity and starts the wait again. Once no session is
+held the connection is closed too, since the host pushes a session's patches to every connection
+that subscribed to it and takes no frame to stop that; the next request opens a new one."""
+
+IDLE_SWEEP_S = 30.0
+"""How often the sessions are measured against :data:`IDLE_RELEASE_S`."""
 
 STEER_TIMEOUT_S = 15.0
 DELETE_TIMEOUT_S = 8.0
@@ -281,6 +301,10 @@ class Session:
     replies: dict[str, tuple[Reply, int]] = field(default_factory=dict)
     """The answer given to each of the turn's questions, and the connection it was sent on."""
     relays: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    active_at: float = 0.0
+    """When the session was last used, ran something or was heard of, by the adapter's idle clock."""
+    released: bool = False
+    """Idle past :data:`IDLE_RELEASE_S`: not subscribed to again when the connection returns, until it is used."""
 
     def binding(self) -> Binding:
         return Binding(session_id=self.id, cwd=self.cwd, mirasim_key=self.mirasim_key)
@@ -307,18 +331,21 @@ class MirasimAgent:
         store: BindingStore,
         emit: Callable[[dict[str, Any]], None],
         locate: Callable[[], HostAddress | None] = locate_host,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.agent = agent
         self.store = store
         self.emit = emit
         self.outbound = OutboundRequests(emit)
         self.client = ClientCapabilities()
+        self._clock = clock
+        """What idle sessions are timed by."""
         self.host = HostConnection(
             on_frame=self._on_frame,
             locate=locate,
             on_connect=self._resubscribe,
             on_lost=self._on_lost,
-            wanted=lambda: any(session.mirasim_key for session in self.sessions.values()),
+            wanted=lambda: any(session.mirasim_key and not session.released for session in self.sessions.values()),
         )
         self.sessions: OrderedDict[str, Session] = OrderedDict()
         self._by_key: dict[str, Session] = {}
@@ -329,6 +356,9 @@ class MirasimAgent:
         A first prompt also names its session: the conversation the host opens for it
         is that session's, to keep, or to delete when the session was deleted meanwhile.
         """
+        self._abandoned_at = float("-inf")
+        """When a prompt was last given up; one the host takes later can only be stopped over a connection."""
+        self._idle_watch: asyncio.Task[None] | None = None
         self._deleted: OrderedDict[str, None] = OrderedDict()
         self._catalog: AgentCatalog | None = None
         self._catalog_at = 0.0
@@ -905,6 +935,7 @@ class MirasimAgent:
 
     def _remember_abandoned(self, ref: str, session: Session | None = None) -> None:
         self._abandoned[ref] = session
+        self._abandoned_at = self._clock()
         while len(self._abandoned) > DELETED_KEPT:
             self._abandoned.popitem(last=False)
 
@@ -941,6 +972,7 @@ class MirasimAgent:
     def _drop(self, turn: Turn) -> None:
         self._turns.pop(turn.client_ref, None)
         session = turn.session
+        self._touch(session)
         if session.turn is turn:
             session.turn = None
         for task in session.relays.values():
@@ -1114,6 +1146,7 @@ class MirasimAgent:
             session = self._by_key.get(_text(frame.get("sessionKey")))
             if session is None:
                 return
+            self._touch(session)
             if kind == "snapshot":
                 session.view.reset(frame.get("snapshot"), frame.get("seq"))
                 session.resyncing = False
@@ -1143,6 +1176,9 @@ class MirasimAgent:
                     # Asked again after the connection came back, the host runs nothing for
                     # this session: it restarted, and the turn went with it.
                     self._lose(session.turn, "the Mirasim host is no longer running it (it restarted)")
+                if session is not None:
+                    # Nor any background job the last snapshot showed, which would hold the session forever.
+                    session.view.reset({}, None)
 
     def _dispatched(self, turn: Turn, task_id: str) -> None:
         turn.task_id = task_id
@@ -1236,9 +1272,9 @@ class MirasimAgent:
         return Reply("skip")
 
     async def _resubscribe(self) -> None:
-        """After a (re)connect: ask for a fresh snapshot of every session that has a conversation."""
+        """After a (re)connect: ask for a fresh snapshot of every held session that has a conversation."""
         for session in list(self.sessions.values()):
-            if session.mirasim_key is not None:
+            if session.mirasim_key is not None and not session.released:
                 await self._subscribe(session)
 
     async def _subscribe(self, session: Session) -> None:
@@ -1369,11 +1405,15 @@ class MirasimAgent:
         if session is None:
             raise RefusalError(RESOURCE_NOT_FOUND, f"no open session {session_id!r}; open it with session/load first")
         self.sessions.move_to_end(session_id)
+        self._touch(session)
         return session
 
     def _remember(self, session: Session) -> None:
         self.sessions[session.id] = session
         self.sessions.move_to_end(session.id)
+        self._touch(session)
+        if self._idle_watch is None:
+            self._idle_watch = self._spawn(self._watch_idle())
         if session.mirasim_key is not None:
             self._by_key[session.mirasim_key] = session
         idle = [sid for sid, held in self.sessions.items() if not held.pending and held.turn is None]
@@ -1388,6 +1428,51 @@ class MirasimAgent:
         task.add_done_callback(self._tasks.discard)
         task.add_done_callback(_note_failure)
         return task
+
+    # -- idle sessions ----------------------------------------------------------
+
+    def _touch(self, session: Session) -> None:
+        session.active_at = self._clock()
+        session.released = False
+
+    @staticmethod
+    def _busy(session: Session) -> bool:
+        snapshot = session.view.snapshot
+        return (
+            session.turn is not None
+            or session.pending > 0
+            or session.replaying
+            or is_running(snapshot)
+            or background_running(snapshot)
+        )
+
+    def _holds_connection(self) -> bool:
+        """Whether anything still needs the connection: a turn, a session held, or a prompt given up lately."""
+        if self._turns or self._clock() - self._abandoned_at < IDLE_RELEASE_S:
+            return True
+        return any(
+            self._busy(session) or (session.mirasim_key is not None and not session.released)
+            for session in self.sessions.values()
+        )
+
+    async def _sweep(self) -> None:
+        """Let go of each session idle past :data:`IDLE_RELEASE_S`, and of the connection once nothing holds it."""
+        now = self._clock()
+        for session in self.sessions.values():
+            if self._busy(session):
+                self._touch(session)
+            elif session.mirasim_key is not None and now - session.active_at >= IDLE_RELEASE_S:
+                session.released = True
+        if not self._holds_connection():
+            await self.host.release(lambda: not self._holds_connection())
+
+    async def _watch_idle(self) -> None:
+        while True:
+            await asyncio.sleep(IDLE_SWEEP_S)
+            try:
+                await self._sweep()
+            except Exception:  # noqa: BLE001 - one failed sweep must not end the watch
+                logger.opt(exception=True).warning("Mirasim adapter: checking for idle sessions failed")
 
     async def shutdown(self) -> None:
         """Refuse new turns and stop those already started, as a client that hung up can no longer cancel them.

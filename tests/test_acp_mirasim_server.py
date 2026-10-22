@@ -1410,6 +1410,216 @@ async def test_a_gap_in_the_patches_asks_for_a_fresh_snapshot(harness: Harness) 
     assert harness.said(sid) == "absteered: yc"
 
 
+# -- letting go of idle sessions ------------------------------------------------
+
+
+class Clock:
+    """The clock the adapter times its idle sessions by, moved by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def idle_clock(harness: Harness) -> Clock:
+    clock = Clock()
+    harness.agent._clock = clock
+    return clock
+
+
+def job(status: str) -> dict[str, Any]:
+    return {"id": "bash-1", "kind": "local_bash", "description": "sleep 40", "status": status}
+
+
+async def jobs_seen(harness: Harness, sid: str, status: str) -> None:
+    def seen() -> bool:
+        jobs = harness.agent.sessions[sid].view.snapshot.get("backgroundJobs") or [{}]
+        return jobs[0].get("status") == status
+
+    await harness.host.wait_for(seen)
+
+
+async def test_a_finished_session_idle_for_five_minutes_is_let_go_and_the_connection_with_it(
+    harness: Harness,
+) -> None:
+    clock = idle_clock(harness)
+    sid = await harness.new()
+    await harness.ok("session/prompt", sessionId=sid, prompt=text("hello"))
+    clock.advance(server_mod.IDLE_RELEASE_S - 1)
+    await harness.agent._sweep()
+    assert harness.agent.host.connected and not harness.agent.sessions[sid].released
+    clock.advance(1)
+    await harness.agent._sweep()
+    assert harness.agent.sessions[sid].released
+    await harness.host.wait_for(lambda: not harness.host.clients)
+    assert not harness.agent.host.connected
+
+
+async def test_a_background_job_holds_its_session_and_the_turn_it_wakes_into_reaches_raven(harness: Harness) -> None:
+    clock = idle_clock(harness)
+    sid = await harness.new()
+    await harness.ok("session/prompt", sessionId=sid, prompt=text("start a job"))
+    session = harness.host.session()
+    await harness.host._patch(session, {"set": {"backgroundJobs": [job("running")]}})
+    await jobs_seen(harness, sid, "running")
+    clock.advance(server_mod.IDLE_RELEASE_S * 3)
+    await harness.agent._sweep()
+    assert harness.agent.host.connected and not harness.agent.sessions[sid].released
+    # The job ends between two sweeps: the wait starts from the frame that says so.
+    clock.advance(200)
+    await harness.host._patch(session, {"set": {"backgroundJobs": [job("completed")]}})
+    await jobs_seen(harness, sid, "completed")
+    clock.advance(server_mod.IDLE_RELEASE_S - 1)
+    await harness.agent._sweep()
+    assert harness.agent.host.connected
+    harness.host.respond = script(("text", "the job finished"))
+    before = len(harness.session_updates(sid))
+    await harness.host._run(session, {"prompt": "<task-notification>", "model": "sonnet"}, "task-wake")
+    await harness.host.wait_for(lambda: harness.kinds(sid)[before:].count("usage_update") == 1)
+    assert harness.said(sid).endswith("the job finished")
+    clock.advance(server_mod.IDLE_RELEASE_S)
+    await harness.agent._sweep()
+    await harness.host.wait_for(lambda: not harness.host.clients)
+
+
+async def test_a_session_let_go_is_not_subscribed_again_when_the_connection_returns(harness: Harness) -> None:
+    clock = idle_clock(harness)
+    finished = await harness.new()
+    await harness.ok("session/prompt", sessionId=finished, prompt=text("done soon"))
+    harness.host.respond = script(("text", "working "), ("hold",))
+    running = await harness.new()
+    turn = asyncio.ensure_future(harness.ok("session/prompt", sessionId=running, prompt=text("go")))
+    await harness.host.wait_for(lambda: harness.said(running) == "working ")
+    clock.advance(server_mod.IDLE_RELEASE_S)
+    await harness.agent._sweep()
+    assert harness.agent.sessions[finished].released and not harness.agent.sessions[running].released
+    assert harness.agent.host.connected
+    held = harness.agent.sessions[running].mirasim_key
+    await harness.host.drop()
+    await harness.host.wait_for(lambda: harness.host.frames("subscribe"))
+    await asyncio.sleep(0.2)
+    assert [frame["sessionKey"] for frame in harness.host.frames("subscribe")] == [held]
+    session = harness.host.session(held)
+    session.steered.append("x")
+    session.wake.set()
+    assert await turn == {"stopReason": "end_turn"}
+
+
+async def test_a_session_let_go_continues_its_conversation_on_the_next_prompt(harness: Harness) -> None:
+    clock = idle_clock(harness)
+    sid = await harness.new()
+    await harness.ok("session/prompt", sessionId=sid, prompt=text("one"))
+    key = harness.agent.sessions[sid].mirasim_key
+    clock.advance(server_mod.IDLE_RELEASE_S)
+    await harness.agent._sweep()
+    await harness.host.wait_for(lambda: not harness.host.clients)
+    assert await harness.ok("session/prompt", sessionId=sid, prompt=text("two")) == {"stopReason": "end_turn"}
+    assert harness.prompts()[-1]["sessionKey"] == key
+    assert f"turn 2 of {key}" in harness.said(sid)
+    assert harness.agent.host.connected and not harness.agent.sessions[sid].released
+
+
+async def test_a_session_let_go_is_subscribed_again_when_loaded(harness: Harness) -> None:
+    clock = idle_clock(harness)
+    sid = await harness.new()
+    await harness.ok("session/prompt", sessionId=sid, prompt=text("one"))
+    key = harness.agent.sessions[sid].mirasim_key
+    clock.advance(server_mod.IDLE_RELEASE_S)
+    await harness.agent._sweep()
+    await harness.host.wait_for(lambda: not harness.host.clients)
+    await harness.ok("session/load", sessionId=sid, cwd=str(harness.tmp_path), mcpServers=[])
+    assert key in [frame["sessionKey"] for frame in harness.host.frames("subscribe")]
+    assert not harness.agent.sessions[sid].released
+
+
+async def test_a_turn_from_the_app_on_a_session_let_go_but_still_subscribed_holds_it_again(harness: Harness) -> None:
+    clock = idle_clock(harness)
+    finished = await harness.new()
+    await harness.ok("session/prompt", sessionId=finished, prompt=text("done soon"))
+    harness.host.respond = script(("text", "working "), ("hold",))
+    running = await harness.new()
+    turn = asyncio.ensure_future(harness.ok("session/prompt", sessionId=running, prompt=text("go")))
+    await harness.host.wait_for(lambda: harness.said(running) == "working ")
+    clock.advance(server_mod.IDLE_RELEASE_S)
+    await harness.agent._sweep()
+    assert harness.agent.sessions[finished].released
+    harness.host.respond = script(("text", "typed in the app"))
+    before = len(harness.session_updates(finished))
+    app_session = harness.host.session(harness.agent.sessions[finished].mirasim_key)
+    await harness.host._run(app_session, {"prompt": "from the app", "model": "sonnet"}, "task-app")
+    await harness.host.wait_for(lambda: harness.kinds(finished)[before:].count("usage_update") == 1)
+    assert not harness.agent.sessions[finished].released
+    session = harness.host.session(harness.agent.sessions[running].mirasim_key)
+    session.steered.append("x")
+    session.wake.set()
+    assert await turn == {"stopReason": "end_turn"}
+
+
+async def test_a_connection_dropped_with_every_session_let_go_is_not_made_again_unasked(harness: Harness) -> None:
+    clock = idle_clock(harness)
+    sid = await harness.new()
+    await harness.ok("session/prompt", sessionId=sid, prompt=text("hello"))
+    harness.host.silent.add("listSessions")
+    listing = asyncio.ensure_future(harness.call("session/list", cwd=str(harness.tmp_path)))
+    await harness.host.wait_for(lambda: harness.host.frames("listSessions"))
+    clock.advance(server_mod.IDLE_RELEASE_S)
+    await harness.agent._sweep()
+    assert harness.agent.sessions[sid].released and harness.agent.host.connected
+    await harness.host.drop()
+    assert (await listing)["error"]["code"] == INTERNAL_ERROR
+    await asyncio.sleep(0.5)
+    assert not harness.agent.host.connected and not harness.host.clients
+
+
+async def test_the_idle_watch_lets_go_on_its_own(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server_mod, "IDLE_SWEEP_S", 0.05)
+    monkeypatch.setattr(server_mod, "IDLE_RELEASE_S", 0.0)
+    sid = await harness.new()
+    await harness.ok("session/prompt", sessionId=sid, prompt=text("hello"))
+    await harness.host.wait_for(lambda: not harness.host.clients)
+    assert harness.agent.sessions[sid].released
+
+
+async def test_a_first_prompt_given_up_before_the_host_took_it_holds_the_connection_to_stop_it(
+    harness: Harness,
+) -> None:
+    clock = idle_clock(harness)
+    harness.host.respond = script(("text", "working"), ("hold",))
+    harness.host.accepting = asyncio.Event()
+    sid = await harness.new()
+    turn = asyncio.ensure_future(harness.ok("session/prompt", sessionId=sid, prompt=text("go")))
+    await harness.host.wait_for(harness.prompts)
+    await harness.ok("session/cancel", sessionId=sid)
+    assert await turn == {"stopReason": "cancelled"}
+    clock.advance(server_mod.IDLE_RELEASE_S - 1)
+    await harness.agent._sweep()
+    assert harness.agent.host.connected
+    harness.host.accepting.set()
+    stop = await harness.host.wait_for(lambda: harness.host.frames("stop"))
+    assert stop[0]["taskId"] == "task-1"
+
+
+async def test_a_job_the_host_no_longer_holds_after_a_restart_does_not_hold_its_session(harness: Harness) -> None:
+    clock = idle_clock(harness)
+    sid = await harness.new()
+    await harness.ok("session/prompt", sessionId=sid, prompt=text("start a job"))
+    session = harness.host.session()
+    await harness.host._patch(session, {"set": {"backgroundJobs": [job("running")]}})
+    await jobs_seen(harness, sid, "running")
+    session.snapshot = {}
+    await harness.host.drop()
+    await harness.host.wait_for(lambda: harness.host.frames("subscribe"))
+    await harness.host.wait_for(lambda: not harness.agent.sessions[sid].view.snapshot)
+    clock.advance(server_mod.IDLE_RELEASE_S)
+    await harness.agent._sweep()
+    await harness.host.wait_for(lambda: not harness.host.clients)
+
+
 async def test_a_client_that_hangs_up_mid_turn_stops_the_turn(tmp_path: Path, host: FakeHost) -> None:
     import io
 
