@@ -1585,6 +1585,20 @@ async def test_the_idle_watch_lets_go_on_its_own(harness: Harness, monkeypatch: 
     assert harness.agent.sessions[sid].released
 
 
+async def test_a_sweep_that_fails_does_not_end_the_idle_watch(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(server_mod, "IDLE_SWEEP_S", 0.01)
+    sweeps: list[int] = []
+
+    async def sweep() -> None:
+        sweeps.append(len(sweeps))
+        if len(sweeps) == 1:
+            raise RuntimeError("the first sweep fails")
+
+    monkeypatch.setattr(harness.agent, "_sweep", sweep)
+    await harness.new()
+    await harness.host.wait_for(lambda: len(sweeps) >= 3)
+
+
 async def test_a_first_prompt_given_up_before_the_host_took_it_holds_the_connection_to_stop_it(
     harness: Harness,
 ) -> None:
