@@ -1585,7 +1585,9 @@ async def test_the_idle_watch_lets_go_on_its_own(harness: Harness, monkeypatch: 
     assert harness.agent.sessions[sid].released
 
 
-async def test_a_sweep_that_fails_does_not_end_the_idle_watch(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_sweep_that_fails_does_not_end_the_idle_watch(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(server_mod, "IDLE_SWEEP_S", 0.01)
     sweeps: list[int] = []
 
