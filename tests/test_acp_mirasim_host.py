@@ -426,7 +426,7 @@ async def test_a_connection_nothing_depends_on_is_made_again_only_when_used(fake
         await conn.close()
 
 
-async def test_each_connection_tells_the_host_no_one_is_looking_through_it(fake: FakeHost) -> None:
+async def test_the_first_connection_and_a_remade_one_tell_the_host_no_one_is_looking(fake: FakeHost) -> None:
     conn = HostConnection(on_frame=lambda f: None, locate=lambda: fake.address)
     try:
         await conn.connect()
