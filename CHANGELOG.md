@@ -369,6 +369,13 @@ All notable changes to Raven are documented here.
 
 ### Fixed
 
+- A playbook's route conditions are filled the way its prompts are. A
+  `${params.<key>}` in a decision node's condition reached the judge as
+  written, and one naming no declared param passed validation; now it reaches
+  the judge as its value, a secret param in one is withheld as it is from a
+  prompt, and a reference to no declared param is refused when the playbook is
+  saved or loaded.
+
 - A decision node's card on the tasks board keeps its first selected route
   whole. The agent line gave the selection all of its overflow, so a long agent
   name and a tool count cut it down to its arrow; now the instance handle and

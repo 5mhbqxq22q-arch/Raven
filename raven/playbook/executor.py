@@ -57,9 +57,10 @@ def _fill_text(text: str, spec: PlaybookSpec, values: Mapping[str, str], where: 
     """Fill one piece of playbook text, minus any secret, and say what was withheld.
 
     Every path that turns playbook text into something a model or a sub-agent
-    reads goes through here, and there are three: the guidance reply, the compose
-    input, and a node's prompt template. They had a redaction each and a log line
-    between two of them, so the third changed a work order and said nothing --
+    reads goes through here: the guidance reply, the compose input, a node's
+    prompt template and the route conditions its judge reads, and a role's
+    standing orders. The first three had a redaction each and a log line between
+    two of them, so the third changed a work order and said nothing --
     leaving an operator to debug a graph that could not do what the file asked,
     with no trace of why.
 
@@ -537,7 +538,17 @@ class PlaybookExecutor:
             # missing X" would invite the same wrong call again.
             return ExecutionPlan(kind="questions", reply="Error: " + " ".join(fill_errors))
         nodes = [
-            n.model_copy(update={"prompt_template": _fill_text(n.prompt_template, spec, values, f"node {n.id!r}")})
+            n.model_copy(
+                update={
+                    "prompt_template": _fill_text(n.prompt_template, spec, values, f"node {n.id!r}"),
+                    "routes": None
+                    if n.routes is None
+                    else {
+                        name: _fill_text(condition, spec, values, f"node {n.id!r} route {name!r}")
+                        for name, condition in n.routes.items()
+                    },
+                }
+            )
             for n in nodes
         ]
         blanks = [(n.id, f) for n in nodes for f in FILLABLE_REQUIRED if not str(getattr(n, f, "") or "").strip()]
