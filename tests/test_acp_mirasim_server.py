@@ -1602,8 +1602,9 @@ async def test_a_sweep_that_fails_does_not_end_the_idle_watch(
 
 
 async def test_a_first_prompt_given_up_before_the_host_took_it_holds_the_connection_to_stop_it(
-    harness: Harness,
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(server_mod, "CANCEL_SETTLE_S", 0.1)
     clock = idle_clock(harness)
     harness.host.respond = script(("text", "working"), ("hold",))
     harness.host.accepting = asyncio.Event()
