@@ -427,6 +427,64 @@ async def test_archive_is_asked_at_the_phase_the_main_hook_names_for_the_same_mo
     assert collected.as_meta()["archived"] == {"phase": "sent"}
 
 
+_ENDED_EARLY = {
+    "intake": (
+        {"intake": "def intake(text, step):\n    return {'text': None, 'reply': 'ended-at-intake', 'note': None}"},
+        None,
+        "ended-at-intake",
+    ),
+    "system_addendum": (
+        {"system_addendum": "def system_addendum(step):\n    return {'text': None, 'reply': 'ended', 'note': None}"},
+        None,
+        "ended",
+    ),
+    "review before the calls": (
+        {
+            "review": (
+                "def review(step):\n"
+                "    if step.get('phase') == 'execute_tools':\n"
+                "        return {'verdict': 'end', 'reply': 'blocked', 'note': None}\n"
+                "    return None"
+            )
+        },
+        ("read_file", {"path": "missing.txt"}),
+        "blocked",
+    ),
+    "review after the calls": (
+        {
+            "review": (
+                "def review(step):\n"
+                "    if step.get('phase') == 'after_iteration' and step.get('tools_ran'):\n"
+                "        return {'verdict': 'end', 'reply': 'ended-after-results', 'note': None}\n"
+                "    return None"
+            )
+        },
+        ("read_file", {"path": "missing.txt"}),
+        "ended-after-results",
+    ),
+    "review of a plain answer": (
+        {"review": "def review(step):\n    return {'verdict': 'end', 'reply': 'ended-by-review', 'note': None}"},
+        None,
+        "ended-by-review",
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", list(_ENDED_EARLY))
+async def test_a_turn_another_verb_ends_is_still_archived(path: str) -> None:
+    """``archive`` runs once after the turn is over, however it ended. A verb
+    that ends the turn with its own reply is a turn that is over, and the
+    record has to say so the same as one the model answered."""
+    functions, tool_call, reply = _ENDED_EARLY[path]
+    archive = "def archive(step, reply):\n    return {'audit': {'seen': reply, 'phase': step.get('phase')}}"
+    with activity.collecting() as collected:
+        answer, _ = await _run_with({**functions, "archive": archive}, tool_call=tool_call)
+
+    assert answer == reply
+    assert collected.as_meta().get("archived") == {"audit": {"seen": reply, "phase": "sent"}}
+
+
 def test_every_phase_this_lane_asks_at_is_in_the_contract_and_said_by_the_main_hook() -> None:
     """The vocabulary lives in the contract's prose, and the two lanes are
     read by the same generated verbs. Read from the source so a new call site

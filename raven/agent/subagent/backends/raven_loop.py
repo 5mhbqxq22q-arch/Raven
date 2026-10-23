@@ -601,6 +601,25 @@ class RavenLoopBackend:
                 max_iterations=self._MAX_ITERATIONS,
             )
 
+        async def file_archive(reply: str | None) -> None:
+            # A generated ``archive`` is pure: the mapping it answers with is
+            # the whole of its effect, so it is filed on this run's record
+            # rather than counted and dropped. Observer name to its value, the
+            # shape the contract names, and it reaches ``meta.json`` through
+            # the activity this run is collected into.
+            if not participants:
+                return
+            filed = await participant_answer("archive", participant_step("sent"), reply)
+            if isinstance(filed, Mapping):
+                for observer, value in filed.items():
+                    activity.note_archived(str(observer), value)
+
+        async def ended_by_participant(reply: str) -> str:
+            # A verb that ends the turn with its own reply still ends a turn,
+            # and ``archive`` runs once after every turn, however it ended.
+            await file_archive(reply)
+            return reply
+
         #: The system prefix as it was assembled, so each call's addendum replaces
         #: the previous one rather than stacking. The contract asks for the whole
         #: of what this call should carry, not a delta, which is only answerable
@@ -638,7 +657,7 @@ class RavenLoopBackend:
             intake = await participant_answer("intake", task, participant_step("user_inbound"))
             if isinstance(intake, Mapping):
                 if intake.get("reply") is not None:
-                    return str(intake["reply"])
+                    return await ended_by_participant(str(intake["reply"]))
                 if isinstance(intake.get("text"), str):
                     task = intake["text"]
         messages.append({"role": "user", "content": with_attachment_note(task, media)})
@@ -667,7 +686,7 @@ class RavenLoopBackend:
                 addendum = await participant_answer("system_addendum", participant_step("iteration"))
                 if isinstance(addendum, Mapping):
                     if addendum.get("reply") is not None:
-                        return str(addendum["reply"])
+                        return await ended_by_participant(str(addendum["reply"]))
                     text = addendum.get("text")
                     apply_addendum(text if isinstance(text, str) and text else None)
                 else:
@@ -793,7 +812,7 @@ class RavenLoopBackend:
                     verdict = await participant_answer("review", participant_step("execute_tools", response=response))
                     decided = _review_verdict(verdict)
                     if decided == "end":
-                        return str(verdict.get("reply") or "")
+                        return await ended_by_participant(str(verdict.get("reply") or ""))
                     if decided == "resample" and resamples < MAX_PARTICIPANT_RESAMPLES:
                         resamples += 1
                         resample_overrides = _apply_resample(messages, verdict)
@@ -935,7 +954,7 @@ class RavenLoopBackend:
                     verdict = await participant_answer("review", participant_step("after_iteration", response=response))
                     decided = _review_verdict(verdict)
                     if decided == "end":
-                        return str(verdict.get("reply") or "")
+                        return await ended_by_participant(str(verdict.get("reply") or ""))
                     if decided == "resample" and resamples < MAX_PARTICIPANT_RESAMPLES:
                         resamples += 1
                         resample_overrides = _apply_resample(messages, verdict)
@@ -945,7 +964,7 @@ class RavenLoopBackend:
                     verdict = await participant_answer("review", participant_step("after_iteration", response=response))
                     decided = _review_verdict(verdict)
                     if decided == "end":
-                        return str(verdict.get("reply") or "")
+                        return await ended_by_participant(str(verdict.get("reply") or ""))
                     if decided == "resample" and resamples < MAX_PARTICIPANT_RESAMPLES:
                         resamples += 1
                         resample_overrides = _apply_resample(messages, verdict)
@@ -1002,16 +1021,7 @@ class RavenLoopBackend:
         if final_result is None and participants:
             salvaged = await participant_answer("salvage", participant_step("answerless"))
             final_result = salvaged if isinstance(salvaged, str) and salvaged else None
-        if participants:
-            # A generated ``archive`` is pure: the mapping it answers with is
-            # the whole of its effect, so it is filed on this run's record
-            # rather than counted and dropped. Observer name to its value, the
-            # shape the contract names, and it reaches ``meta.json`` through
-            # the activity this run is collected into.
-            filed = await participant_answer("archive", participant_step("sent"), final_result)
-            if isinstance(filed, Mapping):
-                for observer, value in filed.items():
-                    activity.note_archived(str(observer), value)
+        await file_archive(final_result)
         if final_result is None:
             # Nothing to hand back. Raised rather than returned, so the node
             # fails instead of completing with a sentence the next step would
