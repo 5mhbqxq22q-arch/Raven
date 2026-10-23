@@ -146,6 +146,23 @@ def test_the_merge_does_not_reuse_a_name_the_hand_written_judge_holds() -> None:
     assert run_function(_merged(code), "exec", {"command": "rm -rf /"}, []) == ["no rm -rf", "from the code"]
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "def judge(name, params, str):\n    return []\n",
+        "def judge(name, params, prior):\n    str = 'shadow'\n    return []\n",
+        "def judge(name, params, prior):\n    return [isinstance for isinstance in [1] if False]\n",
+        "def list(x):\n    return []\n\ndef judge(name, params, prior):\n    return []\n",
+    ],
+)
+def test_a_hand_written_judge_that_rebinds_a_builtin_refuses_the_load(code: str) -> None:
+    """A name bound anywhere in a function is local throughout it. The table's
+    ``str(...)`` would then fail before the author's assignment ran, the whole
+    judge would answer silence, and every call the table refused would run."""
+    with pytest.raises(ValueError, match="as its own name"):
+        migrated_action({"checks": {"code": code, "rules": THREE_RULES}})
+
+
 def test_a_hand_written_judge_the_gate_refuses_leaves_the_table_in_force() -> None:
     """The old runtime treated a judge it could not compile as having no
     opinion and still ran the table. The table alone is that behaviour."""

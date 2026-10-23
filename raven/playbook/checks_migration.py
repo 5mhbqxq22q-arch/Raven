@@ -19,7 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-from raven.agent.subagent.charter_code import ALLOWED_CALLS, MAX_SOURCE_CHARS, compile_function
+from raven.agent.subagent.charter_code import ALLOWED_CALLS, MAX_SOURCE_CHARS, CharterCodeError, compile_function
 
 MIGRATED_NOTE = "migrated from action.checks"
 
@@ -183,6 +183,19 @@ def _free_prefix(tree: ast.AST) -> str:
     return prefix
 
 
+def _rebound_builtins(tree: ast.AST) -> set[str]:
+    """Builtins the hand-written source binds as names of its own.
+
+    A name bound anywhere in a function is local throughout it, so the
+    table's ``str(...)`` would read the author's variable -- or fail before it
+    is assigned, which silences the whole judge and lets every call through.
+    """
+    bound = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load)}
+    bound |= {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
+    bound |= {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    return bound & ALLOWED_CALLS
+
+
 def merged_judge(code: str, rules_source: str) -> str:
     """One ``judge`` that refuses what either the hand-written judge or the table refused.
 
@@ -199,6 +212,11 @@ def merged_judge(code: str, rules_source: str) -> str:
     on a call the table also refuses loses that refusal.
     """
     tree = ast.parse(code)
+    if rebound := _rebound_builtins(tree):
+        raise ValueError(
+            f"action.checks.code binds {', '.join(sorted(rebound))} as its own name, so the rules beside it "
+            "cannot be merged into it and still run. Rename it in that judge, or state the rules there."
+        )
     hand = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "judge")
     prefix = _free_prefix(tree)
     refusals, answer = prefix + "refusals", prefix + "answer"
@@ -251,6 +269,13 @@ def _judge_for(code: str, rules: list[Any]) -> str:
             "State them as one judge under action.functions, which can say the same thing in fewer "
             "characters than one block per rule."
         )
+    if code:
+        # Checked rather than trusted: a merge the gate refused would be a
+        # judge that answers silence, which for ``judge`` is permission.
+        try:
+            compile_function(generated, "judge")
+        except CharterCodeError as exc:
+            raise ValueError(f"action.checks.code and its rules could not be merged into one judge: {exc}") from exc
     return generated
 
 
