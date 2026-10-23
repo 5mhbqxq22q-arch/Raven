@@ -522,7 +522,7 @@ def _global_bin(prefix: str) -> Path:
     return Path(prefix) if os.name == "nt" else Path(prefix) / "bin"
 
 
-def _npx_launch(argv: list[str], env: Mapping[str, str], cwd: str | None) -> list[str]:
+def _npx_launch(argv: list[str], env: Mapping[str, str], cwd: str | None, deadline: float | None) -> list[str]:
     request = _npx_request(argv[1:])
     if request is None or _npm_registry_chosen(env):
         return argv
@@ -536,7 +536,7 @@ def _npx_launch(argv: list[str], env: Mapping[str, str], cwd: str | None) -> lis
         return argv
     if request.command is None and "prefix" in config and (_global_bin(config["prefix"]) / request.specs[0]).is_file():
         return argv
-    prefix = _npx_install(request, env)
+    prefix = _npx_install(request, env, deadline)
     started = _npx_started(prefix, request, env) if prefix is not None else None
     if started is None:
         logger.warning(
@@ -557,7 +557,7 @@ def _npx_launch(argv: list[str], env: Mapping[str, str], cwd: str | None) -> lis
     return started
 
 
-def _npx_install(request: _NpxRequest, env: Mapping[str, str]) -> Path | None:
+def _npx_install(request: _NpxRequest, env: Mapping[str, str], deadline: float | None) -> Path | None:
     """Raven's own install of the packages ``request`` names, from the mirror:
     its directory, or None when there is none to start.
 
@@ -572,7 +572,13 @@ def _npx_install(request: _NpxRequest, env: Mapping[str, str]) -> Path | None:
     key = hashlib.sha256("\n".join(sorted(request.specs)).encode("utf-8")).hexdigest()[:16]
     prefix = raven_home() / "cache" / "npx" / key
     manifest = {"private": True, "dependencies": {name: version or "latest" for name, version in request.packages}}
-    with _exclusive(prefix / ".lock", _NPX_INSTALL_TIMEOUT + 60):
+    # Another launch of the same specs may be installing here. The wait is
+    # bounded by the caller's own budget: past it the launch starts as it was
+    # configured rather than hold the answer back.
+    lock_timeout = _NPX_INSTALL_TIMEOUT + 60
+    if deadline is not None:
+        lock_timeout = max(0.0, min(lock_timeout, deadline - time.monotonic()))
+    with _exclusive(prefix / ".lock", lock_timeout):
         written = _read_json(prefix / "package.json")
         if written != manifest:
             (prefix / "package.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -581,12 +587,16 @@ def _npx_install(request: _NpxRequest, env: Mapping[str, str]) -> Path | None:
         )
         if installed and all(_EXACT_VERSION.fullmatch(version) for _, version in request.packages):
             return prefix
-        if _npm_install(prefix, "update" if installed else "install", env):
+        if deadline is not None and time.monotonic() >= deadline:
+            # The budget is spent: the launch starts as it was configured
+            # rather than hold the answer back.
+            return prefix if installed else None
+        if _npm_install(prefix, "update" if installed else "install", env, deadline):
             return prefix
         return prefix if installed else None
 
 
-def _npm_install(prefix: Path, verb: str, env: Mapping[str, str]) -> bool:
+def _npm_install(prefix: Path, verb: str, env: Mapping[str, str], deadline: float | None) -> bool:
     """Run ``npm <verb>`` in ``prefix`` against the mirror; whether it finished.
 
     The registry goes on the command line of this npm alone, which ends with
@@ -597,6 +607,9 @@ def _npm_install(prefix: Path, verb: str, env: Mapping[str, str]) -> bool:
     npm = shutil.which("npm", path=env.get("PATH") or os.environ.get("PATH", os.defpath))
     if npm is None:
         return False
+    timeout = _NPX_INSTALL_TIMEOUT
+    if deadline is not None:
+        timeout = min(timeout, max(0.0, deadline - time.monotonic()))
     try:
         proc = subprocess.Popen(
             [npm, verb, "--registry", NPM_REGISTRY, "--no-audit", "--no-fund"],
@@ -612,11 +625,11 @@ def _npm_install(prefix: Path, verb: str, env: Mapping[str, str]) -> bool:
         logger.warning("npm could not be started in {}: {}", prefix, exc)
         return False
     try:
-        out, _ = proc.communicate(timeout=_NPX_INSTALL_TIMEOUT)
+        out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         _end_group(proc)
         proc.communicate()
-        logger.warning("npm {} in {} did not finish in {:.0f}s", verb, prefix, _NPX_INSTALL_TIMEOUT)
+        logger.warning("npm {} in {} did not finish in {:.0f}s", verb, prefix, timeout)
         return False
     if proc.returncode != 0:
         said = out.decode("utf-8", "replace").strip()[-800:]
@@ -788,7 +801,12 @@ def _uv_index_named(args: Sequence[str]) -> bool:
 
 
 def package_launch(
-    argv: Sequence[str], env: Mapping[str, str], cwd: str | None = None, *, local: bool = True
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    cwd: str | None = None,
+    *,
+    local: bool = True,
+    budget: float | None = None,
 ) -> list[str]:
     """``argv``, or a command line that fetches the same package from a
     mirror, where a ``uvx`` or ``npx`` launch cannot reach its default
@@ -819,29 +837,39 @@ def package_launch(
     ``RAVEN_NO_MIRROR`` leaves every launch alone. May block for a probe and
     for npm; see :func:`package_launch_async`. Never raises: a fault while
     deciding leaves the launch as it was configured.
+
+    ``budget`` is how long the preparation may take, in seconds: past it the
+    launch starts as configured rather than hold the answer back. A caller
+    that answers within a budget of its own -- the Raven node, whose host
+    waits 60 s for the answer -- passes it.
     """
     if not argv or not enabled():
         return list(argv)
+    deadline = time.monotonic() + budget if budget is not None else None
     try:
-        return _package_launch(list(argv), env, cwd, local)
+        return _package_launch(list(argv), env, cwd, local, deadline)
     except Exception as exc:  # noqa: BLE001 - the mirror is a way around an outage, never a gate
         logger.opt(exception=exc).warning("could not decide on a mirror for {!r}; it starts as configured", argv[0])
         return list(argv)
 
 
-def _package_launch(argv: list[str], env: Mapping[str, str], cwd: str | None, local: bool) -> list[str]:
+def _package_launch(
+    argv: list[str], env: Mapping[str, str], cwd: str | None, local: bool, deadline: float | None
+) -> list[str]:
     program = _program(argv[0])
     if program == "uvx":
-        return _uvx_launch(argv, env)
+        return _uvx_launch(argv, env, deadline)
     if program == "npx" and local:
-        return _npx_launch(argv, env, cwd)
+        return _npx_launch(argv, env, cwd, deadline)
     return argv
 
 
-def _uvx_launch(argv: list[str], env: Mapping[str, str]) -> list[str]:
+def _uvx_launch(argv: list[str], env: Mapping[str, str], deadline: float | None) -> list[str]:
     # A uv.toml named on the command line may choose the index, and the flag
     # added here would outrank it.
     if _names(argv[1:], ("--config-file",)) or _uv_index_named(argv[1:]) or _uv_index_chosen(env):
+        return argv
+    if deadline is not None and time.monotonic() >= deadline:
         return argv
     if not _moved({PYPI_DEFAULT_INDEX: PYPI_INDEX}):
         return argv
@@ -855,10 +883,15 @@ def _uvx_launch(argv: list[str], env: Mapping[str, str]) -> list[str]:
 
 
 async def package_launch_async(
-    argv: Sequence[str], env: Mapping[str, str], cwd: str | None = None, *, local: bool = True
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    cwd: str | None = None,
+    *,
+    local: bool = True,
+    budget: float | None = None,
 ) -> list[str]:
     """:func:`package_launch` off the event loop, since its probe and npm block."""
-    return await asyncio.to_thread(package_launch, argv, env, cwd, local=local)
+    return await asyncio.to_thread(package_launch, argv, env, cwd, local=local, budget=budget)
 
 
 __all__ = [

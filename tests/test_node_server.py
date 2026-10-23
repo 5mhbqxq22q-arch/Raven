@@ -652,8 +652,8 @@ async def test_an_agent_starts_the_way_this_machine_s_mirror_fallback_says(tmp_p
     monkeypatch.setattr(server, "capture_login_env", lambda: {**os.environ, "FROM_LOGIN": "yes"})
     asked: list[tuple[list[str], object, object, object]] = []
 
-    def package_launch(argv, env, cwd=None, *, local=True):
-        asked.append((list(argv), env.get("FROM_LOGIN"), env.get("FROM_ENTRY"), cwd))
+    def package_launch(argv, env, cwd=None, *, local=True, budget=None):
+        asked.append((list(argv), env.get("FROM_LOGIN"), env.get("FROM_ENTRY"), cwd, budget))
         return [*argv, "--as-the-answer-says"]
 
     monkeypatch.setattr(mirrors, "package_launch", package_launch)
@@ -661,10 +661,11 @@ async def test_an_agent_starts_the_way_this_machine_s_mirror_fallback_says(tmp_p
     seen = await _what_the_agent_saw(_Host(), str(tmp_path), agent, {"FROM_ENTRY": "1"})
 
     assert seen["args"] == ["--as-the-answer-says"]
-    (argv, login, entry, cwd), *_ = asked
+    (argv, login, entry, cwd, budget), *_ = asked
     assert argv[0] == sys.executable
     assert (login, entry) == ("yes", "1"), "asked with the environment the agent starts with"
     assert cwd == str(tmp_path), "and where it starts, where npx would look for what the project has"
+    assert budget == protocol.AGENT_LAUNCH_PREPARE_S, "with the budget the host waits for the answer"
 
 
 @pytest.mark.slow

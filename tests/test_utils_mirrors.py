@@ -524,7 +524,7 @@ class _Installs:
         self.running = 0
         self.overlapped = False
 
-    def __call__(self, prefix: Path, verb: str, _env: object) -> bool:
+    def __call__(self, prefix: Path, verb: str, _env: object, deadline: float | None = None) -> bool:
         self.runs.append((prefix, verb))
         self.running += 1
         self.overlapped |= self.running > 1
@@ -882,6 +882,32 @@ class TestNpxLaunches:
 
         assert argv == self._installed(tmp_path, ["@acme/agent"], "@acme/agent", "dist/cli.js", [])
 
+    def test_a_launch_past_its_budget_starts_as_configured(self, network, installs, project, tmp_path) -> None:
+        """The node's host waits 60 s for the answer and drops every agent of
+        that machine when it does not come: a preparation longer than that is
+        abandoned, and the command starts as it was configured."""
+        argv = ["npx", "-y", "@acme/agent"]
+
+        assert mirrors.package_launch(argv, self._env(tmp_path), str(project), budget=0.0) == argv
+        assert installs.runs == [], "no npm runs past the budget"
+
+    def test_a_launch_past_its_budget_does_not_wait_for_another_install(
+        self, network, installs, project, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Another launch of the same specs is installing here: the wait is
+        bounded by the budget, so the launch starts as it was configured."""
+        monkeypatch.setattr(mirrors, "_NPX_INSTALL_TIMEOUT", 1)
+        argv = ["npx", "-y", "@acme/agent"]
+        key = hashlib.sha256("\n".join(sorted(["@acme/agent"])).encode("utf-8")).hexdigest()[:16]
+        prefix = tmp_path / "raven" / "cache" / "npx" / key
+        prefix.mkdir(parents=True)
+
+        with mirrors._exclusive(prefix / ".lock", 30):
+            began = time.monotonic()
+            assert mirrors.package_launch(argv, self._env(tmp_path), str(project), budget=0.5) == argv
+
+        assert time.monotonic() - began < 20, "the wait for another launch's lock is bounded by the budget"
+
 
 class TestTheBinNpxWouldRun:
     @pytest.mark.parametrize(
@@ -948,7 +974,7 @@ def test_an_npm_past_its_deadline_is_ended_with_what_it_started(tmp_path, monkey
     (bin_dir / "npm").chmod(0o755)
 
     began = time.monotonic()
-    assert not mirrors._npm_install(tmp_path, "install", {"PATH": f"{bin_dir}:/usr/bin:/bin"})
+    assert not mirrors._npm_install(tmp_path, "install", {"PATH": f"{bin_dir}:/usr/bin:/bin"}, None)
     assert time.monotonic() - began < 10, "the deadline waited for what npm started, which holds its output open"
     child = int(started.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 5

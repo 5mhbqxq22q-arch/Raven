@@ -79,7 +79,6 @@ LOST_RC = -1
 
 _HELLO_TIMEOUT_S = 60.0
 _CALL_TIMEOUT_S = 120.0
-_LAUNCH_TIMEOUT_S = 60.0
 _ATTACH_TIMEOUT_S = 30.0
 #: How many frames an endpoint holds for a link that is down before it gives up on it.
 _PENDING_FRAMES = 1000
@@ -623,13 +622,16 @@ class NodePool:
         """The Raven node's answer to ``agent/launch`` on ``channel``, or :class:`NodeError` saying why there is none."""
         label = node.target.label
         try:
-            return await node.client.request(protocol.AGENT_LAUNCH, params, timeout=_LAUNCH_TIMEOUT_S)
+            return await node.client.request(protocol.AGENT_LAUNCH, params, timeout=protocol.AGENT_LAUNCH_TIMEOUT_S)
         except AcpRemoteError as exc:
             node.channels.pop(channel, None)
             raise NodeError(self._refused_launch(node, name, exc)) from None
         except AcpTimeoutError:
             node.channels.pop(channel, None)
-            said = f"the Raven node on machine {label} did not answer {protocol.AGENT_LAUNCH} within {_LAUNCH_TIMEOUT_S:.0f}s"
+            said = (
+                f"the Raven node on machine {label} did not answer {protocol.AGENT_LAUNCH} "
+                f"within {protocol.AGENT_LAUNCH_TIMEOUT_S:.0f}s"
+            )
             await self._lost(machine_id, node, said)
             raise NodeError(said) from None
         except AcpConnectionError as exc:

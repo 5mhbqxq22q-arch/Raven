@@ -924,6 +924,18 @@ async def test_a_refused_call_keeps_the_node(tmp_path):
     assert changed.value.reason == "changed", "the node's own refusal, by name, for the file tools"
 
 
+async def test_the_launch_is_answered_within_the_budget_the_protocol_names(tmp_path):
+    """The host waits so long for the answer, and drops every agent of that
+    machine when it does not come."""
+    pool = NodePool()
+    client = _live(pool, tmp_path, result={"pid": 4242})
+
+    await pool.open_channel("box", name="echo@box", command="agent --acp", cwd="~", env={})
+
+    asked = [(method, timeout) for method, _params, timeout in client.asked if method == protocol.AGENT_LAUNCH]
+    assert asked == [(protocol.AGENT_LAUNCH, protocol.AGENT_LAUNCH_TIMEOUT_S)]
+
+
 async def test_a_call_that_timed_out_drops_the_node(tmp_path):
     pool = NodePool(backoff_s=())
     client = _live(pool, tmp_path, raises=AcpTimeoutError("no answer", method=protocol.READ))
