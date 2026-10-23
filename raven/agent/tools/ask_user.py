@@ -344,8 +344,11 @@ class AskUserTool(Tool):
         sub-agent's own question reaches the user.
         Returns ``None`` when the round-trip is structurally unavailable (no
         broker, no conversation) -- the caller decides what that means -- and
-        otherwise the user's answer, which is ``""`` on timeout or
-        cancellation (the broker never raises).
+        otherwise the user's answer, which is ``""`` when the broker fails
+        safe (timeout, EOF, an undeliverable question, the pending wait
+        cancelled from outside). Cancelling the calling task itself raises
+        ``CancelledError`` here, as the broker does: the caller was stopped,
+        not left unanswered.
 
         Takes no ``question_lock``: the `Asker` route holds it already, across
         a whole form or round trip, and the lock is not re-entrant. A caller
