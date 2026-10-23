@@ -724,7 +724,7 @@ _Avoid_: "function" — a Tool is the agent-facing capability, not a Python func
 
 **Web Vendor** (`config/schema.py`, `WebProvidersConfig`):
 Who issues a web credential, as opposed to which tool spends it. Keys live at
-`tools.web.providers.<vendor>.apiKey` because one AnySearch, Tavily, Exa or Firecrawl
+`tools.web.providers.<vendor>.apiKey` because one AnySearch, Tavily, Exa, Firecrawl or Keenable
 account serves both `web_search` and `web_fetch`; a key held per tool would have to be
 pasted twice and could drift into two values for one credential. The pre-vendor leaves
 (`tools.web.search.apiKey`, `tools.web.jinaApiKey`) are still read, after the vendor
@@ -735,11 +735,12 @@ _Avoid_: "provider" unqualified — that is the LLM Provider in this vocabulary;
 
 **Web Search Provider** / **Web Fetch Provider** (`agent/tools/web.py`, `SEARCH_PROVIDERS` / `FETCH_PROVIDERS`):
 Which interchangeable backend each web tool calls: `tools.web.search.provider` selects
-`serper` (default), `anysearch`, `serpapi`, `tavily`, `exa`, `brave`, `firecrawl` or `serply`, and
-`tools.web.fetch.provider` selects `jina` (default), `anysearch`, `tavily`, `exa` or
-`firecrawl`. Every endpoint is a literal in the tool, so a selection names a vendor and
+`serper` (default), `anysearch`, `serpapi`, `tavily`, `exa`, `brave`, `firecrawl`, `serply` or
+`keenable`, and `tools.web.fetch.provider` selects `jina` (default), `anysearch`, `tavily`, `exa`,
+`firecrawl` or `keenable`. Every endpoint is a literal in the tool, so a selection names a vendor and
 never a URL. `web_search` is registered whatever the config holds and *withheld* from the
-offered set while the selected vendor's key does not resolve, so a key pasted mid-run
+offered set while the selected vendor's key does not resolve (Keenable searches without
+one and is offered keyless, as Jina reads pages keyless), so a key pasted mid-run
 surfaces it without a restart -- read live from the vendor slot and, for Serper, from the
 pre-vendor leaf, in the order `WebToolsConfig.vendor_key` resolves them, and an empty slot
 is a revocation rather than a miss; `web_fetch` is always offered, falling back to Jina,

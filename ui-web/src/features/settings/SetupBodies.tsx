@@ -13,7 +13,7 @@ import { KeyRow, VendorSelect } from './pages/Tools'
 import { Providers } from './providers/Providers'
 import { RoleRows, Roles } from './providers/Roles'
 import { SetupWait } from './Skeletons'
-import { FETCH_KEYLESS, WEB_VENDOR, WEB_VENDOR_LABEL, WEB_VENDOR_URL, keySet, legacyKey, vendorKey, webVendor } from './source'
+import { FETCH_KEYLESS, SEARCH_KEYLESS, WEB_VENDOR, WEB_VENDOR_LABEL, WEB_VENDOR_URL, keySet, legacyKey, vendorKey, webVendor } from './source'
 import * as store from './store'
 
 import type { JSX } from 'react'
@@ -60,7 +60,7 @@ export function WebStepBody(): JSX.Element {
   const fetchPick = WEB_VENDOR.web_fetch!
   const searchVendor = webVendor('web_search', raw)
   const fetchVendor = webVendor('web_fetch', raw)
-  const searchReady = keySet('web_search', searchVendor, raw)
+  const searchReady = SEARCH_KEYLESS.has(searchVendor) || keySet('web_search', searchVendor, raw)
   const fetchOptional = FETCH_KEYLESS.has(fetchVendor)
   const fetchReady = fetchOptional || keySet('web_fetch', fetchVendor, raw)
   const fetchLabel = fetchOptional

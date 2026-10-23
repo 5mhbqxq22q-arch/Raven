@@ -460,7 +460,7 @@ class RavenLoopBackend:
             web_search = WebSearchTool(
                 api_key=live_key(search_provider), proxy=self.web_proxy, provider=search_provider
             )
-            if web_search.api_key:
+            if web_search.ready:
                 tools.register(web_search)
         if self.image_search and allowed("image_search"):
             picture_vendor = image_search_vendor(self.web_search_provider, self._web_key)

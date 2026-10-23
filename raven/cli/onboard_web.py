@@ -160,7 +160,7 @@ def _pick_provider(kind: str, current: str) -> Optional[str]:
     choices = []
     for vendor, spec in specs.items():
         note = ""
-        if kind == "fetch" and not spec.needs_key:
+        if not spec.needs_key:
             note = t(" (no key needed)")
         elif kind == "fetch":
             note = t(" (key required)")
@@ -325,7 +325,7 @@ def _step5_web(
             label=t("{label} API key", label=spec.label),
             obtain_from=spec.signup,
             current=_stored_key(search),
-            optional_note=t(" enables web_search"),
+            optional_note=t(" enables web_search") if spec.needs_key else t(" optional"),
         )
         if search_key is None:
             raise typer.Exit(1)
