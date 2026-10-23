@@ -5,7 +5,9 @@ injected responder manages its own fail-safe). On execute the tool hands the tur
 conversation_id and the prompt to the broker, which emits a ``clarify.request``
 notification and blocks until an inbound answer arrives (or the broker's
 fail-safe default fires). The returned answer is rendered as a natural-language
-tool result; the loop never sees an exception.
+tool result; the loop sees no exception from an unanswered question. A stopped
+turn is the exception: cancelling the turn's task while it waits raises
+``CancelledError`` out of the call, as it would from any other tool.
 
 A batch shares one deadline rather than one per question, and a call whose
 shape would waste the user's time -- a single-option question, a repeated
