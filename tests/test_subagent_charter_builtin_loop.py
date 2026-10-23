@@ -353,3 +353,36 @@ def test_the_resample_allowlist_is_the_main_loops_rollback_allowlist() -> None:
     from raven.agent.subagent.backends.raven_loop import RESAMPLE_OVERRIDE_KEYS
 
     assert RESAMPLE_OVERRIDE_KEYS == AgentLoop._ROLLBACK_OVERRIDE_KEYS
+
+
+@pytest.mark.asyncio
+async def test_archive_is_asked_at_the_phase_the_main_hook_names_for_the_same_moment() -> None:
+    """The main hook files its record at ``sent``. A generated ``archive``
+    that reads ``step['phase']`` has to match on both lanes, so this lane
+    names that moment the same way rather than coining a word of its own."""
+    with activity.collecting() as collected:
+        await _run_with({"archive": "def archive(step, reply):\n    return {'phase': step.get('phase')}"})
+
+    assert collected.as_meta()["archived"] == {"phase": "sent"}
+
+
+def test_every_phase_this_lane_asks_at_is_in_the_contract_and_said_by_the_main_hook() -> None:
+    """The vocabulary lives in the contract's prose, and the two lanes are
+    read by the same generated verbs. Read from the source so a new call site
+    with a coined phase fails here rather than in a verb that never matches."""
+    import re
+
+    import raven.agent.hook.participant as main_hook
+    import raven.agent.subagent.backends.raven_loop as builtin_lane
+    import raven.contracts.participant as contract
+
+    contract_source = Path(contract.__file__).read_text(encoding="utf-8")
+    described = contract_source.split("phase: str", 1)[1].split('"""', 2)[1].split(". ", 1)[0]
+    vocabulary = set(re.findall(r"``([a-z_]+)``", described))
+    asked_here = set(re.findall(r'participant_step\("([a-z_]+)"', Path(builtin_lane.__file__).read_text("utf-8")))
+    said_there = set(re.findall(r'phase="([a-z_]+)"', Path(main_hook.__file__).read_text("utf-8")))
+
+    assert vocabulary == {"user_inbound", "iteration", "execute_tools", "after_iteration", "answerless", "sent"}
+    assert asked_here, "the pattern still finds this lane's call sites"
+    assert asked_here <= vocabulary, asked_here - vocabulary
+    assert asked_here <= said_there, asked_here - said_there

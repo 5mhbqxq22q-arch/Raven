@@ -1008,7 +1008,7 @@ class RavenLoopBackend:
             # rather than counted and dropped. Observer name to its value, the
             # shape the contract names, and it reaches ``meta.json`` through
             # the activity this run is collected into.
-            filed = await participant_answer("archive", participant_step("archived"), final_result)
+            filed = await participant_answer("archive", participant_step("sent"), final_result)
             if isinstance(filed, Mapping):
                 for observer, value in filed.items():
                     activity.note_archived(str(observer), value)
