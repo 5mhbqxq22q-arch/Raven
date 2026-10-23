@@ -313,11 +313,26 @@ async def test_one_tool_calling_step_offers_review_both_moments() -> None:
 
 
 class _RecordingKwargs(_Provider):
-    """Records the generation keywords each call carried, on either path."""
+    """Records the generation keywords each answered call carried, on any path.
 
-    def __init__(self) -> None:
+    The second call proposes a tool call, so the step after the re-sampled one
+    is an ordinary continuing step rather than another verdict.
+    """
+
+    def __init__(self, path: str) -> None:
         super().__init__()
+        self.path = path
         self.kwargs_per_call: list[dict[str, Any]] = []
+
+    async def _answer(self, messages, tools) -> LLMResponse:
+        answer = await super()._answer(messages, tools)
+        if self.calls == 2:
+            return LLMResponse(
+                content="",
+                tool_calls=[ToolCallRequest(id="c2", name="read_file", arguments={"path": "missing.txt"})],
+                finish_reason="tool_calls",
+            )
+        return answer
 
     async def chat_with_retry(self, messages, tools=None, model=None, **kwargs) -> LLMResponse:
         self.kwargs_per_call.append(dict(kwargs))
@@ -326,38 +341,51 @@ class _RecordingKwargs(_Provider):
     async def chat_stream(self, *, messages, tools=None, model=None, **kwargs):
         from raven.providers.base import ChatDelta
 
+        if self.path == "re-asked":
+            yield ChatDelta(content="dropped", finish_reason="error")
+            return
         self.kwargs_per_call.append(dict(kwargs))
         answer = await self._answer(messages, tools)
-        yield ChatDelta(content=answer.content, finish_reason="stop")
+        for call in answer.tool_calls:
+            fragment = {"index": 0, "id": call.id, "function": {"name": call.name, "arguments": '{"path": "x"}'}}
+            yield ChatDelta(content=None, tool_call_delta={"tool_calls": [fragment]})
+        yield ChatDelta(content=answer.content or None, finish_reason=answer.finish_reason)
+
+    @classmethod
+    def classify_error(cls, exc=None, content=None):
+        from raven.contracts.llm_provider import ErrorClassification
+
+        return ErrorClassification("transport", retryable=True)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("streamed", [False, True], ids=["waited", "streamed"])
-async def test_a_resample_carries_its_overrides_on_the_next_call_and_no_other(streamed: bool) -> None:
+@pytest.mark.parametrize("path", ["waited", "streamed", "re-asked"])
+async def test_a_resample_carries_its_overrides_on_the_next_call_and_no_other(path: str) -> None:
     """The contract says ``overrides`` ride on the re-sampled call, and the ACP
     lane honours that. A key outside the allowlist is dropped there, so it is
     dropped here too rather than handed to a provider that does not know it.
-    The second resample asks for nothing, so the third call shows whether the
-    first one's overrides outlived the call they were for."""
+    The re-sampled call then proposes a tool call, so the third call is an
+    ordinary step and shows whether the overrides outlived the call they were
+    for. ``re-asked`` is a streamed reply that failed in transport and was
+    asked again without the stream."""
     source = (
         "def review(step):\n"
         "    if step.get('iteration') == 1:\n"
         "        return {'verdict': 'resample', 'reason': 'colder', 'inject': None,\n"
         "                'overrides': {'temperature': 0.1, 'max_tokens': 77, 'model': 'other'}, 'note': None}\n"
-        "    if step.get('iteration') == 2:\n"
-        "        return {'verdict': 'resample', 'reason': 'again', 'inject': None, 'overrides': None, 'note': None}\n"
         "    return None"
     )
     tmp = Path(tempfile.mkdtemp())
-    provider = _RecordingKwargs()
+    provider = _RecordingKwargs(path)
     backend = RavenLoopBackend(provider=provider, model="stub", agent_home=tmp / "home")
-    seen: list[str] = []
 
     async def _delta(text: str) -> None:
-        seen.append(text)
+        return None
 
     with dispatch_charter({"brief": "x", "functions": {"review": source}}):
-        await backend.run("do it", task_id="t1", workspace=tmp, executor=None, on_delta=_delta if streamed else None)
+        await backend.run(
+            "do it", task_id="t1", workspace=tmp, executor=None, on_delta=None if path == "waited" else _delta
+        )
 
     first, second, third = provider.kwargs_per_call
     assert second == {**first, "temperature": 0.1, "max_tokens": 77}
