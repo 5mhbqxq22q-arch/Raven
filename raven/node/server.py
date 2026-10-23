@@ -1250,7 +1250,13 @@ class Daemon:
             cwd = Path(_text(params, "cwd")).expanduser()
             # Asked here rather than by the host: whether a registry answers
             # from this machine is not something the host's network can tell.
-            argv = await mirrors.package_launch_async(argv, env, str(cwd), budget=protocol.AGENT_LAUNCH_PREPARE_S)
+            argv = await mirrors.package_launch_async(
+                argv,
+                env,
+                str(cwd),
+                budget=protocol.AGENT_LAUNCH_PREPARE_S,
+                cache_root=self.root / "npx",
+            )
             found = shutil.which(argv[0], path=env.get("PATH"))
             if found is None:
                 raise _RefusedError(protocol.NOT_FOUND, f"{argv[0]!r} is not on this machine's PATH")

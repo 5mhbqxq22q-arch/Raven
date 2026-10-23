@@ -522,7 +522,13 @@ def _global_bin(prefix: str) -> Path:
     return Path(prefix) if os.name == "nt" else Path(prefix) / "bin"
 
 
-def _npx_launch(argv: list[str], env: Mapping[str, str], cwd: str | None, deadline: float | None) -> list[str]:
+def _npx_launch(
+    argv: list[str],
+    env: Mapping[str, str],
+    cwd: str | None,
+    deadline: float | None,
+    cache_root: Path | None,
+) -> list[str]:
     request = _npx_request(argv[1:])
     if request is None or _npm_registry_chosen(env):
         return argv
@@ -536,7 +542,7 @@ def _npx_launch(argv: list[str], env: Mapping[str, str], cwd: str | None, deadli
         return argv
     if request.command is None and "prefix" in config and (_global_bin(config["prefix"]) / request.specs[0]).is_file():
         return argv
-    prefix = _npx_install(request, env, deadline)
+    prefix = _npx_install(request, env, deadline, cache_root)
     started = _npx_started(prefix, request, env) if prefix is not None else None
     if started is None:
         logger.warning(
@@ -557,20 +563,28 @@ def _npx_launch(argv: list[str], env: Mapping[str, str], cwd: str | None, deadli
     return started
 
 
-def _npx_install(request: _NpxRequest, env: Mapping[str, str], deadline: float | None) -> Path | None:
+def _npx_install(
+    request: _NpxRequest, env: Mapping[str, str], deadline: float | None, cache_root: Path | None
+) -> Path | None:
     """Raven's own install of the packages ``request`` names, from the mirror:
     its directory, or None when there is none to start.
 
-    One directory per set of specs, as npx keeps one, under Raven's cache. An
+    One directory per set of specs, as npx keeps one, under the cache the
+    caller named -- Raven's own cache, or the node's own directory -- so two
+    installs of the same specs on two machines do not write over each other. An
     exact version is installed once. Anything else -- a range, a tag, a bare
     name -- is brought up to date at each launch (``npm update``), as npx asks
     the registry each time what it means now; when that fails, the install
     made before still starts. Launches of the same specs take turns.
-    """
-    from raven.home import raven_home
 
+    An install that was killed leaves a directory that looks installed and is
+    not, so a marker file says whether the last run of npm finished: an
+    install without one is done again. The lock is held by the process that
+    installs, and a stale one -- left by a Raven that died -- is broken, so an
+    npm this Raven started is never run beside another one.
+    """
     key = hashlib.sha256("\n".join(sorted(request.specs)).encode("utf-8")).hexdigest()[:16]
-    prefix = raven_home() / "cache" / "npx" / key
+    prefix = (cache_root if cache_root is not None else _default_cache_root()) / key
     manifest = {"private": True, "dependencies": {name: version or "latest" for name, version in request.packages}}
     # Another launch of the same specs may be installing here. The wait is
     # bounded by the caller's own budget: past it the launch starts as it was
@@ -582,18 +596,101 @@ def _npx_install(request: _NpxRequest, env: Mapping[str, str], deadline: float |
         written = _read_json(prefix / "package.json")
         if written != manifest:
             (prefix / "package.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        installed = written == manifest and all(
-            (prefix / "node_modules" / name / "package.json").is_file() for name, _ in request.packages
+        installed = (
+            written == manifest
+            and (prefix / ".installed").is_file()
+            and all((prefix / "node_modules" / name / "package.json").is_file() for name, _ in request.packages)
+        )
+        if installed and all(_EXACT_VERSION.fullmatch(version) for _, version in request.packages):
+            return prefix
+        # An npm of a Raven that died is still installing here: this lock is
+        # free, that npm is not. Wait for it rather than run a second one over
+        # the same directory.
+        _await_orphan(prefix, deadline)
+        installed = (
+            written == manifest
+            and (prefix / ".installed").is_file()
+            and all((prefix / "node_modules" / name / "package.json").is_file() for name, _ in request.packages)
         )
         if installed and all(_EXACT_VERSION.fullmatch(version) for _, version in request.packages):
             return prefix
         if deadline is not None and time.monotonic() >= deadline:
             # The budget is spent: the launch starts as it was configured
-            # rather than hold the answer back.
+            # rather than hold the answer back, and the install made before
+            # still starts.
             return prefix if installed else None
         if _npm_install(prefix, "update" if installed else "install", env, deadline):
+            (prefix / ".installed").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             return prefix
         return prefix if installed else None
+
+
+def _await_orphan(prefix: Path, deadline: float | None) -> None:
+    """Wait for an npm this Raven started before it died, if it is still running.
+
+    It writes the same directory this install would, so a second npm over it
+    would write the same files at once. The pid is in the directory beside the
+    lock, and a pid that is gone is removed.
+    """
+    from raven.utils.pid import pid_alive
+
+    pid_file = prefix / "install.pid"
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return
+    if not pid_alive(pid):
+        with contextlib.suppress(OSError):
+            pid_file.unlink()
+        return
+    logger.info("waiting for an npm still installing in {}", prefix)
+    while pid_alive(pid):
+        if deadline is not None and time.monotonic() >= deadline:
+            return
+        time.sleep(0.2)
+    with contextlib.suppress(OSError):
+        pid_file.unlink()
+
+
+def _default_cache_root() -> Path:
+    """Where a launch's own install goes when the caller names no directory."""
+    from raven.home import raven_home
+
+    return raven_home() / "cache" / "npx"
+
+
+def _await_orphan(prefix: Path, deadline: float | None) -> None:
+    """Wait for an npm this Raven started before it died, if it is still running.
+
+    It writes the same directory this install would, so a second npm over it
+    would write the same files at once. The pid is in the directory beside the
+    lock, and a pid that is gone is removed.
+    """
+    from raven.utils.pid import pid_alive
+
+    pid_file = prefix / "install.pid"
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return
+    if not pid_alive(pid):
+        with contextlib.suppress(OSError):
+            pid_file.unlink()
+        return
+    logger.info("waiting for an npm still installing in {}", prefix)
+    while pid_alive(pid):
+        if deadline is not None and time.monotonic() >= deadline:
+            return
+        time.sleep(0.2)
+    with contextlib.suppress(OSError):
+        pid_file.unlink()
+
+
+def _default_cache_root() -> Path:
+    """Where a launch's own install goes when the caller names no directory."""
+    from raven.home import raven_home
+
+    return raven_home() / "cache" / "npx"
 
 
 def _npm_install(prefix: Path, verb: str, env: Mapping[str, str], deadline: float | None) -> bool:
@@ -624,6 +721,9 @@ def _npm_install(prefix: Path, verb: str, env: Mapping[str, str], deadline: floa
     except OSError as exc:
         logger.warning("npm could not be started in {}: {}", prefix, exc)
         return False
+    pid_file = prefix / "install.pid"
+    with contextlib.suppress(OSError):
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -631,6 +731,9 @@ def _npm_install(prefix: Path, verb: str, env: Mapping[str, str], deadline: floa
         proc.communicate()
         logger.warning("npm {} in {} did not finish in {:.0f}s", verb, prefix, timeout)
         return False
+    finally:
+        with contextlib.suppress(OSError):
+            pid_file.unlink()
     if proc.returncode != 0:
         said = out.decode("utf-8", "replace").strip()[-800:]
         logger.warning("npm {} in {} failed (exit {}): {}", verb, prefix, proc.returncode, said)
@@ -807,6 +910,7 @@ def package_launch(
     *,
     local: bool = True,
     budget: float | None = None,
+    cache_root: Path | None = None,
 ) -> list[str]:
     """``argv``, or a command line that fetches the same package from a
     mirror, where a ``uvx`` or ``npx`` launch cannot reach its default
@@ -841,26 +945,33 @@ def package_launch(
     ``budget`` is how long the preparation may take, in seconds: past it the
     launch starts as configured rather than hold the answer back. A caller
     that answers within a budget of its own -- the Raven node, whose host
-    waits 60 s for the answer -- passes it.
+    waits 60 s for the answer -- passes it. ``cache_root`` is where the
+    install of an npx launch goes; a node keeps its own under its own
+    directory rather than in the home of the user it runs as.
     """
     if not argv or not enabled():
         return list(argv)
     deadline = time.monotonic() + budget if budget is not None else None
     try:
-        return _package_launch(list(argv), env, cwd, local, deadline)
+        return _package_launch(list(argv), env, cwd, local, deadline, cache_root)
     except Exception as exc:  # noqa: BLE001 - the mirror is a way around an outage, never a gate
         logger.opt(exception=exc).warning("could not decide on a mirror for {!r}; it starts as configured", argv[0])
         return list(argv)
 
 
 def _package_launch(
-    argv: list[str], env: Mapping[str, str], cwd: str | None, local: bool, deadline: float | None
+    argv: list[str],
+    env: Mapping[str, str],
+    cwd: str | None,
+    local: bool,
+    deadline: float | None,
+    cache_root: Path | None,
 ) -> list[str]:
     program = _program(argv[0])
     if program == "uvx":
         return _uvx_launch(argv, env, deadline)
     if program == "npx" and local:
-        return _npx_launch(argv, env, cwd, deadline)
+        return _npx_launch(argv, env, cwd, deadline, cache_root)
     return argv
 
 
@@ -889,9 +1000,10 @@ async def package_launch_async(
     *,
     local: bool = True,
     budget: float | None = None,
+    cache_root: Path | None = None,
 ) -> list[str]:
     """:func:`package_launch` off the event loop, since its probe and npm block."""
-    return await asyncio.to_thread(package_launch, argv, env, cwd, local=local, budget=budget)
+    return await asyncio.to_thread(package_launch, argv, env, cwd, local=local, budget=budget, cache_root=cache_root)
 
 
 __all__ = [

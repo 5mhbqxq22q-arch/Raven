@@ -891,6 +891,43 @@ class TestNpxLaunches:
         assert mirrors.package_launch(argv, self._env(tmp_path), str(project), budget=0.0) == argv
         assert installs.runs == [], "no npm runs past the budget"
 
+    def test_the_install_goes_where_the_caller_names(self, network, installs, project, tmp_path) -> None:
+        """A node keeps its own under its own directory, not in the home of the
+        user it runs as."""
+        cache = tmp_path / "node" / "npx"
+
+        mirrors.package_launch(["npx", "-y", "@acme/agent"], self._env(tmp_path), str(project), cache_root=cache)
+
+        assert [prefix.parent for prefix, _verb in installs.runs] == [cache]
+
+    def test_an_install_that_did_not_finish_is_done_again(self, network, installs, project, tmp_path) -> None:
+        """A killed install leaves a directory that looks installed and is not,
+        so a marker says whether the last run of npm finished."""
+        installs.fails = True
+        argv = ["npx", "-y", "@acme/agent@1.4.0"]
+
+        mirrors.package_launch(argv, self._env(tmp_path), str(project))
+        mirrors.package_launch(argv, self._env(tmp_path), str(project))
+
+        assert [verb for _prefix, verb in installs.runs] == ["install", "install"]
+
+    def test_an_npm_left_running_by_a_dead_raven_is_not_run_beside(self, network, installs, project, tmp_path) -> None:
+        """The lock is free, that npm is not: it writes the same directory this
+        install would, and a second npm over it writes the same files at once.
+        The wait ends with the launch's own budget."""
+        argv = ["npx", "-y", "@acme/agent"]
+        key = hashlib.sha256("\n".join(sorted(["@acme/agent"])).encode("utf-8")).hexdigest()[:16]
+        prefix = tmp_path / "raven" / "cache" / "npx" / key
+        prefix.mkdir(parents=True)
+        npm = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        (prefix / "install.pid").write_text(str(npm.pid), encoding="utf-8")
+        try:
+            assert mirrors.package_launch(argv, self._env(tmp_path), str(project), budget=1.0) == argv
+            assert installs.runs == [], "no npm runs beside the one that is still going"
+        finally:
+            npm.kill()
+            npm.wait(timeout=10)
+
     def test_a_launch_past_its_budget_does_not_wait_for_another_install(
         self, network, installs, project, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
