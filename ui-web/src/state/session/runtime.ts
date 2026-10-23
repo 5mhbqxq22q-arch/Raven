@@ -88,6 +88,11 @@ export class SessionRuntime {
      running, so a stop that arrives late cannot land on the next turn. */
   openedTurn: string | null = null
 
+  /* Set by the notice that says the model chose not to reply, and read when the
+     turn lands: such a turn has no answer, so nothing it said is promoted into
+     one. Cleared with the rest of the turn by `reset`. */
+  silent = false
+
   /* Only read while off screen, same as `phase`. */
   queue: string[] = []
 
@@ -158,7 +163,7 @@ export const state = (): SessionRuntime => viewRuntime()
 /** Back to a conversation with no turn running. */
 export function reset(rt: SessionRuntime = viewRuntime()): void {
   transcript.stopStream()
-  rt.st = null; rt.steps = []; rt.say = ''; rt.open.clear(); rt.sawEpisode = false
+  rt.st = null; rt.steps = []; rt.say = ''; rt.open.clear(); rt.sawEpisode = false; rt.silent = false
   rt.openedTurn = null
   rt.startedAt = Date.now()
   rt.answerAt = 0
@@ -204,7 +209,7 @@ export function finishTurn(payload: unknown, rt: SessionRuntime = viewRuntime())
   transcript.killStatus()
   /* The island promotes the streamed prose into the answer block where the
      prose stood, merges the silent stretches and folds the turn. */
-  transcript.finishTurn(rt.st, rt.steps, duration(p.duration_ms, rt))
+  transcript.finishTurn(rt.st, rt.steps, duration(p.duration_ms, rt), rt.silent)
   /* The turn's products close it, after the answer and after any note: the
      bar is the last line of a turn, and it is only drawn once the turn is
      over -- nothing grows it mid-flight. */
