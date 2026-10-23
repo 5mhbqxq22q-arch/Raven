@@ -427,5 +427,5 @@ async def test_an_untargeted_cancel_does_not_touch_a_direct_turn(
         await teardown()
         turn_mod._active_turns.clear()
 
-    assert result == {"cancelled": False}
+    assert result == {"cancelled": False, "busy": False}
     assert not touched_the_instance, "an untargeted cancel tore down a sub-agent the user was not watching"

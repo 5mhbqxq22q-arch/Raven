@@ -247,6 +247,48 @@ async def test_running_turn_is_none_once_the_turn_task_has_ended():
     assert await asyncio.wait_for(handle.result(), timeout=1.0) is None
 
 
+async def test_is_busy_while_a_turn_runs_and_not_once_it_has_ended():
+    runner = HangingRunner()
+    sched = _scheduler(runner)
+    assert not sched.is_busy("tg:1")
+    handle = sched.submit(_req(channel="tg", chat_id="1"))
+    await runner.started.wait()
+    assert sched.is_busy("tg:1")
+    await handle.cancel()
+    assert await asyncio.wait_for(handle.result(), timeout=1.0) is None
+    assert not sched.is_busy("tg:1")
+
+
+@pytest.mark.parametrize("behind", [None, BusyPolicy.APPEND, BusyPolicy.INJECT])
+async def test_a_lane_is_busy_only_with_what_waits_behind_a_turn_that_has_stopped(behind):
+    """Between the running turn stopping and the worker resolving it,
+    ``has_inflight`` still reports the finished turn. What is left to run there
+    is only what waits behind it: a queued turn, or an inject the worker runs as
+    a turn of its own."""
+    runner = HangingRunner()
+    sched = _scheduler(runner)
+    handle = sched.submit(_req(channel="tg", chat_id="1"))
+    await runner.started.wait()
+    waiting = None if behind is None else sched.submit(_req(channel="tg", chat_id="1", busy=behind))
+    lane = sched._lanes["tg:1"]
+    live = lane._run_task
+    ended = asyncio.get_running_loop().create_future()
+    ended.set_result(None)
+    lane._run_task = ended
+    try:
+        assert sched.has_inflight("tg:1")
+        assert sched.is_busy("tg:1") is (behind is not None)
+    finally:
+        # Even on a failed assertion: when the loop's closing sweep cancels the
+        # hanging turn, the worker starts whatever waits behind it, and that
+        # turn hangs the run.
+        lane._run_task = live
+        if waiting is not None:
+            await waiting.cancel()
+        await handle.cancel()
+    assert await asyncio.wait_for(handle.result(), timeout=1.0) is None
+
+
 # --- lane reaper (idle recycling + recycle/submit atomicity) ---
 
 

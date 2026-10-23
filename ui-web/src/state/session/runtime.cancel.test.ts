@@ -21,11 +21,13 @@ type Pipeline = typeof import('./pipeline')
 
 interface Row { id: string; title?: string; status?: string | null; last?: string }
 
+interface CancelReply { cancelled: boolean; busy?: boolean }
+
 async function harness({ turnKept = true, rows = [{ id: 's1' }] as Row[] } = {}) {
   const log: unknown[][] = []
   const queue: string[] = []
   const asked: Array<[string, unknown]> = []
-  let settleCancel: { res: (reply: { cancelled: boolean }) => void; rej: (e: unknown) => void } | null = null
+  let settleCancel: { res: (reply: CancelReply) => void; rej: (e: unknown) => void } | null = null
   document.body.innerHTML = '<h1 id="title"></h1><div id="stage"></div><div id="flash"></div>'
   /* The modules under test are imported deepest first, which is the order that
      keeps one module graph: the fakes are installed around the modules the
@@ -113,7 +115,7 @@ async function harness({ turnKept = true, rows = [{ id: 's1' }] as Row[] } = {})
   await fakeGateway((method: string, params: unknown) => {
     asked.push([method, params])
     if (method === 'turn.cancel') {
-      return new Promise<{ cancelled: boolean }>((res, rej) => { settleCancel = { res, rej } })
+      return new Promise<CancelReply>((res, rej) => { settleCancel = { res, rej } })
     }
     return Promise.resolve({})
   })
@@ -134,7 +136,7 @@ async function harness({ turnKept = true, rows = [{ id: 's1' }] as Row[] } = {})
     asked,
     rows,
     sent: () => asked.filter(([m]) => m === 'turn.send').map(([, p]) => (p as { content: string }).content),
-    settle: (reply = { cancelled: true }) => { settleCancel!.res(reply); return tick() },
+    settle: (reply: CancelReply = { cancelled: true }) => { settleCancel!.res(reply); return tick() },
     refuse: () => { settleCancel!.rej(new Error('gone')); return tick() },
     did: (name: string) => log.filter((c) => c[0] === name),
     tick,
@@ -293,7 +295,57 @@ describe('the reply to turn.cancel', () => {
     expect(h.sent()).toEqual([])
   })
 
-  it('lets the page go when a refused id had nothing newer behind it', async () => {
+  it('stays busy for a newer turn whose opening frame the refusal outran', async () => {
+    /* The newer turn's first frame waits out the server's coalescing window and
+       the reply does not, so the refusal can land first. It says the lane is
+       still busy: going idle would release the queue under that turn. Nothing
+       here can name the turn until its frame arrives, so it cannot be stopped
+       before then. */
+    const h = await harness()
+    h.pipeline.dispatch({ type: 'turn.started', payload: { turn_id: 't-a' } })
+    h.queue.push('the queued one')
+
+    h.runtime.stop()
+    h.pipeline.dispatch({ type: 'message.complete', payload: { usage: {} } })
+    await h.settle({ cancelled: false, busy: true })
+
+    expect(turn.phase()).toBe('streaming')
+    expect(turn.cancellable()).toBe(false)
+    expect(h.queue).toEqual(['the queued one'])
+    expect(h.sent()).toEqual([])
+
+    h.pipeline.dispatch({ type: 'turn.started', payload: { turn_id: 't-b' } })
+
+    expect(turn.cancellable()).toBe(true)
+    expect(h.runtime.state().openedTurn).toBe('t-b')
+  })
+
+  it('lets a busy conversation go when the turn it waited for ends without ever opening', async () => {
+    /* A cron wake on the lane sends no opening frame, so nothing names it; the
+       frame that ends it is the one every turn sends, and the queue goes out
+       there. */
+    const h = await harness()
+    h.pipeline.dispatch({ type: 'turn.started', payload: { turn_id: 't-a' } })
+    h.queue.push('the queued one')
+
+    h.runtime.stop()
+    h.pipeline.dispatch({ type: 'message.complete', payload: { usage: {} } })
+    await h.settle({ cancelled: false, busy: true })
+    expect(h.sent()).toEqual([])
+    h.pipeline.dispatch({ type: 'message.complete', payload: { usage: {} } })
+
+    expect(h.sent()).toEqual(['the queued one'])
+    expect(turn.phase()).toBe('sending')
+  })
+
+  /* A server older than the `busy` field says nothing about the lane, and that
+     has to read the way a refusal always did. */
+  const NOTHING_BEHIND: Array<[string, CancelReply]> = [
+    ['says the lane is free', { cancelled: false, busy: false }],
+    ['is older than the busy field', { cancelled: false }],
+  ]
+
+  it.each(NOTHING_BEHIND)('lets the conversation go when a refused id had nothing newer behind it: the server %s', async (_how, reply) => {
     /* Nothing was left to stop: the page must not sit in `cancelling`, and the
        engine is free, so the queue goes out as after a finished turn. */
     const h = await harness()
@@ -302,7 +354,7 @@ describe('the reply to turn.cancel', () => {
 
     h.runtime.stop()
     h.pipeline.dispatch({ type: 'message.complete', payload: { usage: {} } })
-    await h.settle({ cancelled: false })
+    await h.settle(reply)
 
     expect(h.sent()).toEqual(['the queued one'])
     expect(turn.phase()).toBe('sending')

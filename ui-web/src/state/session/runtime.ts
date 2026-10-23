@@ -404,6 +404,16 @@ export function stop(): void {
          opened never sets it -- and that turn is the one running now: going
          idle would take its stop button and release the queue into it. */
       if (r.cancelled === false && rt && (isActiveRuntime(rt) ? turn.phase() : rt.phase.phase) !== 'cancelling') return
+      /* Refused, and the lane still has a turn to run whose first frame is not
+         here yet: the reply does not wait out the server's coalescing window,
+         and that frame does. Going idle would release the queue under that
+         turn, so the conversation stays busy, with no stop to offer until the
+         frame arrives and says which turn it is. */
+      if (r.cancelled === false && r.busy === true) {
+        rt?.dispatch({ type: 'stream', cancellable: false })
+        if (sessionCurrent() === owner) { drawMeter(); goState() }
+        return
+      }
       rt?.dispatch({ type: 'idle' })
       if (sessionCurrent() === owner) { drawMeter(); goState(); sessionDraw(); drain() }
     }, () => {
