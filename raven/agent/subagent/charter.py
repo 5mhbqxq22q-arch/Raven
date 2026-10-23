@@ -76,7 +76,8 @@ class Charter:
     """Enabled generated participant sources, stored as immutable name-source
     pairs. ``judge`` is one of them: it was once a ``code`` field beside a
     declarative rule table, and the table could say nothing ``judge`` cannot.
-    Compiled behind the gate in ``charter_code``, which admits an allow-listed
+    A table migrated from that era rides in the ``judge`` source as
+    ``rules_judge``; see ``charter_code.COMPANIONS``. Compiled behind the gate in ``charter_code``, which admits an allow-listed
     subset and nothing else; a source that does not pass never runs, and one
     that raises at run time has said nothing rather than refused everything."""
 
@@ -372,8 +373,9 @@ def judge(
     A refusal is a sentence, not an exception: it reaches the model as the
     call's result, so the next attempt can be right. One source rather than
     two -- a declarative rule table used to run ahead of this, and everything
-    it could say ``judge`` can say, so a reader no longer has to check both to
-    know what a seat refuses.
+    it could say ``judge`` can say. A table migrated from that era is carried
+    in the same source as ``rules_judge`` and still asked first, so what a
+    seat refuses is read from one place.
 
     Cheap by contract: this runs before every dispatch and ahead of the
     permission gate. The gate in ``charter_code`` is what keeps it so -- no

@@ -180,8 +180,9 @@ _Avoid_: applying it as given. Every field is an intersection with what this ins
 allows -- a charter may take a tool away and may not hand one back, may shorten a deadline
 and may not lengthen one -- which is what makes it safe to accept from another process. And
 reading a refused judge as a refusal: source the gate rejects is dropped with a log line, and
-a judge that raises has said nothing -- with one judgement seat rather than a rule table
-beside it, silence is the whole of what a refused source leaves behind.
+a judge that raises has said nothing, for itself only: a rule table migrated from a
+pre-merge `checks` block rides in the same source as a `rules_judge` of its own, asked apart
+from the hand-written `judge`, so a raise in one leaves the other's refusals standing.
 
 **Turn Runner**:
 The behavioural `Protocol` seam between Spine and an agent implementation:
