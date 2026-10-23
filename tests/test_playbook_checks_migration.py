@@ -81,12 +81,21 @@ def test_a_stored_harness_with_a_hand_written_judge_keeps_it_whole() -> None:
 
 
 HAND_WRITTEN = "def judge(name, params, prior):\n    if name == 'exec':\n        return ['from the code']\n"
+RAISING = "def judge(name, params, prior):\n    if name == 'grep':\n        return []\n    return [params['missing']]\n"
 
 
-def _merged(code: str = HAND_WRITTEN, rules: list[dict] | None = None):
+def _migrated(code: str = HAND_WRITTEN, rules: list[dict] | None = None) -> str:
     migrated = migrated_action({"checks": {"code": code, "rules": THREE_RULES if rules is None else rules}})
     assert "checks" not in migrated
-    return compile_function(migrated["functions"]["judge"], "judge")
+    return migrated["functions"]["judge"]
+
+
+def _dispatch(source: str, name: str, params: dict, prior: list) -> list[str]:
+    """What the seat refuses, asked the way a dispatch asks it."""
+    from raven.agent.subagent.charter import Charter, charter_scope, judge
+
+    with charter_scope(Charter(functions=(("judge", source),))):
+        return judge(name, params, prior)
 
 
 @pytest.mark.parametrize(
@@ -103,7 +112,41 @@ def test_a_hand_written_judge_and_the_table_beside_it_both_refuse(name, params, 
     """The pre-merge runtime ran the table and then the code, and a call either
     refused did not run. Keeping the code alone would have let every call the
     table refused through, with nothing on the seat to say so."""
-    assert run_function(_merged(), name, params, prior) == expected
+    assert _dispatch(_migrated(), name, params, prior) == expected
+
+
+def test_a_call_both_halves_refuse_carries_both_refusals() -> None:
+    code = "def judge(name, params, prior):\n    return ['from the code'] if name == 'write_file' else []\n"
+
+    assert _dispatch(_migrated(code), "write_file", {"path": "/etc/passwd"}, []) == [
+        "write under ./out/",
+        "read it first",
+        "from the code",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "expected"),
+    [
+        ("write_file", {"path": "/etc/passwd"}, ["write under ./out/", "read it first"]),
+        ("exec", {"command": "rm -rf /"}, ["no rm -rf"]),
+    ],
+)
+def test_a_hand_written_judge_that_raises_leaves_the_table_refusing(name, params, expected) -> None:
+    """The old runtime ran the table, then the code behind a guard that read a
+    raise as no opinion, so a broken judge cost its own refusals and nothing
+    else. A raise that silenced the table too would turn every call it
+    refused into permission."""
+    assert _dispatch(_migrated(RAISING), name, params, []) == expected
+
+
+def test_the_hand_written_judge_is_kept_whole_beside_the_table() -> None:
+    """Its own control flow is what it was written with. Folding the table
+    into its body would have to rewrite its returns."""
+    source = _migrated()
+
+    assert source.startswith(HAND_WRITTEN.strip())
+    compile_function(source, "judge")
 
 
 def test_the_call_the_old_table_refused_is_still_refused_when_a_dispatch_reads_it() -> None:
@@ -126,24 +169,13 @@ def test_the_call_the_old_table_refused_is_still_refused_when_a_dispatch_reads_i
     assert coded == ["from the code"]
 
 
-def test_the_merge_reads_the_arguments_the_hand_written_judge_named() -> None:
-    """The gate checks a judge's arity, not its argument names, so the table's
-    checks have to read whatever the author called them."""
+def test_the_table_does_not_depend_on_the_arguments_the_hand_written_judge_named() -> None:
+    """The gate checks a judge's arity, not its argument names."""
     code = "def judge(tool, args, history):\n    return 'own: ' + tool if tool == 'grep' else []\n"
-    judge = _merged(code)
+    source = _migrated(code)
 
-    assert run_function(judge, "write_file", {"path": "/etc/passwd"}, []) == ["write under ./out/", "read it first"]
-    assert run_function(judge, "grep", {"pattern": "x"}, []) == ["own: grep"]
-
-
-def test_the_merge_does_not_reuse_a_name_the_hand_written_judge_holds() -> None:
-    code = (
-        "def judge(name, params, prior):\n"
-        "    migrated_refusals = ['from the code'] if name == 'exec' else []\n"
-        "    return migrated_refusals\n"
-    )
-
-    assert run_function(_merged(code), "exec", {"command": "rm -rf /"}, []) == ["no rm -rf", "from the code"]
+    assert _dispatch(source, "write_file", {"path": "/etc/passwd"}, []) == ["write under ./out/", "read it first"]
+    assert _dispatch(source, "grep", {"pattern": "x"}, []) == ["own: grep"]
 
 
 @pytest.mark.parametrize(
@@ -152,13 +184,17 @@ def test_the_merge_does_not_reuse_a_name_the_hand_written_judge_holds() -> None:
         "def judge(name, params, str):\n    return []\n",
         "def judge(name, params, prior):\n    str = 'shadow'\n    return []\n",
         "def judge(name, params, prior):\n    return [isinstance for isinstance in [1] if False]\n",
-        "def list(x):\n    return []\n\ndef judge(name, params, prior):\n    return []\n",
     ],
 )
-def test_a_hand_written_judge_that_rebinds_a_builtin_refuses_the_load(code: str) -> None:
-    """A name bound anywhere in a function is local throughout it. The table's
-    ``str(...)`` would then fail before the author's assignment ran, the whole
-    judge would answer silence, and every call the table refused would run."""
+def test_a_name_the_hand_written_judge_binds_for_itself_does_not_reach_the_table(code: str) -> None:
+    assert _dispatch(_migrated(code), "exec", {"command": "rm -rf /"}, []) == ["no rm -rf"]
+
+
+def test_a_hand_written_source_that_redefines_a_builtin_refuses_the_load() -> None:
+    """Both functions share one module, so a top-level ``def list`` would be the
+    ``list`` the table calls."""
+    code = "def list(x):\n    return []\n\ndef judge(name, params, prior):\n    return []\n"
+
     with pytest.raises(ValueError, match="as its own name"):
         migrated_action({"checks": {"code": code, "rules": THREE_RULES}})
 
@@ -166,9 +202,24 @@ def test_a_hand_written_judge_that_rebinds_a_builtin_refuses_the_load(code: str)
 def test_a_hand_written_judge_the_gate_refuses_leaves_the_table_in_force() -> None:
     """The old runtime treated a judge it could not compile as having no
     opinion and still ran the table. The table alone is that behaviour."""
-    judge = _merged("def judge(name, params, prior):\n    import os\n    return []\n")
+    source = _migrated("def judge(name, params, prior):\n    import os\n    return []\n")
 
-    assert run_function(judge, "exec", {"command": "rm -rf /"}, []) == ["no rm -rf"]
+    assert _dispatch(source, "exec", {"command": "rm -rf /"}, []) == ["no rm -rf"]
+
+
+def test_a_judge_with_no_table_beside_it_is_asked_without_a_warning() -> None:
+    """Most judges carry no table, so finding none is not worth a log line."""
+    from loguru import logger
+
+    records: list[str] = []
+    sink = logger.add(lambda message: records.append(message.record["message"]), level="WARNING")
+    try:
+        refused = _dispatch(HAND_WRITTEN, "exec", {"command": "ls"}, [])
+    finally:
+        logger.remove(sink)
+
+    assert refused == ["from the code"]
+    assert records == []
 
 
 def test_a_hand_written_judge_with_no_table_beside_it_is_kept_byte_for_byte() -> None:
