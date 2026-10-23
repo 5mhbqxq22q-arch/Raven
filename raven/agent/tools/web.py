@@ -335,6 +335,17 @@ class WebSearchTool(Tool):
         """
         return cls(api_key=config_key or None, provider=provider).ready
 
+    @classmethod
+    def has_key(cls, config_key: str | None, provider: str = DEFAULT_SEARCH_PROVIDER) -> bool:
+        """Whether a search key actually resolves, from the config value or the
+        environment.
+
+        A different question from :meth:`is_configured` for a vendor that needs
+        no key: Keenable is configured without one, and a report asking whether
+        a credential exists must not read that readiness as a key.
+        """
+        return bool(cls(api_key=config_key or None, provider=provider).api_key)
+
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         # Resolved once per call: the vendor and key this request carries are
         # what a refusal is recorded against, so a key replaced while the

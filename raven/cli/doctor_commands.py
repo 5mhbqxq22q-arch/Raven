@@ -191,6 +191,10 @@ class ToolCapabilityInfo:
     #: the same as ``configured``: a model with no key is registered and fails
     #: on every call.
     has_credential: bool = True
+    #: Configured with no credential because the selected vendor needs none
+    #: (web_search on Keenable), so the missing key above is not a fault: calls
+    #: run unauthenticated at a lower rate limit.
+    keyless: bool = False
     #: Switched off by the deployment, so this row can be configured and still
     #: not offered. ``disabled_by`` names which setting did it.
     disabled: bool = False
@@ -447,6 +451,7 @@ def _gather_tools(config: "Config") -> ToolsInfo:
         is_configured,
         is_disabled,
         resolve,
+        runs_keyless,
     )
 
     return ToolsInfo(
@@ -458,6 +463,7 @@ def _gather_tools(config: "Config") -> ToolsInfo:
                 configured=is_configured(cap, config),
                 source=configured_from(cap, config),
                 has_credential=has_credential(cap, config),
+                keyless=runs_keyless(cap, config),
                 disabled=is_disabled(cap, config),
                 disabled_by=disabled_by(cap, config),
                 config_path=cap.config_path,
@@ -771,7 +777,7 @@ def _render_tool_capabilities(tools: ToolsInfo) -> None:
             where = f"  [dim]({cap.source})[/dim]" if cap.source else ""
             # The marker carries the answer too: a green tick above a line
             # saying every call fails is the same misreport in miniature.
-            mark = "[green]✓[/green]" if cap.has_credential else "[yellow]![/yellow]"
+            mark = "[green]✓[/green]" if cap.has_credential or cap.keyless else "[yellow]![/yellow]"
             if cap.disabled:
                 # Not a tick and not a fault: switched off is a decision
                 # someone made, and the row says whose decision it was so it
@@ -781,7 +787,7 @@ def _render_tool_capabilities(tools: ToolsInfo) -> None:
             if cap.disabled:
                 console.print(f"{indent}[dim]switched off in[/dim] {cap.disabled_by}")
                 continue
-            if not cap.has_credential:
+            if not cap.has_credential and not cap.keyless:
                 console.print(f"{indent}[yellow]no key resolves; calls will fail[/yellow]")
                 console.print(f"{indent}[dim]set:[/dim] {cap.key_path}")
                 if cap.env_var:
