@@ -310,3 +310,46 @@ async def test_one_tool_calling_step_offers_review_both_moments() -> None:
 
     assert ("execute_tools", False) in seen, "the moment that can keep the calls from running"
     assert ("after_iteration", True) in seen, "the moment that judges what they returned"
+
+
+class _RecordingKwargs(_Provider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.kwargs_per_call: list[dict[str, Any]] = []
+
+    async def chat_with_retry(self, messages, tools=None, model=None, **kwargs) -> LLMResponse:
+        self.kwargs_per_call.append(dict(kwargs))
+        return await self._answer(messages, tools)
+
+
+@pytest.mark.asyncio
+async def test_a_resample_carries_its_overrides_on_the_next_call_and_no_other() -> None:
+    """The contract says ``overrides`` ride on the re-sampled call, and the ACP
+    lane honours that. A key outside the allowlist is dropped there, so it is
+    dropped here too rather than handed to a provider that does not know it."""
+    source = (
+        "def review(step):\n"
+        "    if step.get('iteration') == 1 and step.get('phase') == 'after_iteration':\n"
+        "        return {'verdict': 'resample', 'reason': 'colder', 'inject': None,\n"
+        "                'overrides': {'temperature': 0.1, 'max_tokens': 77, 'model': 'other'}, 'note': None}\n"
+        "    return None"
+    )
+    tmp = Path(tempfile.mkdtemp())
+    provider = _RecordingKwargs()
+    provider.tool_call = ("read_file", {"path": "missing.txt"})
+    backend = RavenLoopBackend(provider=provider, model="stub", agent_home=tmp / "home")
+    with dispatch_charter({"brief": "x", "functions": {"review": source}}):
+        await backend.run("do it", task_id="t1", workspace=tmp, executor=None)
+
+    assert provider.kwargs_per_call[0] == {}
+    assert provider.kwargs_per_call[1] == {"temperature": 0.1, "max_tokens": 77}
+    assert all(kwargs == {} for kwargs in provider.kwargs_per_call[2:])
+
+
+def test_the_resample_allowlist_is_the_main_loops_rollback_allowlist() -> None:
+    """One verdict, two lanes: a key one honours and the other drops would make
+    the same generated ``review`` behave differently by where it runs."""
+    from raven.agent.loop import AgentLoop
+    from raven.agent.subagent.backends.raven_loop import RESAMPLE_OVERRIDE_KEYS
+
+    assert RESAMPLE_OVERRIDE_KEYS == AgentLoop._ROLLBACK_OVERRIDE_KEYS

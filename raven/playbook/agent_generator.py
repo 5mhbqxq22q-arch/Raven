@@ -200,7 +200,8 @@ _FUNCTION_CONTRACTS: dict[str, dict[str, str]] = {
         "returns": (
             "None or {'verdict': 'accept'} for the step stands; {'verdict': 'resample', 'reason': ...} to "
             "send the loop back to the model, optionally with inject (a list of transcript messages) and "
-            "overrides; {'verdict': 'end', 'reply': ...} to close the turn. The loop bounds how many "
+            "overrides (temperature, max_tokens or reasoning_effort for that one call; other keys are "
+            "dropped); {'verdict': 'end', 'reply': ...} to close the turn. The loop bounds how many "
             "resamples a turn may spend, so a verb that always resamples ends the turn anyway."
         ),
     },
