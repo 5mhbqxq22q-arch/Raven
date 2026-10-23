@@ -924,6 +924,31 @@ async def test_a_refused_call_keeps_the_node(tmp_path):
     assert changed.value.reason == "changed", "the node's own refusal, by name, for the file tools"
 
 
+async def test_the_hosts_own_opt_out_travels_with_the_launch(tmp_path, monkeypatch):
+    """The daemon decides the mirror on the machine it runs on and cannot read
+    the host's environment, so the host's switch travels with the launch."""
+    pool = NodePool()
+    client = _live(pool, tmp_path, result={"pid": 4242})
+    monkeypatch.setenv("RAVEN_NO_MIRROR", "1")
+
+    await pool.open_channel("box", name="echo@box", command="agent --acp", cwd="~", env={})
+
+    asked = [params for method, params, _timeout in client.asked if method == protocol.AGENT_LAUNCH]
+    assert asked and asked[0].get("no_mirror") is True, "the switch reaches the machine"
+
+
+async def test_a_launch_without_the_switch_carries_none(tmp_path, monkeypatch):
+    """The machine's own environment decides then, as it did before."""
+    pool = NodePool()
+    client = _live(pool, tmp_path, result={"pid": 4242})
+    monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+
+    await pool.open_channel("box", name="echo@box", command="agent --acp", cwd="~", env={})
+
+    asked = [params for method, params, _timeout in client.asked if method == protocol.AGENT_LAUNCH]
+    assert asked and "no_mirror" not in asked[0]
+
+
 async def test_the_launch_is_answered_within_the_budget_the_protocol_names(tmp_path):
     """The host waits so long for the answer, and drops every agent of that
     machine when it does not come."""

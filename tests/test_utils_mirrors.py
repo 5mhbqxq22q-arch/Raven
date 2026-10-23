@@ -50,6 +50,29 @@ class TestTheOptOut:
 
         assert mirrors.enabled()
 
+    def test_the_launch_environment_counts_as_well(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A user who sets the switch in an agent's own environment, or in the
+        profile of the machine an agent runs on, means it there: the agent may
+        run on another machine, and its own environment is what says."""
+        monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+
+        assert not mirrors.enabled({"RAVEN_NO_MIRROR": "1"})
+
+    @pytest.mark.parametrize("name", ["RAVEN_NO_MIRROR", "raven_no_mirror"])
+    def test_the_launch_environment_is_read_whatever_its_case(self, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+        """Windows does not tell one from the other, and npm reads its own
+        variables in either case."""
+        monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+
+        assert not mirrors.enabled({name: "1"})
+
+    def test_the_switch_is_told_apart_from_the_launch_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+
+        assert mirrors.opt_out({"RAVEN_NO_MIRROR": "1"})
+        assert not mirrors.opt_out({"RAVEN_NO_MIRROR": "0"})
+        assert not mirrors.opt_out()
+
 
 def _raised_from(error: BaseException, cause: BaseException) -> BaseException:
     try:
@@ -468,6 +491,17 @@ class TestPackageRunners:
         assert mirrors.package_launch(["npx", "-y", "pkg"], self._home(tmp_path)) == ["npx", "-y", "pkg"]
         assert mirrors.npm_registry_env(self._home(tmp_path)) == {}
         assert network.asked == []
+
+    def test_a_launch_that_asked_for_no_mirror_is_left_alone(self, network, tmp_path) -> None:
+        """The launch's own environment says the user does not want a mirror,
+        and the launch may be on another machine, where this process's
+        environment says nothing."""
+        network.down |= {mirrors.NPM_DEFAULT_REGISTRY, mirrors.PYPI_DEFAULT_INDEX}
+        env = {**self._home(tmp_path), "RAVEN_NO_MIRROR": "1"}
+
+        assert mirrors.package_launch(["uvx", "pkg"], env) == ["uvx", "pkg"]
+        assert mirrors.package_launch(["npx", "-y", "pkg"], env) == ["npx", "-y", "pkg"]
+        assert network.asked == [], "a choice already made is not second-guessed"
 
     def test_a_fault_while_deciding_leaves_every_launch_as_configured(
         self, network, tmp_path, monkeypatch: pytest.MonkeyPatch

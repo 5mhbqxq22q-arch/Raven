@@ -66,13 +66,45 @@ NPM_REGISTRY = "https://registry.npmmirror.com"
 PYTHON_DOWNLOADS = "https://registry.npmmirror.com/-/binary/python-build-standalone"
 
 
-def enabled() -> bool:
-    """Whether a download may fall back to a mirror at all.
+def opt_out(env: Mapping[str, str] | None = None) -> bool:
+    """Whether the switch that turns mirrors off is set.
 
     Read the way raven's other opt-outs are read, so the installer and the
     `raven resources` it starts agree on what a value means.
+
+    The environment of the launch counts as well as this process's own: a user
+    who sets the switch in an agent's own environment, or in the profile of the
+    machine an agent runs on, means it there.
     """
-    return os.environ.get(OPT_OUT_ENV, "").strip().lower() not in _TRUTHY
+    if env is not None and _truthy(_env_value(env, OPT_OUT_ENV)):
+        return True
+    return _truthy(os.environ.get(OPT_OUT_ENV))
+
+
+def enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether a download may fall back to a mirror at all.
+
+    The switch is read as :func:`opt_out` reads it.
+    """
+    return not opt_out(env)
+
+
+def _env_value(env: Mapping[str, str], name: str) -> str | None:
+    """The value ``name`` holds in ``env``, whatever its case, or None.
+
+    Windows does not tell one from the other, and npm reads its own variables
+    in either case.
+    """
+    wanted = name.lower()
+    for key, value in env.items():
+        if key.lower() == wanted:
+            return value
+    return None
+
+
+def _truthy(value: str | None) -> bool:
+    """Whether a value says yes, as raven's other opt-outs read one."""
+    return (value or "").strip().lower() in _TRUTHY
 
 
 #: What a socket says of a host no route leads to; Python raises these as a
@@ -341,7 +373,7 @@ def npm_registry_env(env: Mapping[str, str], cwd: str | None = None) -> dict[str
     an npx launch is never given one. May block for a probe and for npm itself,
     and never raises: a fault while deciding leaves npm as it is.
     """
-    if not enabled():
+    if not enabled(env):
         return {}
     try:
         return _npm_registry_env(env, cwd)
@@ -938,7 +970,7 @@ def package_launch(
     choice of index or registry would be found, and ``cwd`` the directory it
     starts in, this process's own when None. A choice already made -- in the
     environment, a configuration file, or on the command line -- stands, and
-    ``RAVEN_NO_MIRROR`` leaves every launch alone. May block for a probe and
+    ``RAVEN_NO_MIRROR`` in that environment leaves every launch alone. May block for a probe and
     for npm; see :func:`package_launch_async`. Never raises: a fault while
     deciding leaves the launch as it was configured.
 
@@ -949,7 +981,7 @@ def package_launch(
     install of an npx launch goes; a node keeps its own under its own
     directory rather than in the home of the user it runs as.
     """
-    if not argv or not enabled():
+    if not argv or not enabled(env):
         return list(argv)
     deadline = time.monotonic() + budget if budget is not None else None
     try:
@@ -1018,6 +1050,7 @@ __all__ = [
     "PYTHON_DOWNLOADS",
     "enabled",
     "npm_registry_env",
+    "opt_out",
     "package_launch",
     "package_launch_async",
     "unreachable",

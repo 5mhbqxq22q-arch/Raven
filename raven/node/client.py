@@ -59,6 +59,7 @@ from raven.mcp.bridge import iter_raw_frames
 from raven.mcp.transport import open_endpoint
 from raven.node import bundle, protocol
 from raven.ops import remote_path
+from raven.utils import mirrors
 
 #: Where a machine keeps its nodes when its registry row names nowhere else
 #: (``node_dir``). ``~`` is the registered user's home there.
@@ -593,6 +594,12 @@ class NodePool:
         # Registered before the launch, so a frame the agent writes at once has somewhere to go.
         node.channels[channel] = endpoint
         params = {"channel": channel, "task": task, "command": command, "cwd": cwd, "env": dict(env)}
+        # The host's own switch travels with the launch: the daemon decides
+        # the mirror on the machine it runs on, and it cannot read the host's
+        # environment. The launch's own environment keeps its own value, which
+        # the daemon reads as well.
+        if mirrors.opt_out():
+            params["no_mirror"] = True
         launch = asyncio.ensure_future(self._launch_agent(machine_id, node, channel, name, params))
         try:
             started = await asyncio.shield(launch)

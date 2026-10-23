@@ -1248,11 +1248,18 @@ class Daemon:
             argv = _argv(params)
             env = {**await self.env(), **_env(params)}
             cwd = Path(_text(params, "cwd")).expanduser()
+            # The host's own switch travels with the launch, and this machine's
+            # own environment is read as well: a user who turned mirrors off
+            # where Raven runs meant it there too.
+            mirror_env = {**env, mirrors.OPT_OUT_ENV: "1"} if _flag(params, "no_mirror") else env
             # Asked here rather than by the host: whether a registry answers
             # from this machine is not something the host's network can tell.
+            # The answer has to come in time: the host waits
+            # protocol.AGENT_LAUNCH_TIMEOUT_S and drops every agent of this
+            # machine when it does not.
             argv = await mirrors.package_launch_async(
                 argv,
-                env,
+                mirror_env,
                 str(cwd),
                 budget=protocol.AGENT_LAUNCH_PREPARE_S,
                 cache_root=self.root / "npx",

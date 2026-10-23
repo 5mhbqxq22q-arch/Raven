@@ -671,6 +671,57 @@ async def test_an_agent_starts_the_way_this_machine_s_mirror_fallback_says(tmp_p
 
 
 @pytest.mark.slow
+async def test_the_hosts_own_opt_out_turns_the_fallback_off_on_the_machine(tmp_path, agent, monkeypatch):
+    """The daemon decides on its own machine and cannot read the host's
+    environment, so the host's switch travels with the launch."""
+    from raven.utils import mirrors
+
+    monkeypatch.setattr(server, "capture_login_env", lambda: {**os.environ})
+    monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+    asked: list[dict[str, str]] = []
+    real = mirrors.package_launch
+
+    def package_launch(argv, env, cwd=None, *, local=True, budget=None, cache_root=None):
+        asked.append(dict(env))
+        return real(argv, env, cwd, local=local, budget=budget, cache_root=cache_root)
+
+    monkeypatch.setattr(mirrors, "package_launch", package_launch)
+    host = _Host()
+
+    await host.ask(
+        protocol.AGENT_LAUNCH,
+        {"channel": 1, "command": agent, "cwd": str(tmp_path), "no_mirror": True},
+    )
+
+    assert asked and asked[0].get("RAVEN_NO_MIRROR") == "1", "the host's switch reaches the decision"
+
+
+@pytest.mark.slow
+async def test_a_launch_whose_own_environment_says_so_is_left_alone(tmp_path, agent, monkeypatch):
+    """The switch in the entry's environment is the user's own, on this
+    machine too."""
+    from raven.utils import mirrors
+
+    monkeypatch.setattr(server, "capture_login_env", lambda: {**os.environ})
+    monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+    asked: list[dict[str, str]] = []
+
+    def package_launch(argv, env, cwd=None, *, local=True, budget=None, cache_root=None):
+        asked.append(dict(env))
+        return list(argv)
+
+    monkeypatch.setattr(mirrors, "package_launch", package_launch)
+    host = _Host()
+
+    await host.ask(
+        protocol.AGENT_LAUNCH,
+        {"channel": 1, "command": agent, "cwd": str(tmp_path), "env": {"RAVEN_NO_MIRROR": "1"}},
+    )
+
+    assert asked and asked[0].get("RAVEN_NO_MIRROR") == "1"
+
+
+@pytest.mark.slow
 async def test_a_cli_agent_s_prompt_reaches_its_stdin_as_it_is_and_the_end_of_it_lets_it_leave(tmp_path, agent):
     host = _Host()
     await host.ask(protocol.AGENT_LAUNCH, {"channel": 1, "command": agent, "cwd": str(tmp_path)})
