@@ -265,13 +265,16 @@ def connection_failed(exc):
     # certificate that fails verification is an answer, since whatever
     # re-signs this host re-signs the mirror too. A proxy's answer to the
     # request for a tunnel speaks for the host: a 5xx says it could not reach
-    # it, any other refusal is final, as the host's own error is.
+    # it, any other refusal is final, as the host's own error is. A refusal of
+    # the machine's own counts too, where it came from the network: the socket
+    # was never opened, and the mirror would be refused the same way.
     import errno
     import re
     import socket
     import ssl
 
     no_route = {getattr(errno, name) for name in ("ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN") if hasattr(errno, name)}
+    refused_locally = {getattr(errno, name) for name in ("EACCES", "EPERM") if hasattr(errno, name)}
     network = (ConnectionError, TimeoutError, socket.gaierror, ssl.SSLError)
     # exc and every error it was raised from or wraps, the nearest first.
     chain = []
@@ -291,6 +294,22 @@ def connection_failed(exc):
         if refused:
             return int(refused.group(1)) >= 500
         if isinstance(error, network) or (isinstance(error, OSError) and error.errno in no_route):
+            return True
+        if isinstance(error, OSError) and error.errno in refused_locally and from_the_network(chain, error):
+            return True
+    return False
+
+
+def from_the_network(chain, error):
+    # Whether the error is the reason of a URL the network was asked for.
+    # urllib reports a refused connect as a URLError whose reason is the
+    # socket's error; a refusal of a local file is the OSError itself.
+    import urllib.error
+
+    for other in chain:
+        if other is error:
+            continue
+        if isinstance(other, urllib.error.URLError) and other.reason is error:
             return True
     return False
 

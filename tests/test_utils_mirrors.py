@@ -99,10 +99,22 @@ class TestWhatCountsAsUnreachable:
             urllib.error.URLError(TimeoutError("timed out")),
             OSError(errno.EHOSTUNREACH, "No route to host"),
             urllib.error.URLError(OSError(errno.ENETUNREACH, "Network is unreachable")),
+            urllib.error.URLError(OSError(errno.EPERM, "Operation not permitted")),
+            urllib.error.URLError(OSError(errno.EACCES, "Permission denied")),
         ],
     )
     def test_a_connection_that_never_completed_is_unreachable(self, error: BaseException) -> None:
         assert mirrors.unreachable(error)
+
+    def test_a_connect_the_machine_refuses_is_unreachable(self) -> None:
+        """A sandbox or a local firewall refuses the socket before it is opened,
+        and the mirror would be refused the same way."""
+        assert mirrors.unreachable(urllib.error.URLError(OSError(errno.EPERM, "Operation not permitted")))
+
+    def test_a_refusal_of_a_file_of_our_own_is_not_unreachable(self) -> None:
+        """The same error, but not from the network: a file we may not read is
+        not a host we could not reach."""
+        assert not mirrors.unreachable(PermissionError(errno.EACCES, "Permission denied"))
 
     @pytest.mark.parametrize(
         ("error", "reached"),

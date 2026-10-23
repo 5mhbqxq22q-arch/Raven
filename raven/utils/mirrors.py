@@ -112,17 +112,23 @@ def _truthy(value: str | None) -> bool:
 _NO_ROUTE = frozenset(
     getattr(errno, name) for name in ("ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN") if hasattr(errno, name)
 )
+#: What a socket says when the machine itself refuses the connection (a
+#: sandbox, a local firewall): a plain OSError, where a refused or reset
+#: connection is a ConnectionError.
+_REFUSED_LOCALLY = frozenset(getattr(errno, name) for name in ("EACCES", "EPERM") if hasattr(errno, name))
 
 
 def unreachable(exc: BaseException) -> bool:
     """Whether ``exc`` says a host could not be reached, rather than that it answered.
 
     A connection that was refused, reset or never completed counts, as do a
-    name that did not resolve and a network with no route to the host. An HTTP
-    error does not, because the host spoke, and a mirror would only repeat the
-    answer or serve something the host has withdrawn. A certificate that fails
-    verification does not either: whatever re-signs this host's traffic
-    re-signs the mirror's too, so falling back would only hide the reason.
+    name that did not resolve, a network with no route to the host and a
+    connection the machine itself refused (a sandbox or a local firewall). An
+    HTTP error does not, because the host spoke, and a mirror would only
+    repeat the answer or serve something the host has withdrawn. A certificate
+    that fails verification does not either: whatever re-signs this host's
+    traffic re-signs the mirror's too, so falling back would only hide the
+    reason.
 
     Through a proxy the same holds for the proxy, and its answer to the request
     for a tunnel speaks for the host. A 5xx says the proxy could not reach the
@@ -160,7 +166,30 @@ def unreachable(exc: BaseException) -> bool:
         status = _tunnel_status(error)
         if status is not None:
             return status >= 500
-        if isinstance(error, network) or (isinstance(error, OSError) and error.errno in _NO_ROUTE):
+        if isinstance(error, network):
+            return True
+        if isinstance(error, OSError) and error.errno in _NO_ROUTE:
+            return True
+        # A refusal of the machine's own: the socket was never opened. It
+        # counts only where it came from the network, which is what urllib
+        # wraps: a refusal of a local file is not this.
+        if isinstance(error, OSError) and error.errno in _REFUSED_LOCALLY and _from_the_network(chain, error):
+            return True
+    return False
+
+
+def _from_the_network(chain: Sequence[BaseException], error: BaseException) -> bool:
+    """Whether ``error`` is the reason of a URL the network was asked for.
+
+    urllib reports a refused connect as a URLError whose reason is the
+    socket's error; a refusal of a local file is the OSError itself.
+    """
+    import urllib.error
+
+    for other in chain:
+        if other is error:
+            continue
+        if isinstance(other, urllib.error.URLError) and other.reason is error:
             return True
     return False
 
