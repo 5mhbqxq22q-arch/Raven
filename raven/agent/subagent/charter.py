@@ -380,7 +380,16 @@ def judge(
     imports, no loops, and a call list that cannot reach the network or build
     an unbounded sequence.
     """
-    answer = _generated_answer("judge", name, _pure_data(params), _pure_data(prior))
+    # Asked apart and joined here, the order the pre-merge runtime used: a
+    # migrated table and the hand-written judge beside it each run on their
+    # own, so a raise in one leaves the other's refusals standing.
+    params, prior = _pure_data(params), _pure_data(prior)
+    return _refusals(_generated_answer("rules_judge", name, params, prior)) + _refusals(
+        _generated_answer("judge", name, params, prior)
+    )
+
+
+def _refusals(answer: Any) -> list[str]:
     # One sentence is as good as a list: a judge with a single thing to say
     # writes the string, and reading that as silence would turn its refusal
     # into permission. Carried over from the judge this verb replaced.
@@ -403,8 +412,11 @@ thing it manages."""
 
 
 def _generated_answer(name: str, *args: Any) -> Any:
+    from raven.agent.subagent.charter_code import COMPANIONS
+
     charter = current_charter()
-    source = dict(charter.functions).get(name) if charter is not None else None
+    verb = COMPANIONS.get(name, name)
+    source = dict(charter.functions).get(verb) if charter is not None else None
     if not source:
         return None
     key = (name, source)
@@ -415,7 +427,10 @@ def _generated_answer(name: str, *args: Any) -> Any:
 
             compiled = compile_function(source, name)
         except Exception as exc:  # noqa: BLE001 - refused generated code is silence
-            logger.warning("charter: its {} function was refused ({}); ignoring it", name, exc)
+            # A companion shares its verb's source: a refused source was
+            # already reported under the verb, and most define no companion.
+            if name == verb:
+                logger.warning("charter: its {} function was refused ({}); ignoring it", name, exc)
             compiled = False
         if len(_COMPILED) >= MAX_COMPILED:
             _COMPILED.clear()

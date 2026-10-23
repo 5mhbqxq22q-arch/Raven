@@ -134,6 +134,14 @@ SIGNATURES: dict[str, tuple[str, ...]] = {
 }
 """Generated functions and the exact pure-data arguments the loop supplies."""
 
+COMPANIONS: dict[str, str] = {"rules_judge": "judge"}
+"""Functions a verb's source may define beside it, and the verb they belong to.
+
+Not verbs: nothing dispatches to them by name. ``rules_judge`` is a migrated
+rule table kept apart from the hand-written ``judge`` it sat beside, so a raise
+in either costs only its own refusals. The gate admits no call between the two,
+so they are asked separately and their answers joined by the caller."""
+
 
 class CharterCodeError(Exception):
     """The source did not pass the gate. The message is what to tell its author."""
@@ -174,7 +182,7 @@ def _safe_builtins() -> dict[str, Any]:
 
 def compile_function(source: str, entry: str) -> Any:
     """Compile one generated participant function behind the AST gate."""
-    expected = SIGNATURES.get(entry)
+    expected = SIGNATURES.get(COMPANIONS.get(entry, entry))
     if expected is None:
         raise CharterCodeError(f"unsupported charter function {entry!r}")
     if not source.strip():
@@ -256,6 +264,7 @@ __all__ = [
     "ALLOWED_CALLS",
     "ALLOWED_METHODS",
     "ALLOWED_NODES",
+    "COMPANIONS",
     "ENTRY",
     "MAX_SOURCE_CHARS",
     "CharterCodeError",

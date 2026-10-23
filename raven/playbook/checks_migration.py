@@ -97,8 +97,8 @@ def _operator_lines(values: list[tuple[str, str]], test: str, default: str) -> l
     return lines
 
 
-def judge_from_rules(rules: list[Any]) -> str:
-    """The rule table as one ``judge``, or "" when it refuses nothing."""
+def judge_from_rules(rules: list[Any], entry: str = "judge") -> str:
+    """The rule table as one function named ``entry``, or "" when it refuses nothing."""
     blocks: list[str] = []
     for (tool, when), by_operator in _grouped(rules).items():
         body: list[str] = []
@@ -127,119 +127,27 @@ def judge_from_rules(rules: list[Any]) -> str:
             blocks += [f"    if name == {_literal(tool)}{when}:", *body]
     if not blocks:
         return ""
-    return "\n".join(["def judge(name, params, prior):", "    refusals = []", *blocks, "    return refusals"])
+    return "\n".join([f"def {entry}(name, params, prior):", "    refusals = []", *blocks, "    return refusals"])
 
 
-_RULE_ARGS = ("name", "params", "prior")
+def _redefined_builtins(tree: ast.Module) -> set[str]:
+    """Builtins the hand-written source defines at the top of its module.
 
-
-class _RenameNames(ast.NodeTransformer):
-    def __init__(self, mapping: dict[str, str], prefix: str) -> None:
-        self.mapping = mapping
-        self.prefix = prefix
-
-    def visit_Name(self, node: ast.Name) -> ast.Name:
-        if node.id in self.mapping:
-            node.id = self.mapping[node.id]
-        elif node.id not in ALLOWED_CALLS:
-            node.id = self.prefix + node.id
-        return node
-
-
-class _ReturnsWithRules(ast.NodeTransformer):
-    """Every ``return`` of the hand-written judge, with the rules' refusals ahead of it.
-
-    A nested definition keeps its own returns: they answer whoever calls it,
-    not the dispatch.
+    The two functions share one module, so a top-level ``def str`` would be the
+    ``str`` the table calls. Names bound inside the hand-written judge stay
+    local to it and reach nothing else.
     """
-
-    def __init__(self, refusals: str, answer: str) -> None:
-        self.refusals = refusals
-        self.answer = answer
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
-        return node
-
-    def visit_Return(self, node: ast.Return) -> list[ast.stmt]:
-        held = ast.Assign(targets=[ast.Name(self.answer, ast.Store())], value=node.value or ast.Constant(None))
-        return [held, _union_return(self.refusals, self.answer)]
-
-
-def _union_return(refusals: str, answer: str) -> ast.stmt:
-    # The same reading ``charter.judge`` gives a single judge's answer: a string
-    # is one refusal, a list or tuple is several, anything else is silence.
-    return ast.parse(
-        f"return {refusals} + ([{answer}] if isinstance({answer}, str) "
-        f"else list({answer}) if isinstance({answer}, (list, tuple)) else [])"
-    ).body[0]
-
-
-def _free_prefix(tree: ast.AST) -> str:
-    taken = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    taken |= {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
-    prefix = "migrated_"
-    while any(name.startswith(prefix) for name in taken):
-        prefix += "x_"
-    return prefix
-
-
-def _rebound_builtins(tree: ast.AST) -> set[str]:
-    """Builtins the hand-written source binds as names of its own.
-
-    A name bound anywhere in a function is local throughout it, so the
-    table's ``str(...)`` would read the author's variable -- or fail before it
-    is assigned, which silences the whole judge and lets every call through.
-    """
-    bound = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load)}
-    bound |= {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
-    bound |= {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
-    return bound & ALLOWED_CALLS
-
-
-def merged_judge(code: str, rules_source: str) -> str:
-    """One ``judge`` that refuses what either the hand-written judge or the table refused.
-
-    The pre-merge runtime ran the table and then the code, and a call either
-    refused did not run. Neither half may simply call the other: the gate
-    admits calls only to a named handful of builtins. So the table's checks
-    are written into the hand-written judge's own body, ahead of it, under
-    names the hand-written code does not use, and each of its returns hands
-    back the table's refusals first.
-
-    One difference stays. The old runtime still applied the table when the
-    code raised; here a raise anywhere silences the whole judge, because the
-    gate admits no ``try``. The table runs first, so only a judge that raises
-    on a call the table also refuses loses that refusal.
-    """
-    tree = ast.parse(code)
-    if rebound := _rebound_builtins(tree):
-        raise ValueError(
-            f"action.checks.code binds {', '.join(sorted(rebound))} as its own name, so the rules beside it "
-            "cannot be merged into it and still run. Rename it in that judge, or state the rules there."
-        )
-    hand = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "judge")
-    prefix = _free_prefix(tree)
-    refusals, answer = prefix + "refusals", prefix + "answer"
-    rules_def = ast.parse(rules_source).body[0]
-    renamer = _RenameNames(dict(zip(_RULE_ARGS, (arg.arg for arg in hand.args.args))), prefix)
-    prologue = [renamer.visit(stmt) for stmt in rules_def.body[:-1]]  # type: ignore[attr-defined]
-    returns = _ReturnsWithRules(refusals, answer)
-    body: list[ast.stmt] = []
-    for stmt in hand.body:
-        rewritten = returns.visit(stmt)
-        body.extend(rewritten if isinstance(rewritten, list) else [rewritten])
-    docstring = body[:1] if ast.get_docstring(hand) is not None else []
-    # Falling off the end was silence from the hand-written half, which leaves the table's answer.
-    fall_through = ast.parse(f"return {refusals}").body[0]
-    hand.body = [*docstring, *prologue, *body[len(docstring) :], fall_through]
-    return ast.unparse(ast.fix_missing_locations(tree))
+    return {node.name for node in tree.body if isinstance(node, ast.FunctionDef)} & ALLOWED_CALLS
 
 
 def _judge_for(code: str, rules: list[Any]) -> str:
-    """The judge a ``checks`` block meant: its code, its rules, or both at once."""
-    generated = judge_from_rules(rules)
+    """The judge a ``checks`` block meant: its code, its rules, or both side by side."""
     count = len([rule for rule in rules if isinstance(rule, dict)])
-    if code and generated:
+    if not code:
+        generated = judge_from_rules(rules)
+    elif not judge_from_rules(rules):
+        return code
+    else:
         try:
             compile_function(code, "judge")
         except Exception as exc:  # noqa: BLE001 - a refused judge was silence before the merge too
@@ -252,10 +160,18 @@ def _judge_for(code: str, rules: list[Any]) -> str:
                 count,
             )
             code = ""
+            generated = judge_from_rules(rules)
         else:
-            generated = merged_judge(code, generated)
-    elif code:
-        return code
+            if redefined := _redefined_builtins(ast.parse(code)):
+                raise ValueError(
+                    f"action.checks.code defines {', '.join(sorted(redefined))} as its own name, so the rules "
+                    "beside it would call that instead. Rename it in that judge, or state the rules there."
+                )
+            # Kept whole rather than folded together: see COMPANIONS in
+            # charter_code. Written last, so a ``rules_judge`` the hand-written
+            # source happened to define -- which nothing ever called -- is not
+            # the one asked.
+            generated = f"{code}\n\n\n{judge_from_rules(rules, 'rules_judge')}"
     # Refused here rather than carried to a dispatch that would drop it. A
     # translation over the ceiling cannot be sent, and a seat that loaded
     # without the rules it was written with enforces nothing while reading as
@@ -270,20 +186,23 @@ def _judge_for(code: str, rules: list[Any]) -> str:
             "characters than one block per rule."
         )
     if code:
-        # Checked rather than trusted: a merge the gate refused would be a
-        # judge that answers silence, which for ``judge`` is permission.
+        # Checked rather than trusted: a table the gate refused would answer
+        # silence, which for ``judge`` is permission.
         try:
             compile_function(generated, "judge")
+            compile_function(generated, "rules_judge")
         except CharterCodeError as exc:
-            raise ValueError(f"action.checks.code and its rules could not be merged into one judge: {exc}") from exc
+            raise ValueError(f"action.checks.code and its rules could not be kept side by side: {exc}") from exc
     return generated
 
 
 def migrated_action(action: dict[str, Any]) -> dict[str, Any]:
     """``action`` with any ``checks`` block read as ``functions.judge``.
 
-    A block with both ``code`` and ``rules`` becomes one judge that refuses
-    what either refused, as the pre-merge runtime did; see :func:`merged_judge`.
+    A block with both ``code`` and ``rules`` becomes one source defining both:
+    the hand-written ``judge`` as it was, and the table as ``rules_judge``
+    beside it. The charter asks each and refuses what either refused, as the
+    pre-merge runtime did.
     """
     checks = action.get("checks")
     if not isinstance(checks, dict):
@@ -299,4 +218,4 @@ def migrated_action(action: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-__all__ = ["MIGRATED_NOTE", "judge_from_rules", "merged_judge", "migrated_action"]
+__all__ = ["MIGRATED_NOTE", "judge_from_rules", "migrated_action"]
