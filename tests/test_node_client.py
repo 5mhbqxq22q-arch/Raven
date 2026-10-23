@@ -1101,11 +1101,21 @@ async def test_a_heartbeat_unanswered_loses_the_link_tells_its_agents_and_reconn
     endpoint = ChannelEndpoint(client, 1, target=_box(), agent="echo@box")  # type: ignore[arg-type]
     node.channels[1] = endpoint
     tried: list[str] = []
+    back = asyncio.Event()
+    first = asyncio.Event()
 
     async def launch(machine_id: str) -> _Node:
         tried.append(machine_id)
         if len(tried) == 1:
+            # The failure is the test's to give: until then the reason the
+            # link lost carries is the heartbeat's, and the reconnect's own
+            # would replace it.
+            await first.wait()
             raise NodeError("machine 'Lab box' (box) could not be reached")
+        # The link stays lost until the test has read the state that says so:
+        # the backoff is ten milliseconds, and the state it leaves behind is
+        # the one the test is about.
+        await back.wait()
         return _Node(_Client(), _box(), log, {"home": "/h"}, {})  # type: ignore[arg-type]
 
     monkeypatch.setattr(pool, "_launch", launch)
@@ -1120,6 +1130,8 @@ async def test_a_heartbeat_unanswered_loses_the_link_tells_its_agents_and_reconn
         "link lost: machine 'Lab box' (box) did not answer a heartbeat within 0s; "
         "1 task continues on the machine; reconnecting"
     )
+    back.set()
+    first.set()
     await _until(lambda: len(tried) == 2 and pool.live() == ["box"] and endpoint.detached is None)
     again = pool._nodes["box"].client
     # Among the new link's requests, not its last: a heartbeat may well follow the attach.
