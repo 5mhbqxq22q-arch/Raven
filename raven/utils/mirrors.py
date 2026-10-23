@@ -901,13 +901,18 @@ def _uv_configs(env: Mapping[str, str]) -> list[Path]:
 
 def _uv_settings(env: Mapping[str, str]) -> list[dict]:
     """Each of :func:`_uv_configs` that parses, on its own: one file's list of
-    indexes does not hide another's default."""
+    indexes does not hide another's default.
+
+    Read as utf-8 with a byte-order mark if it has one: a file written by
+    Windows' editor carries a mark uv itself reads past, and a reader that
+    does not would call the file broken and take the user's index for none.
+    """
     import tomllib
 
     settings: list[dict] = []
     for path in _uv_configs(env):
         try:
-            settings.append(tomllib.loads(path.read_text(encoding="utf-8")))
+            settings.append(tomllib.loads(path.read_text(encoding="utf-8-sig")))
         except (OSError, ValueError):
             continue
     return settings

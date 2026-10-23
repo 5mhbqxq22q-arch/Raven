@@ -2222,6 +2222,7 @@ _UV_STEP = (
     "resolve_href",
     "install_uv_from_mirror",
     "uv_config_files",
+    "uv_config_text",
     "uv_config_has",
     "uv_config_index",
     "uv_index_chosen",
@@ -2317,6 +2318,10 @@ _NAMED_INDEXES = [
     ({}, f'index-url = "{_THEIRS}"\n', None),
     ({}, None, f'[[index]]\nname = "corp"\nurl = "{_THEIRS}"\ndefault = true\n'),
     ({}, f"index = [{{ url = '{_THEIRS}', default = true }}]\n", None),
+    ({}, f'"index-url" = "{_THEIRS}"\n', None),
+    ({}, None, f'[["index"]]\n"url" = "{_THEIRS}"\n"default" = true\n'),
+    ({}, "\ufeff" + f'index-url = "{_THEIRS}"\n', None),
+    ({}, None, "\ufeff" + f'[["index"]]\n"url" = "{_THEIRS}"\n"default" = true\n'),
 ]
 _NAMED_INDEX_IDS = [
     "default-index",
@@ -2326,6 +2331,10 @@ _NAMED_INDEX_IDS = [
     "uv-toml-index-url",
     "machines-default-table",
     "inline-default",
+    "quoted-index-url",
+    "quoted-default-table",
+    "uv-toml-with-a-mark",
+    "machines-default-table-with-a-mark",
 ]
 
 
@@ -2390,6 +2399,11 @@ def test_the_uv_toml_uv_config_file_names_is_where_the_index_is_read(tmp_path: P
     assert not any("other.example" in url or "tuna" in url for url in asked)
 
 
+#: A default index whose address spans lines: uv reads it, and the patterns
+#: the installers read it with do not.
+_UNREADABLE_INDEX = '[[index]]\nurl = """\n' + _THEIRS + '\n"""\ndefault = true\n'
+
+
 @POSIX_SH_ONLY
 def test_an_index_a_uv_toml_names_unreadably_keeps_the_mirror_away(tmp_path: Path) -> None:
     """A default index whose address this cannot read is still the user's
@@ -2397,9 +2411,7 @@ def test_an_index_a_uv_toml_names_unreadably_keeps_the_mirror_away(tmp_path: Pat
     the index over."""
     page, served = _uv_index(tmp_path, _UV_LINUX_TAG)
 
-    result, bin_dir, asked = _run_uv_step(
-        tmp_path, {_UV_PAGE: page, **served}, uv_toml=f'[[index]]\n"url" = "{_THEIRS}"\ndefault = true\n'
-    )
+    result, bin_dir, asked = _run_uv_step(tmp_path, {_UV_PAGE: page, **served}, uv_toml=_UNREADABLE_INDEX)
 
     assert result.returncode != 0 and "DIE " in result.stderr
     assert not (bin_dir / "uv").exists()
@@ -2549,7 +2561,7 @@ def test_a_host_the_user_chose_for_uvs_installer_is_never_replaced(tmp_path: Pat
 _PS1_UV_STEP = r"""
 $names = @(
     "Find-Uv", "Install-UvFromMirror", "Test-MirrorsAllowed", "Get-UvNamedIndexes", "Get-UvConfigIndex",
-    "Get-UvConfigFiles", "Test-UvConfigHas", "Test-UvIndexChosen"
+    "Get-UvConfigFiles", "Get-UvConfigText", "Get-UvConfigLines", "Test-UvConfigHas", "Test-UvIndexChosen"
 )
 foreach ($text in (Get-Install $names)) { Invoke-Expression $text }
 function Write-Info([string]$Message) { [Console]::Out.WriteLine("INFO $Message") }
@@ -2633,8 +2645,20 @@ def test_a_windows_uv_wheel_that_does_not_match_its_published_digest_is_not_inst
         ({}, {"appdata": f'index-url = "{_THEIRS}"\n'}),
         ({}, {"programdata": f'[[index]]\nname = "corp"\nurl = "{_THEIRS}"\ndefault = true\n'}),
         ({}, {"appdata": f"index = [{{ url = '{_THEIRS}', default = true }}]\n"}),
+        ({}, {"appdata": f'"index-url" = "{_THEIRS}"\n'}),
+        ({}, {"programdata": f'[["index"]]\n"url" = "{_THEIRS}"\n"default" = true\n'}),
+        ({}, {"appdata": "\ufeff" + f'index-url = "{_THEIRS}"\n'}),
     ],
-    ids=["default-index", "named-index", "uv-toml-index-url", "machines-default-table", "inline-default"],
+    ids=[
+        "default-index",
+        "named-index",
+        "uv-toml-index-url",
+        "machines-default-table",
+        "inline-default",
+        "quoted-index-url",
+        "quoted-default-table",
+        "uv-toml-with-a-mark",
+    ],
 )
 def test_a_windows_uv_comes_from_the_index_the_user_named(
     tmp_path: Path, env: dict[str, str], uv_tomls: dict[str, str] | None
@@ -2681,7 +2705,7 @@ def test_a_windows_uv_toml_index_read_unreadably_keeps_the_mirror_away(tmp_path:
         tmp_path,
         page,
         {_UV_PAGE: page, **served},
-        uv_tomls={"appdata": f'[[index]]\n"url" = "{_THEIRS}"\ndefault = true\n'},
+        uv_tomls={"appdata": _UNREADABLE_INDEX},
     )
 
     assert not (bin_dir / "uv.exe").exists(), result.stdout + result.stderr
@@ -2858,6 +2882,7 @@ _PACKAGE_STEP = (
     "reachable",
     "use_mirror",
     "uv_config_files",
+    "uv_config_text",
     "uv_config_has",
     "uv_index_chosen",
     "use_package_mirrors",
@@ -2952,8 +2977,19 @@ def test_an_index_the_user_named_is_kept(tmp_path: Path, name: str) -> None:
         '[[index]]\nurl = "https://pypi.example.internal/simple"\ndefault = true\n',
         'index = [{ url = "https://pypi.example.internal/simple", default = true }]\n',
         'index = [\n  { name = "corp", url = "https://pypi.example.internal/simple", default = true },\n]\n',
+        '"index-url" = "https://pypi.example.internal/simple"\n',
+        '"default" = true\n',
+        "\ufeff" + 'index-url = "https://pypi.example.internal/simple"\n',
     ],
-    ids=["index-url", "default-index", "inline-default-index", "inline-default-index-in-a-list"],
+    ids=[
+        "index-url",
+        "default-index",
+        "inline-default-index",
+        "inline-default-index-in-a-list",
+        "quoted-index-url",
+        "quoted-default",
+        "a-mark",
+    ],
 )
 def test_an_index_in_the_users_uv_toml_is_kept(tmp_path: Path, text: str) -> None:
     _result, said, _probes = _run_package_step(tmp_path, down=("https://pypi.org/",), uv_toml=text)
@@ -3048,7 +3084,8 @@ def test_both_installers_choose_the_package_hosts_before_the_first_install() -> 
 _PS1_PACKAGE_STEP = r"""
 $names = @(
     "Test-MirrorsAllowed", "Test-Reachable", "Get-TunnelStatus", "Set-MirrorEnv", "Restore-MirrorEnv",
-    "Get-UvConfigFiles", "Test-UvConfigHas", "Get-UvConfigIndex", "Test-UvIndexChosen", "Use-PackageMirrors"
+    "Get-UvConfigFiles", "Get-UvConfigText", "Get-UvConfigLines", "Test-UvConfigHas", "Get-UvConfigIndex",
+    "Test-UvIndexChosen", "Use-PackageMirrors"
 )
 foreach ($text in (Get-Install $names)) { Invoke-Expression $text }
 function Write-Warn([string]$Message) { [Console]::Out.WriteLine("WARN $Message") }
@@ -3147,6 +3184,26 @@ def test_a_windows_install_keeps_an_index_in_a_uv_toml(tmp_path: Path, root: str
     ids=["inline-default-index", "inline-default-index-in-a-list"],
 )
 def test_a_windows_install_keeps_an_inline_default_index(tmp_path: Path, text: str) -> None:
+    _result, said = _run_ps1_package_step(tmp_path, down=("https://pypi.org/",), uv_tomls={"appdata": text})
+
+    assert said["INDEX"] == ""
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
+@pytest.mark.parametrize(
+    "text",
+    [
+        '"index-url" = "https://pypi.example.internal/simple"\n',
+        '[["index"]]\n"url" = "https://pypi.example.internal/simple"\n"default" = true\n',
+        "\ufeff" + 'index-url = "https://pypi.example.internal/simple"\n',
+        "\ufeff" + '[["index"]]\n"url" = "https://pypi.example.internal/simple"\n"default" = true\n',
+    ],
+    ids=["quoted-index-url", "quoted-default-table", "a-mark", "a-mark-and-quoted-keys"],
+)
+def test_a_windows_install_keeps_an_index_a_uv_toml_names_in_any_form(tmp_path: Path, text: str) -> None:
+    """uv reads a quoted key and a file with a byte-order mark; the installer
+    reads them too, or the mirror replaces the user's index."""
     _result, said = _run_ps1_package_step(tmp_path, down=("https://pypi.org/",), uv_tomls={"appdata": text})
 
     assert said["INDEX"] == ""

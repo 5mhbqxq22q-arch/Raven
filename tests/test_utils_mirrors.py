@@ -354,7 +354,7 @@ class TestPackageRunners:
         assert mirrors.package_launch(["uvx", "pkg"], env) == ["uvx", "pkg"]
 
     @staticmethod
-    def _uv_toml(tmp_path, text: str, *, system: bool = False) -> None:
+    def _uv_toml(tmp_path, text: str, *, system: bool = False, bom: bool = False) -> None:
         """Write a uv.toml where uv reads it on this platform: the user's, or the machine's."""
         if os.name == "nt":
             root = tmp_path / ("ProgramData" if system else "AppData/Roaming")
@@ -362,7 +362,7 @@ class TestPackageRunners:
             root = tmp_path / ("xdg" if system else ".config")
         config = root / "uv" / "uv.toml"
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(text, encoding="utf-8")
+        config.write_bytes((b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8"))
 
     @pytest.mark.parametrize("system", [False, True], ids=["users", "machines"])
     @pytest.mark.parametrize(
@@ -377,6 +377,14 @@ class TestPackageRunners:
     def test_an_index_in_uv_toml_wins(self, network, tmp_path, text: str, system: bool) -> None:
         network.down.add(mirrors.PYPI_DEFAULT_INDEX)
         self._uv_toml(tmp_path, text, system=system)
+
+        assert mirrors.package_launch(["uvx", "pkg"], self._home(tmp_path)) == ["uvx", "pkg"]
+
+    def test_a_uv_toml_with_a_byte_order_mark_is_read(self, network, tmp_path) -> None:
+        """uv reads past the mark a Windows editor writes; a reader that does
+        not would call the file broken and take the user's index for none."""
+        network.down.add(mirrors.PYPI_DEFAULT_INDEX)
+        self._uv_toml(tmp_path, 'index-url = "https://pypi.example.internal/simple"\n', bom=True)
 
         assert mirrors.package_launch(["uvx", "pkg"], self._home(tmp_path)) == ["uvx", "pkg"]
 

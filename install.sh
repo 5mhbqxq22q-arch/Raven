@@ -556,12 +556,23 @@ uv_config_files() {
   done
 }
 
+# A uv.toml as uv reads it: a byte-order mark a Windows editor may have
+# written is not part of the first key, and uv reads past it. Read as bytes,
+# so the mark is three bytes and not one character whatever the locale says.
+uv_config_text() {
+  LC_ALL=C awk '
+    NR == 1 && substr($0, 1, 3) == "\357\273\277" { $0 = substr($0, 4) }
+    { print }
+  ' "$1"
+}
+
 # Whether a uv.toml uv reads -- the user's, or the machine's -- has a line
-# matching the extended regular expression $1.
+# matching the extended regular expression $1. A key may be quoted, as TOML
+# allows: "index-url" = ... is the same key as index-url = ...
 uv_config_has() {
   uv_config_files | {
     while IFS= read -r uv_file; do
-      [ -f "$uv_file" ] && grep -Eq "$1" "$uv_file" && exit 0
+      [ -f "$uv_file" ] && uv_config_text "$uv_file" | grep -Eq "$1" && exit 0
     done
     exit 1
   }
@@ -569,11 +580,12 @@ uv_config_has() {
 
 # The address of the default index a uv.toml uv reads names: its index-url,
 # or the url of the index marked default = true, written as a table or inline.
-# The first file that names one decides, as it does for uv.
+# The first file that names one decides, as it does for uv. A key may be
+# quoted, as TOML allows.
 uv_config_index() {
   uv_config_files | while IFS= read -r uv_file; do
     [ -f "$uv_file" ] || continue
-    uv_found="$(awk '
+    uv_found="$(LC_ALL=C awk '
       function value(text, q) {
         sub(/^[^=]*=[ \t]*/, "", text)
         q = substr(text, 1, 1)
@@ -582,13 +594,14 @@ uv_config_index() {
         return index(text, q) ? substr(text, 1, index(text, q) - 1) : ""
       }
       BEGIN { sq = sprintf("%c", 39) }
-      /^[ \t]*\[/ { table = ($0 ~ /^[ \t]*\[\[[ \t]*index[ \t]*\]\]/); url = ""; dflt = 0; next }
-      /^[ \t]*index-url[ \t]*=/ { u = value($0); if (u != "") { print u; exit } }
-      /[{,][ \t]*default[ \t]*=[ \t]*true/ && match($0, /[{,][ \t]*url[ \t]*=/) {
+      NR == 1 && substr($0, 1, 3) == "\357\273\277" { $0 = substr($0, 4) }
+      /^[ \t]*\[/ { table = ($0 ~ /^[ \t]*\[\[[ \t]*"?index"?[ \t]*\]\]/); url = ""; dflt = 0; next }
+      /^[ \t]*"?index-url"?[ \t]*=/ { u = value($0); if (u != "") { print u; exit } }
+      /[{,][ \t]*"?default"?[ \t]*=[ \t]*true/ && match($0, /[{,][ \t]*"?url"?[ \t]*=/) {
         u = value(substr($0, RSTART + 1)); if (u != "") { print u; exit }
       }
-      table && /^[ \t]*url[ \t]*=/ { url = value($0) }
-      table && /^[ \t]*default[ \t]*=[ \t]*true/ { dflt = 1 }
+      table && /^[ \t]*"?url"?[ \t]*=/ { url = value($0) }
+      table && /^[ \t]*"?default"?[ \t]*=[ \t]*true/ { dflt = 1 }
       table && dflt && url != "" { print url; exit }
     ' "$uv_file")"
     if [ -n "$uv_found" ]; then
@@ -600,9 +613,9 @@ uv_config_index() {
 
 uv_index_chosen() {
   [ -n "${UV_DEFAULT_INDEX:-}${UV_INDEX_URL:-}${UV_INDEX:-}" ] && return 0
-  uv_config_has '^[[:space:]]*index-url[[:space:]]*=' && return 0
+  uv_config_has '^[[:space:]]*"?index-url"?[[:space:]]*=' && return 0
   # A default index is marked default = true, in an [[index]] table or inline.
-  uv_config_has '(^|[{,[:space:]])default[[:space:]]*=[[:space:]]*true'
+  uv_config_has '(^|[{,[:space:]]*)"?default"?[[:space:]]*=[[:space:]]*true'
 }
 
 # The indexes the user named for uv, one per line, in the order uv asks them:
@@ -636,7 +649,7 @@ use_package_mirrors() {
   # given outranks a copy of releases.astral.sh, and fails outright beside a
   # list of downloads that live elsewhere.
   if [ -z "${UV_PYTHON_INSTALL_MIRROR:-}${UV_PYTHON_DOWNLOADS_JSON_URL:-}${UV_ASTRAL_MIRROR_URL:-}" ] \
-    && ! uv_config_has '^[[:space:]]*python-(install-mirror|downloads-json-url)[[:space:]]*=' \
+    && ! uv_config_has '^[[:space:]]*"?python-(install-mirror|downloads-json-url)"?[[:space:]]*=' \
     && ! reachable "$PYTHON_DOWNLOADS"; then
     warn "releases.astral.sh could not be reached; fetching any Python uv needs from $PYTHON_MIRROR instead (RAVEN_NO_MIRROR=1 turns this off)."
     use_mirror UV_PYTHON_INSTALL_MIRROR "$PYTHON_MIRROR"

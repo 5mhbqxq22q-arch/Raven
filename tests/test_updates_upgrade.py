@@ -2768,6 +2768,20 @@ class TestTheHelperFallsBackToAMirror:
 
         assert not any("UV_DEFAULT_INDEX" in env for env in uv)
 
+    def test_a_uv_toml_with_a_byte_order_mark_is_read(
+        self, monkeypatch: pytest.MonkeyPatch, release_directory: _ReleaseDirectory, tmp_path: Path
+    ) -> None:
+        """uv reads past the mark a Windows editor writes; a reader that does
+        not would call the file broken and take the user's index for none."""
+        release_directory.unreachable.add("https://pypi.org/")
+        root = tmp_path / ("appdata" if os.name == "nt" else "xdg_config_home")
+        (root / "uv").mkdir(parents=True)
+        (root / "uv" / "uv.toml").write_bytes(b"\xef\xbb\xbf" + b'index-url = "https://pypi.example.internal/simple"\n')
+
+        uv, _relaunched = self._uv_environments(monkeypatch)
+
+        assert not any("UV_DEFAULT_INDEX" in env for env in uv)
+
     @pytest.mark.parametrize("default_in", ["machines", "users"])
     def test_each_uv_toml_is_read_on_its_own(
         self, monkeypatch: pytest.MonkeyPatch, release_directory: _ReleaseDirectory, tmp_path: Path, default_in: str

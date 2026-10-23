@@ -298,6 +298,9 @@ def connection_failed(exc):
 def uv_configs():
     # Each uv.toml a user who named none has uv read -- theirs, then the
     # machine's -- on its own: one file's list of indexes hides no other's.
+    # Read with a byte-order mark if it has one, as uv reads it: a reader
+    # that does not would call the file broken and take the user's index for
+    # none.
     import tomllib
 
     if os.environ.get("UV_CONFIG_FILE"):
@@ -311,8 +314,8 @@ def uv_configs():
     configs = []
     for path in paths:
         try:
-            with open(path, "rb") as handle:
-                configs.append(tomllib.load(handle))
+            with open(path, encoding="utf-8-sig") as handle:
+                configs.append(tomllib.loads(handle.read()))
         except (OSError, ValueError):
             continue
     return configs

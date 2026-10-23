@@ -708,17 +708,36 @@ function Get-UvConfigFiles {
     return @($env:APPDATA, $env:PROGRAMDATA) | Where-Object { $_ } | ForEach-Object { Join-Path $_ "uv\uv.toml" }
 }
 
+# The text of a uv.toml, as uv reads it: a byte-order mark a Windows editor
+# may have written is not part of the first key, and uv reads past it.
+# Windows PowerShell 5.1 keeps that mark in the text it reads.
+function Get-UvConfigText([string]$Path) {
+    $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    if ($text -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+    return $text
+}
+
+# The lines of a uv.toml, as uv reads them.
+function Get-UvConfigLines([string]$Path) {
+    $text = Get-UvConfigText $Path
+    if (-not $text) { return @() }
+    return @($text -split "`r?`n")
+}
+
 # Whether a uv.toml uv reads -- the user's, or the machine's -- matches $Pattern.
+# A key may be quoted, as TOML allows: "index-url" = ... is the same key as
+# index-url = ...
 function Test-UvConfigHas([string]$Pattern) {
     foreach ($path in @(Get-UvConfigFiles)) {
-        if ((Test-Path -LiteralPath $path) -and ((Get-Content -LiteralPath $path -Raw -Encoding UTF8) -match $Pattern)) { return $true }
+        if ((Test-Path -LiteralPath $path) -and ((Get-UvConfigText $path) -match $Pattern)) { return $true }
     }
     return $false
 }
 
 # The address of the default index a uv.toml uv reads names: its index-url,
 # or the url of the index marked default = true, written as a table or inline.
-# The first file that names one decides, as it does for uv.
+# The first file that names one decides, as it does for uv. A key may be
+# quoted, as TOML allows.
 function Get-UvConfigIndex {
     $quoted = '\s*=\s*(?:"([^"]*)"|''([^'']*)'')'
     foreach ($path in @(Get-UvConfigFiles)) {
@@ -726,19 +745,19 @@ function Get-UvConfigIndex {
         $table = $false
         $url = $null
         $isDefault = $false
-        foreach ($line in @(Get-Content -LiteralPath $path -Encoding UTF8)) {
+        foreach ($line in @(Get-UvConfigLines $path)) {
             if ($line -match '^\s*\[') {
-                $table = $line -match '^\s*\[\[\s*index\s*\]\]'
+                $table = $line -match '^\s*\[\[\s*"?index"?\s*\]\]'
                 $url = $null
                 $isDefault = $false
                 continue
             }
-            if ($line -match ('^\s*index-url' + $quoted)) { return $Matches[1] + $Matches[2] }
-            if (($line -match '[{,]\s*default\s*=\s*true') -and ($line -match ('[{,]\s*url' + $quoted))) {
+            if ($line -match ('^\s*"?index-url"?' + $quoted)) { return $Matches[1] + $Matches[2] }
+            if (($line -match '[{,]\s*"?default"?\s*=\s*true') -and ($line -match ('[{,]\s*"?url"?' + $quoted))) {
                 return $Matches[1] + $Matches[2]
             }
-            if ($table -and ($line -match ('^\s*url' + $quoted))) { $url = $Matches[1] + $Matches[2] }
-            if ($table -and ($line -match '^\s*default\s*=\s*true')) { $isDefault = $true }
+            if ($table -and ($line -match ('^\s*"?url"?' + $quoted))) { $url = $Matches[1] + $Matches[2] }
+            if ($table -and ($line -match '^\s*"?default"?\s*=\s*true')) { $isDefault = $true }
             if ($table -and $isDefault -and $url) { return $url }
         }
     }
@@ -748,7 +767,7 @@ function Get-UvConfigIndex {
 function Test-UvIndexChosen {
     if ($env:UV_DEFAULT_INDEX -or $env:UV_INDEX_URL -or $env:UV_INDEX) { return $true }
     # A default index is marked default = true, in an [[index]] table or inline.
-    return (Test-UvConfigHas '(?m)^\s*index-url\s*=') -or (Test-UvConfigHas '(?m)(^|[{,\s])default\s*=\s*true')
+    return (Test-UvConfigHas '(?m)^\s*"?index-url"?\s*=') -or (Test-UvConfigHas '(?m)(^|[{,\s])"?default"?\s*=\s*true')
 }
 
 # The indexes the user named for uv, in the order uv asks them: each of
@@ -783,7 +802,7 @@ function Use-PackageMirrors {
     # is given outranks a copy of releases.astral.sh, and fails outright beside
     # a list of downloads that live elsewhere.
     $pythonNamed = $env:UV_PYTHON_INSTALL_MIRROR -or $env:UV_PYTHON_DOWNLOADS_JSON_URL -or $env:UV_ASTRAL_MIRROR_URL
-    $pythonChosen = $pythonNamed -or (Test-UvConfigHas '(?m)^\s*python-(install-mirror|downloads-json-url)\s*=')
+    $pythonChosen = $pythonNamed -or (Test-UvConfigHas '(?m)^\s*"?python-(install-mirror|downloads-json-url)"?\s*=')
     if (-not $pythonChosen -and -not (Test-Reachable $PythonDownloads)) {
         Write-Warn "releases.astral.sh could not be reached; fetching any Python uv needs from $PythonMirror instead (RAVEN_NO_MIRROR=1 turns this off)."
         Set-MirrorEnv "UV_PYTHON_INSTALL_MIRROR" $PythonMirror
