@@ -82,8 +82,21 @@ def _review_verdict(answer: Any) -> str:
     return verdict if verdict in {"accept", "resample", "end"} else ""
 
 
-def _apply_resample(messages: list[dict[str, Any]], verdict: Mapping[str, Any]) -> None:
-    """Put what the verdict asked for in front of the next model call."""
+RESAMPLE_OVERRIDE_KEYS = frozenset({"temperature", "max_tokens", "reasoning_effort"})
+"""The generation settings a ``resample`` may move for its one call.
+
+The keywords ``chat_with_retry`` takes, and the same allowlist the main loop
+applies to a hook's rollback, so a verdict means the same thing on either lane.
+"""
+
+
+def _apply_resample(messages: list[dict[str, Any]], verdict: Mapping[str, Any]) -> dict[str, Any]:
+    """Put what the verdict asked for in front of the next model call.
+
+    Returns the ``overrides`` that call should carry. Keys outside the
+    allowlist are dropped with a log line rather than passed on, as the main
+    loop drops them.
+    """
     inject = verdict.get("inject")
     added = False
     if isinstance(inject, list):
@@ -94,6 +107,16 @@ def _apply_resample(messages: list[dict[str, Any]], verdict: Mapping[str, Any]) 
     reason = verdict.get("reason")
     if not added and isinstance(reason, str) and reason:
         _append_participant_note(messages, reason)
+    requested = verdict.get("overrides")
+    if not isinstance(requested, Mapping):
+        return {}
+    overrides = {str(key): value for key, value in requested.items() if key in RESAMPLE_OVERRIDE_KEYS}
+    if len(overrides) != len(requested):
+        logger.warning(
+            "participant resample overrides dropped (not in allowlist): {}",
+            sorted(str(key) for key in requested if key not in RESAMPLE_OVERRIDE_KEYS),
+        )
+    return overrides
 
 
 MAX_PARTICIPANT_RESAMPLES = 2
@@ -608,6 +631,8 @@ class RavenLoopBackend:
             return kept
 
         resamples = 0
+        # What the last ``resample`` asked of the next model call, and of no other.
+        resample_overrides: dict[str, Any] = {}
 
         if participants:
             intake = await participant_answer("intake", task, participant_step("user_inbound"))
@@ -653,6 +678,7 @@ class RavenLoopBackend:
                     messages=messages,
                     tools=offered_tools,
                     model=model,
+                    **resample_overrides,
                 )
                 if response.finish_reason == "error" and not response.has_tool_calls:
                     # The ladder was chat_with_retry's own, so an error here is
@@ -690,7 +716,7 @@ class RavenLoopBackend:
                     on_token_delta=on_delta,
                     retry_delays=self.retry_delays,
                     retry_after_output=self.retry_after_output,
-                    **generation_kwargs(provider),
+                    **{**generation_kwargs(provider), **resample_overrides},
                 )
                 if response.finish_reason == "error" and not response.has_tool_calls:
                     # An error reply has two sources: a stream that died before
@@ -733,6 +759,7 @@ class RavenLoopBackend:
                         messages=messages,
                         tools=offered_tools,
                         model=model,
+                        **resample_overrides,
                     )
                     if response.finish_reason == "error" and not response.has_tool_calls:
                         await activity.note_provider_usage(
@@ -744,6 +771,7 @@ class RavenLoopBackend:
                         raise SubagentNoAnswerError(
                             "sub-agent's model call failed in transport twice: " + (response.content or "")[:200]
                         )
+            resample_overrides = {}
             # Per iteration, because that is how the cost accrues: this loop calls
             # the model once per round and the run's cost is their sum, unlike an
             # ACP agent's one cumulative report for the whole turn. Both arms
@@ -768,7 +796,7 @@ class RavenLoopBackend:
                         return str(verdict.get("reply") or "")
                     if decided == "resample" and resamples < MAX_PARTICIPANT_RESAMPLES:
                         resamples += 1
-                        _apply_resample(messages, verdict)
+                        resample_overrides = _apply_resample(messages, verdict)
                         continue
                 tool_call_dicts = [openai_tool_call(tc) for tc in response.tool_calls]
                 messages.append(
@@ -910,7 +938,7 @@ class RavenLoopBackend:
                         return str(verdict.get("reply") or "")
                     if decided == "resample" and resamples < MAX_PARTICIPANT_RESAMPLES:
                         resamples += 1
-                        _apply_resample(messages, verdict)
+                        resample_overrides = _apply_resample(messages, verdict)
                         continue
             else:
                 if participants:
@@ -920,7 +948,7 @@ class RavenLoopBackend:
                         return str(verdict.get("reply") or "")
                     if decided == "resample" and resamples < MAX_PARTICIPANT_RESAMPLES:
                         resamples += 1
-                        _apply_resample(messages, verdict)
+                        resample_overrides = _apply_resample(messages, verdict)
                         continue
                 final_result = response.content
                 break
