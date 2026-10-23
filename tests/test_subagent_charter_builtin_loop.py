@@ -357,9 +357,7 @@ async def test_a_resample_carries_its_overrides_on_the_next_call_and_no_other(st
         seen.append(text)
 
     with dispatch_charter({"brief": "x", "functions": {"review": source}}):
-        await backend.run(
-            "do it", task_id="t1", workspace=tmp, executor=None, on_delta=_delta if streamed else None
-        )
+        await backend.run("do it", task_id="t1", workspace=tmp, executor=None, on_delta=_delta if streamed else None)
 
     first, second, third = provider.kwargs_per_call
     assert second == {**first, "temperature": 0.1, "max_tokens": 77}
