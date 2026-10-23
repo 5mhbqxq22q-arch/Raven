@@ -313,6 +313,8 @@ async def test_one_tool_calling_step_offers_review_both_moments() -> None:
 
 
 class _RecordingKwargs(_Provider):
+    """Records the generation keywords each call carried, on either path."""
+
     def __init__(self) -> None:
         super().__init__()
         self.kwargs_per_call: list[dict[str, Any]] = []
@@ -321,29 +323,47 @@ class _RecordingKwargs(_Provider):
         self.kwargs_per_call.append(dict(kwargs))
         return await self._answer(messages, tools)
 
+    async def chat_stream(self, *, messages, tools=None, model=None, **kwargs):
+        from raven.providers.base import ChatDelta
+
+        self.kwargs_per_call.append(dict(kwargs))
+        answer = await self._answer(messages, tools)
+        yield ChatDelta(content=answer.content, finish_reason="stop")
+
 
 @pytest.mark.asyncio
-async def test_a_resample_carries_its_overrides_on_the_next_call_and_no_other() -> None:
+@pytest.mark.parametrize("streamed", [False, True], ids=["waited", "streamed"])
+async def test_a_resample_carries_its_overrides_on_the_next_call_and_no_other(streamed: bool) -> None:
     """The contract says ``overrides`` ride on the re-sampled call, and the ACP
     lane honours that. A key outside the allowlist is dropped there, so it is
-    dropped here too rather than handed to a provider that does not know it."""
+    dropped here too rather than handed to a provider that does not know it.
+    The second resample asks for nothing, so the third call shows whether the
+    first one's overrides outlived the call they were for."""
     source = (
         "def review(step):\n"
-        "    if step.get('iteration') == 1 and step.get('phase') == 'after_iteration':\n"
+        "    if step.get('iteration') == 1:\n"
         "        return {'verdict': 'resample', 'reason': 'colder', 'inject': None,\n"
         "                'overrides': {'temperature': 0.1, 'max_tokens': 77, 'model': 'other'}, 'note': None}\n"
+        "    if step.get('iteration') == 2:\n"
+        "        return {'verdict': 'resample', 'reason': 'again', 'inject': None, 'overrides': None, 'note': None}\n"
         "    return None"
     )
     tmp = Path(tempfile.mkdtemp())
     provider = _RecordingKwargs()
-    provider.tool_call = ("read_file", {"path": "missing.txt"})
     backend = RavenLoopBackend(provider=provider, model="stub", agent_home=tmp / "home")
-    with dispatch_charter({"brief": "x", "functions": {"review": source}}):
-        await backend.run("do it", task_id="t1", workspace=tmp, executor=None)
+    seen: list[str] = []
 
-    assert provider.kwargs_per_call[0] == {}
-    assert provider.kwargs_per_call[1] == {"temperature": 0.1, "max_tokens": 77}
-    assert all(kwargs == {} for kwargs in provider.kwargs_per_call[2:])
+    async def _delta(text: str) -> None:
+        seen.append(text)
+
+    with dispatch_charter({"brief": "x", "functions": {"review": source}}):
+        await backend.run(
+            "do it", task_id="t1", workspace=tmp, executor=None, on_delta=_delta if streamed else None
+        )
+
+    first, second, third = provider.kwargs_per_call
+    assert second == {**first, "temperature": 0.1, "max_tokens": 77}
+    assert third == first
 
 
 def test_the_resample_allowlist_is_the_main_loops_rollback_allowlist() -> None:
@@ -353,6 +373,21 @@ def test_the_resample_allowlist_is_the_main_loops_rollback_allowlist() -> None:
     from raven.agent.subagent.backends.raven_loop import RESAMPLE_OVERRIDE_KEYS
 
     assert RESAMPLE_OVERRIDE_KEYS == AgentLoop._ROLLBACK_OVERRIDE_KEYS
+
+
+def test_the_generation_guidance_names_the_keys_a_resample_may_move() -> None:
+    """The model writing ``review`` reads the keys here and nowhere else, so a
+    key added to the allowlist and not to this text is one no seat will use."""
+    import re
+
+    from raven.agent.subagent.backends.raven_loop import RESAMPLE_OVERRIDE_KEYS
+    from raven.playbook.agent_generator import _FUNCTION_CONTRACTS
+
+    returns = " ".join(_FUNCTION_CONTRACTS["review"]["returns"].split())
+    named = re.search(r"overrides \(([^)]*) for that one call", returns)
+
+    assert named is not None, returns
+    assert set(re.findall(r"[a-z_]+", named.group(1))) - {"or"} == RESAMPLE_OVERRIDE_KEYS
 
 
 @pytest.mark.asyncio
