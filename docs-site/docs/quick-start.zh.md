@@ -60,10 +60,11 @@ Playwright 下载 Chromium 时说不清失败原因，所以会再探测它们�
 registry 设置。`uvx` 和 `npx` 只在镜像连得上时才切换，所以缓存里已有的包离线时照样能启动。
 `uvx` 的镜像只写在这次启动的命令行上，它启动的工具看不到。npx 会把 registry 传给它启动的
 所有进程，在那里会盖过项目自己指定的 registry，所以这种情况下 Raven 不运行 npx：它从镜像把
-包装进自己的目录（`~/.raven/cache/npx`），再从那里启动包的命令，环境仍是这次启动原本的环境。
-项目里或 npm 全局已经装好的包仍由 npx 启动，项目的 `.npmrc` 指定了 registry 时也一样。
-设置 `RAVEN_NO_MIRROR=1` 可让所有下载都只使用默认地址。Raven 自己的发布文件来自 GitHub
-Releases，没有镜像。
+包装进自己的目录（`~/.raven/cache/npx`；Raven 节点会放在节点自己的目录下），再从那里启动包的
+命令，环境仍是这次启动原本的环境。项目里或 npm 全局已经装好的包仍由 npx 启动，项目的 `.npmrc`
+指定了 registry 时也一样。设置 `RAVEN_NO_MIRROR=1` 可让所有下载都只使用默认地址。这个开关在
+启动自带的环境里也会被读到，Raven 节点也会收到宿主机的这个值，所以跑在另一台机器上的智能体
+同样只用自己的地址。Raven 自己的发布文件来自 GitHub Releases，没有镜像。
 
 ## 更新 Raven { #update-raven }
 

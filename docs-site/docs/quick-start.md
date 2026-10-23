@@ -73,12 +73,15 @@ can be reached, so a package already in its cache still starts offline. For
 never sees it. npx would hand a registry to everything it starts, where it
 would replace the registry a project names for itself, so in that case Raven
 does not run npx: it installs the package from the mirror into a directory of
-its own (`~/.raven/cache/npx`) and starts the package's command from there, in
-the environment the launch was given. A package your project or npm's global
-installs already provide still starts through npx, and so does a launch in a
-project whose `.npmrc` names a registry. Set `RAVEN_NO_MIRROR=1` to keep every
-download on its usual host. Raven's own release files come from GitHub
-Releases, which has no mirror.
+its own (`~/.raven/cache/npx`; a Raven node keeps its own under the node's
+directory) and starts the package's command from there, in the environment the
+launch was given. A package your project or npm's global installs already
+provide still starts through npx, and so does a launch in a project whose
+`.npmrc` names a registry. Set `RAVEN_NO_MIRROR=1` to keep every download on
+its usual host. The switch is read in the environment a launch is given as
+well as in Raven's own, and a Raven node is told the host's value, so an agent
+that runs on another machine keeps its own host too. Raven's own release files
+come from GitHub Releases, which has no mirror.
 
 ## Update Raven
 
