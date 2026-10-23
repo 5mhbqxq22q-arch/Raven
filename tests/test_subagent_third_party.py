@@ -488,7 +488,13 @@ async def test_cli_backend_starts_the_way_the_mirror_fallback_says(
     asked: list[tuple[list[str], dict[str, str], str | None]] = []
 
     def package_launch(
-        argv: list[str], env: dict[str, str], cwd: str | None = None, *, local: bool = True
+        argv: list[str],
+        env: dict[str, str],
+        cwd: str | None = None,
+        *,
+        local: bool = True,
+        budget: float | None = None,
+        cache_root: Path | None = None,
     ) -> list[str]:
         asked.append((list(argv), dict(env), cwd))
         return [*argv, "--as-the-answer-says"]
