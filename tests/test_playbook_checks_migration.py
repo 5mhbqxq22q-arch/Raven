@@ -80,14 +80,92 @@ def test_a_stored_harness_with_a_hand_written_judge_keeps_it_whole() -> None:
     assert spec.delegate[0].playbook.action.functions == {"judge": source}
 
 
-def test_a_hand_written_judge_wins_over_the_table_beside_it() -> None:
-    """Rare enough to choose rather than merge: what its author wrote is kept
-    whole, and the load says plainly that the table was not folded in."""
-    source = "def judge(name, params, prior):\n    return ['from the code']"
-    migrated = migrated_action({"checks": {"code": source, "rules": THREE_RULES}})
+HAND_WRITTEN = "def judge(name, params, prior):\n    if name == 'exec':\n        return ['from the code']\n"
 
-    assert migrated["functions"] == {"judge": source}
+
+def _merged(code: str = HAND_WRITTEN, rules: list[dict] | None = None):
+    migrated = migrated_action({"checks": {"code": code, "rules": THREE_RULES if rules is None else rules}})
     assert "checks" not in migrated
+    return compile_function(migrated["functions"]["judge"], "judge")
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "prior", "expected"),
+    [
+        ("write_file", {"path": "/etc/passwd"}, [], ["write under ./out/", "read it first"]),
+        ("exec", {"command": "rm -rf /"}, [], ["no rm -rf", "from the code"]),
+        ("exec", {"command": "ls"}, [], ["from the code"]),
+        ("write_file", {"path": "./out/a"}, [("read_file", {"path": "./out/a"})], []),
+        ("grep", {"pattern": "x"}, [], []),
+    ],
+)
+def test_a_hand_written_judge_and_the_table_beside_it_both_refuse(name, params, prior, expected) -> None:
+    """The pre-merge runtime ran the table and then the code, and a call either
+    refused did not run. Keeping the code alone would have let every call the
+    table refused through, with nothing on the seat to say so."""
+    assert run_function(_merged(), name, params, prior) == expected
+
+
+def test_the_call_the_old_table_refused_is_still_refused_when_a_dispatch_reads_it() -> None:
+    """Through the stored spec, the wire payload and the charter's own judge:
+    the table beside a hand-written judge refused ``write_file('/etc/passwd')``
+    before the merge, and the seat that loads it must still."""
+    from raven.agent.subagent.charter import charter_scope, judge, parse
+    from raven.playbook.agent_generator import build_payload
+
+    spec = AgentPlaybookSpec.model_validate(
+        {"delegate": [{"name": "w", "playbook": {"action": {"checks": {"code": HAND_WRITTEN, "rules": THREE_RULES}}}}]}
+    )
+    charter = parse(build_payload("brief", spec.delegate[0].playbook))
+    assert charter is not None
+    with charter_scope(charter):
+        refused = judge("write_file", {"path": "/etc/passwd"}, [])
+        coded = judge("exec", {"command": "ls"}, [])
+
+    assert refused == ["write under ./out/", "read it first"]
+    assert coded == ["from the code"]
+
+
+def test_the_merge_reads_the_arguments_the_hand_written_judge_named() -> None:
+    """The gate checks a judge's arity, not its argument names, so the table's
+    checks have to read whatever the author called them."""
+    code = "def judge(tool, args, history):\n    return 'own: ' + tool if tool == 'grep' else []\n"
+    judge = _merged(code)
+
+    assert run_function(judge, "write_file", {"path": "/etc/passwd"}, []) == ["write under ./out/", "read it first"]
+    assert run_function(judge, "grep", {"pattern": "x"}, []) == ["own: grep"]
+
+
+def test_the_merge_does_not_reuse_a_name_the_hand_written_judge_holds() -> None:
+    code = (
+        "def judge(name, params, prior):\n"
+        "    migrated_refusals = ['from the code'] if name == 'exec' else []\n"
+        "    return migrated_refusals\n"
+    )
+
+    assert run_function(_merged(code), "exec", {"command": "rm -rf /"}, []) == ["no rm -rf", "from the code"]
+
+
+def test_a_hand_written_judge_the_gate_refuses_leaves_the_table_in_force() -> None:
+    """The old runtime treated a judge it could not compile as having no
+    opinion and still ran the table. The table alone is that behaviour."""
+    judge = _merged("def judge(name, params, prior):\n    import os\n    return []\n")
+
+    assert run_function(judge, "exec", {"command": "rm -rf /"}, []) == ["no rm -rf"]
+
+
+def test_a_hand_written_judge_with_no_table_beside_it_is_kept_byte_for_byte() -> None:
+    migrated = migrated_action({"checks": {"code": HAND_WRITTEN, "rules": [{"tool": "write_file"}]}})
+
+    assert migrated["functions"] == {"judge": HAND_WRITTEN.strip()}
+
+
+def test_a_merge_over_the_ceiling_refuses_the_load() -> None:
+    rules = [{"tool": "exec", "forbid": "x" * 300} for _ in range(20)]
+    code = "def judge(name, params, prior):\n    return " + repr("y" * 3000) + "\n"
+
+    with pytest.raises(ValueError, match="and its hand-written judge"):
+        migrated_action({"checks": {"code": code, "rules": rules}})
 
 
 def test_a_seat_that_already_has_a_judge_is_left_alone() -> None:
