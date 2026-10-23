@@ -19,7 +19,7 @@ from typing import Any
 
 from loguru import logger
 
-from raven.agent.subagent.charter_code import ALLOWED_CALLS, MAX_SOURCE_CHARS, CharterCodeError, compile_function
+from raven.agent.subagent.charter_code import ALLOWED_CALLS, MAX_SOURCE_CHARS, compile_function
 
 MIGRATED_NOTE = "migrated from action.checks"
 
@@ -185,14 +185,6 @@ def _judge_for(code: str, rules: list[Any]) -> str:
             "State them as one judge under action.functions, which can say the same thing in fewer "
             "characters than one block per rule."
         )
-    if code:
-        # Checked rather than trusted: a table the gate refused would answer
-        # silence, which for ``judge`` is permission.
-        try:
-            compile_function(generated, "judge")
-            compile_function(generated, "rules_judge")
-        except CharterCodeError as exc:
-            raise ValueError(f"action.checks.code and its rules could not be kept side by side: {exc}") from exc
     return generated
 
 
