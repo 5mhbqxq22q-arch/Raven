@@ -14,11 +14,12 @@ the same gate a model-written judge does.
 
 from __future__ import annotations
 
+import ast
 from typing import Any
 
 from loguru import logger
 
-from raven.agent.subagent.charter_code import MAX_SOURCE_CHARS
+from raven.agent.subagent.charter_code import ALLOWED_CALLS, MAX_SOURCE_CHARS, compile_function
 
 MIGRATED_NOTE = "migrated from action.checks"
 
@@ -129,14 +130,135 @@ def judge_from_rules(rules: list[Any]) -> str:
     return "\n".join(["def judge(name, params, prior):", "    refusals = []", *blocks, "    return refusals"])
 
 
+_RULE_ARGS = ("name", "params", "prior")
+
+
+class _RenameNames(ast.NodeTransformer):
+    def __init__(self, mapping: dict[str, str], prefix: str) -> None:
+        self.mapping = mapping
+        self.prefix = prefix
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        if node.id in self.mapping:
+            node.id = self.mapping[node.id]
+        elif node.id not in ALLOWED_CALLS:
+            node.id = self.prefix + node.id
+        return node
+
+
+class _ReturnsWithRules(ast.NodeTransformer):
+    """Every ``return`` of the hand-written judge, with the rules' refusals ahead of it.
+
+    A nested definition keeps its own returns: they answer whoever calls it,
+    not the dispatch.
+    """
+
+    def __init__(self, refusals: str, answer: str) -> None:
+        self.refusals = refusals
+        self.answer = answer
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        return node
+
+    def visit_Return(self, node: ast.Return) -> list[ast.stmt]:
+        held = ast.Assign(targets=[ast.Name(self.answer, ast.Store())], value=node.value or ast.Constant(None))
+        return [held, _union_return(self.refusals, self.answer)]
+
+
+def _union_return(refusals: str, answer: str) -> ast.stmt:
+    # The same reading ``charter.judge`` gives a single judge's answer: a string
+    # is one refusal, a list or tuple is several, anything else is silence.
+    return ast.parse(
+        f"return {refusals} + ([{answer}] if isinstance({answer}, str) "
+        f"else list({answer}) if isinstance({answer}, (list, tuple)) else [])"
+    ).body[0]
+
+
+def _free_prefix(tree: ast.AST) -> str:
+    taken = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    taken |= {node.arg for node in ast.walk(tree) if isinstance(node, ast.arg)}
+    prefix = "migrated_"
+    while any(name.startswith(prefix) for name in taken):
+        prefix += "x_"
+    return prefix
+
+
+def merged_judge(code: str, rules_source: str) -> str:
+    """One ``judge`` that refuses what either the hand-written judge or the table refused.
+
+    The pre-merge runtime ran the table and then the code, and a call either
+    refused did not run. Neither half may simply call the other: the gate
+    admits calls only to a named handful of builtins. So the table's checks
+    are written into the hand-written judge's own body, ahead of it, under
+    names the hand-written code does not use, and each of its returns hands
+    back the table's refusals first.
+
+    One difference stays. The old runtime still applied the table when the
+    code raised; here a raise anywhere silences the whole judge, because the
+    gate admits no ``try``. The table runs first, so only a judge that raises
+    on a call the table also refuses loses that refusal.
+    """
+    tree = ast.parse(code)
+    hand = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "judge")
+    prefix = _free_prefix(tree)
+    refusals, answer = prefix + "refusals", prefix + "answer"
+    rules_def = ast.parse(rules_source).body[0]
+    renamer = _RenameNames(dict(zip(_RULE_ARGS, (arg.arg for arg in hand.args.args))), prefix)
+    prologue = [renamer.visit(stmt) for stmt in rules_def.body[:-1]]  # type: ignore[attr-defined]
+    returns = _ReturnsWithRules(refusals, answer)
+    body: list[ast.stmt] = []
+    for stmt in hand.body:
+        rewritten = returns.visit(stmt)
+        body.extend(rewritten if isinstance(rewritten, list) else [rewritten])
+    docstring = body[:1] if ast.get_docstring(hand) is not None else []
+    # Falling off the end was silence from the hand-written half, which leaves the table's answer.
+    fall_through = ast.parse(f"return {refusals}").body[0]
+    hand.body = [*docstring, *prologue, *body[len(docstring) :], fall_through]
+    return ast.unparse(ast.fix_missing_locations(tree))
+
+
+def _judge_for(code: str, rules: list[Any]) -> str:
+    """The judge a ``checks`` block meant: its code, its rules, or both at once."""
+    generated = judge_from_rules(rules)
+    count = len([rule for rule in rules if isinstance(rule, dict)])
+    if code and generated:
+        try:
+            compile_function(code, "judge")
+        except Exception as exc:  # noqa: BLE001 - a refused judge was silence before the merge too
+            # The old runtime ran the table and treated a judge it could not
+            # compile as having no opinion. The table alone is that behaviour.
+            logger.warning(
+                "playbook: action.checks.code was refused by the gate ({}); keeping its {} rule(s) "
+                "without it, as the pre-merge runtime did",
+                exc,
+                count,
+            )
+            code = ""
+        else:
+            generated = merged_judge(code, generated)
+    elif code:
+        return code
+    # Refused here rather than carried to a dispatch that would drop it. A
+    # translation over the ceiling cannot be sent, and a seat that loaded
+    # without the rules it was written with enforces nothing while reading as
+    # if it does -- the failure the stored artifact is least able to notice.
+    # The error names what to do.
+    if len(generated) > MAX_SOURCE_CHARS:
+        written = " and its hand-written judge" if code else ""
+        raise ValueError(
+            f"action.checks carries {count} rules{written} that translate "
+            f"to {len(generated)} characters of judge, over the {MAX_SOURCE_CHARS} a charter may carry. "
+            "State them as one judge under action.functions, which can say the same thing in fewer "
+            "characters than one block per rule."
+        )
+    return generated
+
+
 def migrated_action(action: dict[str, Any]) -> dict[str, Any]:
     """``action`` with any ``checks`` block read as ``functions.judge``.
 
-    ``code`` wins when both are present: it is what its author wrote, and the
-    table beside it is translated and appended to the same seat only when
-    there is no hand-written judge to keep whole. The pair is rare enough --
-    a worker with code and rules both -- that losing neither matters more than
-    merging them into one function the gate would then have to admit.
+    A block with both ``code`` and ``rules`` becomes one judge that refuses
+    what either refused, as the pre-merge runtime did; see :func:`merged_judge`.
     """
     checks = action.get("checks")
     if not isinstance(checks, dict):
@@ -145,37 +267,11 @@ def migrated_action(action: dict[str, Any]) -> dict[str, Any]:
     functions = dict(migrated.get("functions") or {})
     code = str(checks.get("code") or "").strip()
     rules = checks.get("rules") if isinstance(checks.get("rules"), list) else []
-    if "judge" not in functions:
-        if code:
-            functions["judge"] = code
-            if judge_from_rules(rules):
-                # Said rather than dropped quietly: the pair is rare, and an
-                # operator whose rule table stopped applying should read why
-                # here rather than infer it from a call that is no longer
-                # refused.
-                logger.warning(
-                    "playbook: a seat carried both action.checks.code and {} rule(s); the hand-written "
-                    "judge is kept whole and the rules are not merged into it. State them in that judge "
-                    "if they still apply.",
-                    len([rule for rule in rules if isinstance(rule, dict)]),
-                )
-        elif generated := judge_from_rules(rules):
-            # Refused here rather than carried to a dispatch that would drop
-            # it. A translation over the ceiling cannot be sent, and a seat
-            # that loaded without the rules it was written with enforces
-            # nothing while reading as if it does -- the failure the stored
-            # artifact is least able to notice. The error names what to do.
-            if len(generated) > MAX_SOURCE_CHARS:
-                raise ValueError(
-                    f"action.checks carries {len([r for r in rules if isinstance(r, dict)])} rules that translate "
-                    f"to {len(generated)} characters of judge, over the {MAX_SOURCE_CHARS} a charter may carry. "
-                    "State them as one judge under action.functions, which can say the same thing in fewer "
-                    "characters than one block per rule."
-                )
-            functions["judge"] = generated
+    if "judge" not in functions and (judge := _judge_for(code, rules)):
+        functions["judge"] = judge
     if functions:
         migrated["functions"] = functions
     return migrated
 
 
-__all__ = ["MIGRATED_NOTE", "judge_from_rules", "migrated_action"]
+__all__ = ["MIGRATED_NOTE", "judge_from_rules", "merged_judge", "migrated_action"]
