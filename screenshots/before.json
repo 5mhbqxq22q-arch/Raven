@@ -1,0 +1,103 @@
+{
+ "tag": "before",
+ "providers_page": {
+  "shell.wm (rail title)": {
+   "selector": ".snav .wm",
+   "font-size": "16px",
+   "text": "Settings"
+  },
+  "shell #setTitle (pane title)": {
+   "selector": "#setTitle",
+   "font-size": "16.5px",
+   "text": "Model providers"
+  },
+  "nav .settings-nitem": {
+   "selector": ".settings-nitem",
+   "font-size": "13px",
+   "text": "General"
+  },
+  "provider .settings-tp-nm": {
+   "selector": ".settings-tp-nm",
+   "font-size": "13.5px",
+   "text": "MiniMax (Global)"
+  },
+  "badge .settings-tp-def": {
+   "selector": ".settings-tp-def",
+   "font-size": "10.5px",
+   "text": "Default"
+  },
+  "search .settings-tp-find input": {
+   "selector": ".settings-tp-find input",
+   "font-size": "13px",
+   "text": ""
+  },
+  "detail .settings-tp-name": {
+   "selector": ".settings-tp-name",
+   "font-size": "16px",
+   "text": "Anthropic"
+  },
+  "state .settings-tp-state": {
+   "selector": ".settings-tp-state",
+   "font-size": "13px",
+   "text": "Connected"
+  },
+  "label .settings-lab": {
+   "selector": ".settings-lab",
+   "font-size": "14px",
+   "text": "API keyGet a key"
+  },
+  "link .settings-lab .exlink": {
+   "selector": ".settings-lab .exlink",
+   "font-size": "13px",
+   "text": "Get a key"
+  },
+  "input .settings-tbox": {
+   "selector": ".settings-tbox",
+   "font-size": "13px",
+   "text": ""
+  },
+  "note .settings-pnote": {
+   "selector": ".settings-pnote",
+   "error": "Locator.wait_for: Timeout 4000ms exceeded.\nCall log:\n  - waiting for locator(\".s"
+  },
+  "chip .settings-tag2": {
+   "selector": ".settings-tag2",
+   "font-size": "12px",
+   "text": "claude-opus-4-5×"
+  },
+  "fold .foldcap": {
+   "selector": ".foldcap",
+   "font-size": "13px",
+   "text": "Advanced"
+  },
+  "btn .smodal .mini": {
+   "selector": ".smodal .mini",
+   "font-size": "13px",
+   "text": "Update"
+  }
+ },
+ "general_page": {
+  "gen .settings-gen-t": {
+   "selector": ".settings-gen-t",
+   "font-size": "15px",
+   "text": "Language"
+  },
+  "gen .settings-gen-d": {
+   "selector": ".settings-gen-d",
+   "font-size": "13px",
+   "text": "Choose the language the inte"
+  },
+  "row .settings-row .settings-k": {
+   "selector": ".settings-row .settings-k",
+   "error": "Locator.wait_for: Timeout 4000ms exceeded.\nCall log:\n  - waiting for locator(\".s"
+  },
+  "hint .settings-row .settings-hint": {
+   "selector": ".settings-row .settings-hint",
+   "error": "Locator.wait_for: Timeout 4000ms exceeded.\nCall log:\n  - waiting for locator(\".s"
+  },
+  "card .settings-ch .settings-t": {
+   "selector": ".settings-ch .settings-t",
+   "error": "Locator.wait_for: Timeout 4000ms exceeded.\nCall log:\n  - waiting for locator(\".s"
+  }
+ }
+}
