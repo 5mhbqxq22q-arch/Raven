@@ -497,6 +497,54 @@ describe('notice', () => {
       expect(h.did('dropSay')).toEqual([])
       expect(h.live.silent).toBe(false)
     })
+
+    it('does not mark a turn this page is cancelling', async () => {
+      /* The stop already folded that turn, and its message.complete is dropped
+         while cancelling, so a mark set now would be read by the next turn. */
+      const h = await harness({ phase: 'cancelling' })
+
+      h.dispatch(silent)
+
+      expect(h.live.silent).toBe(false)
+    })
+
+    it.each([
+      ['a send', { type: 'message.start', payload: { turn_id: 't2', content: 'from the other window' } }],
+      ['the runtime', { type: 'turn.started', payload: { turn_id: 't2' } }],
+    ])('is cleared when %s opens the next turn', async (_who, opening) => {
+      const h = await harness({ rows: [{ id: 's1', title: 'a digest', last: 'before' }] })
+      h.live.silent = true
+
+      h.dispatch(opening)
+      h.dispatch({ type: 'token.delta', payload: { text: 'the next answer' } })
+      h.dispatch({ type: 'message.complete', payload: { usage: {}, duration_ms: 3000 } })
+
+      expect(h.did('finishTurn')).toEqual([['finishTurn', '3000ms']])
+      expect(h.did('notify')).toEqual([['notify', 'gui.set.ntf.done']])
+    })
+
+    it('lands a turn stopped after the notice flagged silent', async () => {
+      /* Stopped from another window, which is the frame this page receives; the
+         stop button folds the turn through the same call. */
+      const h = await harness({ busy: true })
+      h.dispatch({ type: 'token.delta', payload: { text: 'Checking the logs.' } })
+      h.dispatch(silent)
+
+      h.dispatch({ type: 'error', payload: { message: 'cancelled', reason: 'cancelled_by_client' } })
+
+      expect(h.did('softStop')).toHaveLength(1)
+      expect(h.did('finishTurn')).toEqual([['finishTurn', expect.any(String), true]])
+    })
+
+    it('lands a turn that failed after the notice flagged silent', async () => {
+      const h = await harness()
+      h.dispatch({ type: 'token.delta', payload: { text: 'Checking the logs.' } })
+      h.dispatch(silent)
+
+      h.dispatch({ type: 'error', payload: { message: 'turn_failed', reason: 'internal', detail: 'boom' } })
+
+      expect(h.did('finishTurn')).toEqual([['finishTurn', expect.any(String), true]])
+    })
   })
 })
 

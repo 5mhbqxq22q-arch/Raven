@@ -94,6 +94,7 @@ export const STAGES: readonly Stage[] = [
     }
     if (p.content) touchSession(sessionCurrent(), p.content)
     rt.openedTurn = null
+    rt.silent = false
     rt.dispatch({ type: 'stream', cancellable: true }); goState(); drawMeter()
     advanceTurn()
   }),
@@ -150,6 +151,7 @@ export const STAGES: readonly Stage[] = [
     /* Cancellable by its id: nothing bound a handle to this turn, so the stop
        button names it and turn.cancel reaches it as the lane's running turn. */
     rt.openedTurn = p.turn_id
+    rt.silent = false
     rt.dispatch({ type: 'stream', cancellable: true }); goState(); drawMeter()
   }),
 
@@ -181,9 +183,12 @@ export const STAGES: readonly Stage[] = [
     transcript.killStatus()
     /* The model ended the turn on its silence marker, so the turn has no answer:
        the reply the open step was streaming is taken back, and the turn lands
-       without promoting anything it said on the way. The row below is all of it. */
+       without promoting anything it said on the way. The row below is all of it.
+       Not marked while this page is cancelling the turn: the stop already folded
+       it, and the message.complete that would read and clear the mark is
+       dropped, so the next turn would land under it. */
     const silent = p.kind === 'silent_turn'
-    if (silent) rt.silent = true
+    if (silent && turn.phase() !== 'cancelling') rt.silent = true
     /* Seals the open step first: this ends the turn, so the streamed prose
        above stays where it was said. */
     if (rt.st) {
@@ -268,7 +273,7 @@ export const STAGES: readonly Stage[] = [
        out, since the engine is free. `turn_failed` is the lane's code for a
        turn that died and reads as the words the replayed marker reads; every
        other code keeps its own name. */
-    transcript.finishTurn(rt.st, rt.steps, duration(undefined, rt))
+    transcript.finishTurn(rt.st, rt.steps, duration(undefined, rt), rt.silent)
     rt.dispatch({ type: 'idle' })
     noteRow(p.message === 'turn_failed' ? transcript.failedTurnLabel() : (p.message || 'error'),
       p.detail || p.reason || '', {
