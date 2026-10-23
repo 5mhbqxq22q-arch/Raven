@@ -3293,7 +3293,15 @@ def test_the_windows_opt_out_keeps_pypi(tmp_path: Path) -> None:
 
 # --- The npm registry a source build reads -------------------------------------
 
-_NPM_STEP = ("mirrors_allowed", "connection_failed", "reachable", "use_mirror", "use_npm_mirror")
+_NPM_STEP = (
+    "mirrors_allowed",
+    "connection_failed",
+    "reachable",
+    "npm_registry_answers",
+    "use_npm_mirror",
+    "npm_run",
+)
+_NPM_SETTINGS = ("NPM_REGISTRY", "NPM_MIRROR", "NPM_ANSWERS")
 
 
 def _run_npm_step(
@@ -3302,23 +3310,42 @@ def _run_npm_step(
     down: tuple[str, ...] = (),
     configured: str | None = "https://registry.npmjs.org/",
     env: dict[str, str] | None = None,
+    build_npmrc: str | None = None,
+    caller_npmrc: str | None = None,
 ):
     """``configured`` is what npm answers `config get registry` with; None is an
-    npm that fails, after printing the default all the same."""
+    npm that fails, after printing the default all the same. The stand-in
+    answers from the .npmrc of the directory it runs in, as npm does."""
     node_dir = tmp_path / "node"
     node_dir.mkdir()
-    answer = "{ echo 'https://registry.npmjs.org/'; exit 1; }" if configured is None else f"echo '{configured}'"
+    answer = "echo 'https://registry.npmjs.org/'; exit 1" if configured is None else f"echo '{configured}'"
     (node_dir / "npm").write_text(
-        f"#!/bin/sh\n[ \"$1 $2 $3\" = 'config get registry' ] && {answer}\n", encoding="utf-8"
+        "#!/bin/sh\n"
+        'if [ "$1 $2 $3" = "config get registry" ]; then\n'
+        '  if [ -f .npmrc ] && grep -q "^registry=" .npmrc; then\n'
+        '    sed -n "s/^registry=//p" .npmrc\n'
+        f"  else\n    {answer}\n  fi\n"
+        "fi\n",
+        encoding="utf-8",
     )
     (node_dir / "npm").chmod(0o755)
     _fake_curl(tmp_path / "bin", {}, down=down)
+    build = tmp_path / "build"
+    build.mkdir(exist_ok=True)
+    if build_npmrc is not None:
+        (build / ".npmrc").write_text(build_npmrc, encoding="utf-8")
+    caller = tmp_path / "caller"
+    caller.mkdir(exist_ok=True)
+    if caller_npmrc is not None:
+        (caller / ".npmrc").write_text(caller_npmrc, encoding="utf-8")
     harness = tmp_path / "npm-step.sh"
     harness.write_text(
         _SH_PREAMBLE
-        + _sh_functions(_NPM_STEP, ("NPM_REGISTRY", "NPM_MIRROR", "MIRROR_EXPORTS"))
-        + f"use_npm_mirror '{node_dir}'\n"
-        'echo "REGISTRY=${npm_config_registry:-}"\n',
+        + _sh_functions(_NPM_STEP, _NPM_SETTINGS)
+        + f"registry=\"$(use_npm_mirror '{node_dir}' '{build}')\"\n"
+        + 'echo "REGISTRY=$registry"\n'
+        + f"npm_run \"$registry\" '{node_dir}' '{build}' sh -c 'echo \"INSIDE=${{npm_config_registry:-}}\"'\n"
+        + 'echo "AFTER=${npm_config_registry:-}"\n',
         encoding="utf-8",
     )
     result = subprocess.run(
@@ -3326,6 +3353,7 @@ def _run_npm_step(
         capture_output=True,
         text=True,
         check=False,
+        cwd=str(caller),
         env={"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin", **(env or {})},
     )
     return result, dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
@@ -3336,6 +3364,8 @@ def test_a_source_build_installs_from_the_npm_mirror_when_the_registry_cannot_be
     result, said = _run_npm_step(tmp_path, down=("https://registry.npmjs.org/",))
 
     assert said["REGISTRY"] == "https://registry.npmmirror.com"
+    assert said["INSIDE"] == "https://registry.npmmirror.com", "the install reads the mirror"
+    assert said["AFTER"] == "", "and nothing of it stays with the installer"
     assert "RAVEN_NO_MIRROR" in result.stderr
 
 
@@ -3371,6 +3401,78 @@ def test_the_opt_out_keeps_the_registry(tmp_path: Path) -> None:
     assert said["REGISTRY"] == ""
 
 
+@POSIX_SH_ONLY
+def test_the_two_builds_do_not_override_each_other_s_choice(tmp_path: Path) -> None:
+    """Each build asks npm in its own directory, and each keeps the registry
+    its own project names: the bundle and the page are two projects."""
+    node_dir = tmp_path / "node"
+    node_dir.mkdir()
+    (node_dir / "npm").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1 $2 $3" = "config get registry" ]; then\n'
+        '  if [ -f .npmrc ] && grep -q "^registry=" .npmrc; then\n'
+        '    sed -n "s/^registry=//p" .npmrc\n'
+        "  else\n    echo 'https://registry.npmjs.org/'\n  fi\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    (node_dir / "npm").chmod(0o755)
+    _fake_curl(tmp_path / "bin", {}, down=("https://registry.npmjs.org/",))
+    tui = tmp_path / "ui-tui"
+    web = tmp_path / "ui-web"
+    tui.mkdir()
+    web.mkdir()
+    (web / ".npmrc").write_text("registry=https://registry.example.internal/\n", encoding="utf-8")
+    harness = tmp_path / "npm-two.sh"
+    harness.write_text(
+        _SH_PREAMBLE
+        + _sh_functions(_NPM_STEP, _NPM_SETTINGS)
+        + f"tui=\"$(use_npm_mirror '{node_dir}' '{tui}')\"\n"
+        + f"web=\"$(use_npm_mirror '{node_dir}' '{web}')\"\n"
+        + 'echo "TUI=$tui"\n'
+        + 'echo "WEB=$web"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["sh", str(harness)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": f"{tmp_path / 'bin'}:/usr/bin:/bin"},
+    )
+    said = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+    assert said["TUI"] == "https://registry.npmmirror.com", "the build that names no registry takes the mirror"
+    assert said["WEB"] == "", "and the one that names a registry keeps it"
+
+
+@POSIX_SH_ONLY
+def test_the_registry_is_asked_where_the_install_runs(tmp_path: Path) -> None:
+    """npm reads the .npmrc of the project it runs in, so the question is
+    asked there: a registry named beside the install is kept."""
+    _result, said = _run_npm_step(
+        tmp_path,
+        down=("https://registry.npmjs.org/",),
+        build_npmrc="registry=https://registry.example.internal/\n",
+    )
+
+    assert said["REGISTRY"] == "", "the registry the project names is kept"
+    assert said["INSIDE"] == ""
+
+
+@POSIX_SH_ONLY
+def test_a_registry_beside_the_installer_is_not_the_projects(tmp_path: Path) -> None:
+    """The other way round: started from a project whose .npmrc names a
+    registry, the install goes to npmjs, and the fallback stands."""
+    _result, said = _run_npm_step(
+        tmp_path,
+        down=("https://registry.npmjs.org/",),
+        caller_npmrc="registry=https://registry.example.internal/\n",
+    )
+
+    assert said["REGISTRY"] == "https://registry.npmmirror.com"
+
+
 def test_both_installers_choose_the_registry_before_npm_ci() -> None:
     sh = INSTALL_SH.read_text(encoding="utf-8")
     body = sh[sh.index("build_web_assets() {") :]
@@ -3380,15 +3482,31 @@ def test_both_installers_choose_the_registry_before_npm_ci() -> None:
     assert body.index("Use-NpmMirror (Get-NpmRegistry $npm)") < body.index("& $npm.Source ci")
 
 
+def test_both_installers_ask_npm_where_they_install() -> None:
+    """npm reads the .npmrc of the project it runs in, so the question is
+    asked inside the directory the install runs in."""
+    sh = INSTALL_SH.read_text(encoding="utf-8")
+    assert 'use_npm_mirror "$node_dir" "$src/ui-tui"' in sh
+    assert 'use_npm_mirror "$2" "$1/ui-web"' in sh
+    ps1 = INSTALL_PS1.read_text(encoding="utf-8")
+    body = ps1[ps1.index("function Build-WebAssets") :]
+    for directory in ("ui-tui", "ui-web"):
+        block = body[body.index(f'Push-Location (Join-Path $ScriptDir "{directory}")') :]
+        assert block.index("Use-NpmMirror (Get-NpmRegistry $npm)") > block.index("Push-Location"), directory
+
+
 _PS1_NPM_STEP = r"""
-foreach ($text in (Get-Install @("Test-MirrorsAllowed", "Test-Reachable", "Get-TunnelStatus", "Set-MirrorEnv", "Use-NpmMirror"))) {
+foreach ($text in (Get-Install @("Test-MirrorsAllowed", "Test-Reachable", "Get-TunnelStatus", "Set-MirrorEnv", "Test-NpmRegistryReachable", "Use-NpmMirror", "Restore-NpmMirror"))) {
     Invoke-Expression $text
 }
 function Write-Warn([string]$Message) { [Console]::Out.WriteLine("WARN $Message") }
+$script:NpmAnswers = $null
 $Served = @{}
 $Down = @($DownList -split ",")
 Use-NpmMirror $(if ($Configured -eq "<cannot say>") { $null } else { $Configured })
 [Console]::Out.WriteLine("REGISTRY=$env:npm_config_registry")
+Restore-NpmMirror
+[Console]::Out.WriteLine("AFTER=$env:npm_config_registry")
 """
 
 
@@ -3424,6 +3542,148 @@ def test_a_windows_source_build_takes_the_npm_mirror_only_when_it_must(
 
     said = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     assert said["REGISTRY"] == expected, result.stdout + result.stderr
+    assert said["AFTER"] == "", "the fallback is put back after the build"
+
+
+_PS1_NPM_DIR_STEP = r"""
+foreach ($text in (Get-Install @("Test-MirrorsAllowed", "Test-Reachable", "Get-TunnelStatus", "Set-MirrorEnv", "Test-NpmRegistryReachable", "Use-NpmMirror", "Restore-NpmMirror", "Get-NpmRegistry"))) {
+    Invoke-Expression $text
+}
+function Write-Warn([string]$Message) { [Console]::Out.WriteLine("WARN $Message") }
+$script:NpmAnswers = $null
+$Served = @{}
+$Down = @($DownList -split ",")
+$npm = [pscustomobject]@{ Source = $NpmPath }
+Push-Location $CallerDir
+$outside = Get-NpmRegistry $npm
+Pop-Location
+Push-Location $BuildDir
+Use-NpmMirror (Get-NpmRegistry $npm)
+[Console]::Out.WriteLine("OUTSIDE=$outside")
+[Console]::Out.WriteLine("REGISTRY=$env:npm_config_registry")
+Restore-NpmMirror
+[Console]::Out.WriteLine("AFTER=$env:npm_config_registry")
+Pop-Location
+"""
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
+@pytest.mark.parametrize(
+    ("build_npmrc", "caller_npmrc", "expected"),
+    [
+        ("registry=https://registry.example.internal/\n", None, ""),
+        (None, "registry=https://registry.example.internal/\n", "https://registry.npmmirror.com"),
+    ],
+    ids=["the-projects-own", "the-installers-own"],
+)
+def test_a_windows_source_build_asks_npm_where_the_install_runs(
+    tmp_path: Path, build_npmrc: str | None, caller_npmrc: str | None, expected: str
+) -> None:
+    """npm reads the .npmrc of the project it runs in, so the question is
+    asked there: a registry named beside the install is kept, and one beside
+    the installer is not the project's."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    build = tmp_path / "build"
+    build.mkdir()
+    if build_npmrc is not None:
+        (build / ".npmrc").write_text(build_npmrc, encoding="utf-8")
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    if caller_npmrc is not None:
+        (caller / ".npmrc").write_text(caller_npmrc, encoding="utf-8")
+    npm = tmp_path / "npm.ps1"
+    npm.write_text(
+        "if (\"$args\" -eq 'config get registry') {\n"
+        "  if (Test-Path .npmrc) { (Get-Content .npmrc | Where-Object { $_ -like 'registry=*' }) -replace '^registry=', '' }\n"
+        "  else { 'https://registry.npmjs.org/' }\n"
+        "}\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    result = _run_ps1(
+        tmp_path,
+        "npm-dir-step",
+        _ps1_settings("ErrorActionPreference", "NpmRegistry", "NpmMirror")
+        + "$script:MirrorSaved = @{}\n"
+        + _PS1_FAKE_WEB
+        + _PS1_NPM_DIR_STEP,
+        env={"npm_config_registry": "", "NPM_CONFIG_REGISTRY": ""},
+        WebRoot=str(dist),
+        DownList="https://registry.npmjs.org/",
+        BuildDir=str(build),
+        CallerDir=str(caller),
+        NpmPath=str(npm),
+    )
+
+    said = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert said["REGISTRY"] == expected, result.stdout + result.stderr
+    if expected:
+        assert said["OUTSIDE"] == "https://registry.example.internal/", "another directory's registry"
+
+
+_PS1_NPM_TWO_STEP = r"""
+foreach ($text in (Get-Install @("Test-MirrorsAllowed", "Test-Reachable", "Get-TunnelStatus", "Set-MirrorEnv", "Test-NpmRegistryReachable", "Use-NpmMirror", "Restore-NpmMirror", "Get-NpmRegistry"))) {
+    Invoke-Expression $text
+}
+function Write-Warn([string]$Message) { [Console]::Out.WriteLine("WARN $Message") }
+$script:NpmAnswers = $null
+$Served = @{}
+$Down = @($DownList -split ",")
+$npm = [pscustomobject]@{ Source = $NpmPath }
+Push-Location $FirstDir
+Use-NpmMirror (Get-NpmRegistry $npm)
+[Console]::Out.WriteLine("FIRST=$env:npm_config_registry")
+Restore-NpmMirror
+Pop-Location
+Push-Location $SecondDir
+Use-NpmMirror (Get-NpmRegistry $npm)
+[Console]::Out.WriteLine("SECOND=$env:npm_config_registry")
+Restore-NpmMirror
+Pop-Location
+"""
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs PowerShell")
+def test_a_windows_source_build_keeps_the_two_builds_apart(tmp_path: Path) -> None:
+    """Each build asks npm in its own directory, and each keeps the registry
+    its own project names: the bundle and the page are two projects."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    first = tmp_path / "ui-tui"
+    second = tmp_path / "ui-web"
+    first.mkdir()
+    second.mkdir()
+    (second / ".npmrc").write_text("registry=https://registry.example.internal/\n", encoding="utf-8")
+    npm = tmp_path / "npm.ps1"
+    npm.write_text(
+        "if (\"$args\" -eq 'config get registry') {\n"
+        "  if (Test-Path .npmrc) { (Get-Content .npmrc | Where-Object { $_ -like 'registry=*' }) -replace '^registry=', '' }\n"
+        "  else { 'https://registry.npmjs.org/' }\n"
+        "}\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    result = _run_ps1(
+        tmp_path,
+        "npm-two-step",
+        _ps1_settings("ErrorActionPreference", "NpmRegistry", "NpmMirror")
+        + "$script:MirrorSaved = @{}\n"
+        + _PS1_FAKE_WEB
+        + _PS1_NPM_TWO_STEP,
+        env={"npm_config_registry": "", "NPM_CONFIG_REGISTRY": ""},
+        WebRoot=str(dist),
+        DownList="https://registry.npmjs.org/",
+        FirstDir=str(first),
+        SecondDir=str(second),
+        NpmPath=str(npm),
+    )
+
+    said = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert said["FIRST"] == "https://registry.npmmirror.com", result.stdout + result.stderr
+    assert said["SECOND"] == "", "the build that names a registry keeps it"
 
 
 _PS1_NPM_REGISTRY_STEP = r"""

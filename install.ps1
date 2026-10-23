@@ -67,6 +67,8 @@ $PlaywrightHosts = @("https://cdn.playwright.dev/dbazure/download/playwright", "
 # install ends (Restore-MirrorEnv).
 $script:MirrorSaved = @{}
 $script:NodeDistChosen = $null
+# Whether the npm registry answers at all: $null until it was asked.
+$script:NpmAnswers = $null
 
 function Write-Info([string]$Message) {
     Write-Host ">" $Message -ForegroundColor Cyan
@@ -626,8 +628,6 @@ function Build-WebAssets([string]$ScriptDir, [string]$NodePath, [string]$UvPath)
         if ($needPage) { Write-Warn "Found node but not npm; skipping served-page build; raven web will not start" }
         return
     }
-    Use-NpmMirror (Get-NpmRegistry $npm)
-
     if ($needTui) {
         Write-Info "Building TUI bundle (ui-tui/dist/entry.js)..."
         Push-Location (Join-Path $ScriptDir "ui-tui")
@@ -640,11 +640,16 @@ function Build-WebAssets([string]$ScriptDir, [string]$NodePath, [string]$UvPath)
         # rather than exiting the process, so `irm | iex` does not close the
         # caller's shell and Pop-Location still runs.
         try {
+            # Asked here, in the directory the install runs in: npm reads the
+            # .npmrc of the project beside it, and the page below may name
+            # another registry.
+            Use-NpmMirror (Get-NpmRegistry $npm)
             & $npm.Source ci
             if ($LASTEXITCODE -ne 0) { Fail "TUI bundle build failed: npm ci exited $LASTEXITCODE" }
             & $npm.Source run build
             if ($LASTEXITCODE -ne 0) { Fail "TUI bundle build failed: npm run build exited $LASTEXITCODE" }
         } finally {
+            Restore-NpmMirror
             Pop-Location
         }
     }
@@ -659,11 +664,16 @@ function Build-WebAssets([string]$ScriptDir, [string]$NodePath, [string]$UvPath)
         try {
             Push-Location (Join-Path $ScriptDir "ui-web")
             try {
+                # Asked here, in the directory the install runs in: npm reads
+                # the .npmrc of the project beside it, and the bundle above may
+                # have named another registry.
+                Use-NpmMirror (Get-NpmRegistry $npm)
                 & $npm.Source ci
                 if ($LASTEXITCODE -ne 0) { throw "npm ci exited $LASTEXITCODE" }
                 & $npm.Source run build
                 if ($LASTEXITCODE -ne 0) { throw "npm run build exited $LASTEXITCODE" }
             } finally {
+                Restore-NpmMirror
                 Pop-Location
             }
             # Vite emits ui-web/.modern/modern.iife.js, then ui-web/build.py inlines
@@ -680,7 +690,8 @@ function Build-WebAssets([string]$ScriptDir, [string]$NodePath, [string]$UvPath)
 }
 
 # What $npm will install from, or $null when it cannot say: an npm that fails
-# may have printed its default all the same.
+# may have printed its default all the same. Asked in the directory the
+# install runs in: npm reads the .npmrc of the project beside it.
 function Get-NpmRegistry($npm) {
     try {
         $answer = [string](& $npm.Source config get registry 2>$null)
@@ -689,16 +700,32 @@ function Get-NpmRegistry($npm) {
     return $null
 }
 
+# Whether the npm registry answers at all: one probe for the install, since
+# both builds read the same registry.
+function Test-NpmRegistryReachable {
+    if ($null -eq $script:NpmAnswers) { $script:NpmAnswers = Test-Reachable $NpmRegistry }
+    return $script:NpmAnswers
+}
+
 # `npm ci` reads every package from the registry. One that cannot be reached at
 # all is swapped for its mirror, unless the user named a registry. $Registry is
 # the one npm says it reads, and $null when it could not say, which is no proof
 # that the choice is npm's default. Untyped, since [string] turns $null into "".
+# The fallback is set for the build that asked for it, and put back after it:
+# the two builds may name different registries, and neither may reach the other.
 function Use-NpmMirror($Registry) {
     if (-not (Test-MirrorsAllowed) -or $env:npm_config_registry) { return }
     if ($null -eq $Registry -or $Registry.TrimEnd("/") -ne $NpmRegistry.TrimEnd("/")) { return }
-    if (Test-Reachable $NpmRegistry) { return }
+    if (Test-NpmRegistryReachable) { return }
     Write-Warn "registry.npmjs.org could not be reached; installing packages from $NpmMirror instead (RAVEN_NO_MIRROR=1 turns this off)."
     Set-MirrorEnv "npm_config_registry" $NpmMirror
+}
+
+# Put back what the npm fallback replaced, for that build only.
+function Restore-NpmMirror {
+    if (-not $script:MirrorSaved.ContainsKey("npm_config_registry")) { return }
+    [Environment]::SetEnvironmentVariable("npm_config_registry", $script:MirrorSaved["npm_config_registry"], "Process")
+    $script:MirrorSaved.Remove("npm_config_registry")
 }
 
 # The uv.toml files uv reads: the one UV_CONFIG_FILE names, or the user's,

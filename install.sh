@@ -65,6 +65,8 @@ PLAYWRIGHT_HOSTS="https://cdn.playwright.dev/dbazure/download/playwright https:/
 # The variables a fallback exported, unset again before the page starts: they
 # are for this install's own downloads, and the runtime decides for itself.
 MIRROR_EXPORTS=""
+# Whether the npm registry answers at all: "" until it was asked, then 1 or 0.
+NPM_ANSWERS=""
 # The host Node comes from, once chosen (choose_node_dist).
 NODE_FROM=""
 
@@ -464,22 +466,59 @@ resolve_node_dir() {
   fi
 }
 
+# Whether the npm registry answers at all. One probe for the install: both
+# builds read the same registry, and a probe is a request to a host that may
+# not answer.
+npm_registry_answers() {
+  if [ -z "$NPM_ANSWERS" ]; then
+    if reachable "$NPM_REGISTRY"; then NPM_ANSWERS=1; else NPM_ANSWERS=0; fi
+  fi
+  return 0
+}
+
 # `npm ci` reads every package from the registry. One that cannot be reached at
 # all is swapped for its mirror, unless the user named a registry: in the
-# environment, or in npm's own configuration, which $1's npm reads out.
+# environment, or in npm's own configuration, which npm reads out of the
+# directory it runs in -- a project names its own registry in a .npmrc beside
+# it. The question is therefore asked in the directory the install runs in,
+# and each build's answer is its own: the two builds may name different
+# registries, and neither may reach the other.
+#
+# $1 the node bin directory, $2 the directory the install runs in. The
+# registry to install from is printed; nothing is printed when the one npm
+# reads stands.
 use_npm_mirror() {
   mirrors_allowed || return 0
   [ -z "${npm_config_registry:-}${NPM_CONFIG_REGISTRY:-}" ] || return 0
   # An npm that cannot say which registry it reads may be reading one the user
   # chose, so only its own word for the default lets the mirror in.
-  configured="$(PATH="$1:$PATH" npm config get registry 2>/dev/null)" || return 0
+  configured="$(cd "$2" && PATH="$1:$PATH" npm config get registry 2>/dev/null)" || return 0
   case "$configured" in
     "$NPM_REGISTRY"|"${NPM_REGISTRY%/}") ;;
     *) return 0 ;;
   esac
-  reachable "$NPM_REGISTRY" && return 0
+  npm_registry_answers
+  if [ "$NPM_ANSWERS" = 1 ]; then return 0; fi
   warn "registry.npmjs.org could not be reached; installing packages from $NPM_MIRROR instead (RAVEN_NO_MIRROR=1 turns this off)."
-  use_mirror npm_config_registry "$NPM_MIRROR"
+  printf '%s' "$NPM_MIRROR"
+}
+
+# Run a command in a build directory with the registry that build installs
+# from, and only for that command: the two builds may name different
+# registries, and neither may reach the other.
+#
+# $1 the registry (empty when there is none to swap), $2 the node bin
+# directory, $3 the build directory, the rest the command.
+npm_run() {
+  npm_registry_arg="$1"
+  npm_node_bin="$2"
+  npm_build_dir="$3"
+  shift 3
+  if [ -n "$npm_registry_arg" ]; then
+    ( cd "$npm_build_dir" && PATH="$npm_node_bin:$PATH" npm_config_registry="$npm_registry_arg" "$@" )
+  else
+    ( cd "$npm_build_dir" && PATH="$npm_node_bin:$PATH" "$@" )
+  fi
 }
 
 build_web_assets() {
@@ -494,14 +533,16 @@ build_web_assets() {
 
   # One probe for both builds.
   resolve_node_dir
-  if [ -z "$blocker" ]; then use_npm_mirror "$node_dir"; fi
+  if [ -z "$blocker" ]; then npm_registry_answers; fi
 
   if [ "$need_tui" = 1 ]; then
     if [ -n "$blocker" ]; then
       warn "$blocker; skipping TUI build; raven tui may not work"
     else
       info "Building the TUI bundle (ui-tui/dist/entry.js)..."
-      ( cd "$src/ui-tui" && PATH="$node_dir:$PATH" npm ci && PATH="$node_dir:$PATH" npm run build )
+      npm_registry="$(use_npm_mirror "$node_dir" "$src/ui-tui")"
+      npm_run "$npm_registry" "$node_dir" "$src/ui-tui" npm ci \
+        && npm_run "$npm_registry" "$node_dir" "$src/ui-tui" npm run build
     fi
   fi
 
@@ -528,7 +569,9 @@ build_web_assets() {
 # here, rather than from a bare `python3` -- on a machine without the Command
 # Line Tools that name is a stub macOS answers with an install prompt.
 build_page() {
-  ( cd "$1/ui-web" && PATH="$2:$PATH" npm ci && PATH="$2:$PATH" npm run build ) \
+  npm_registry="$(use_npm_mirror "$2" "$1/ui-web")"
+  npm_run "$npm_registry" "$2" "$1/ui-web" npm ci \
+    && npm_run "$npm_registry" "$2" "$1/ui-web" npm run build \
     && uv run --no-project python "$1/ui-web/build.py"
 }
 
