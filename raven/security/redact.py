@@ -300,10 +300,13 @@ def _own_oauth_store() -> re.Pattern[str]:
     more of a name, so ``oauth-other`` is not the store. Each root is built
     segment by segment in the host's terms (:func:`_host_paths`): on Windows
     every separator inside it is either slash, one or more, and the pattern
-    ignores case, as the filesystem does; on POSIX a separator is ``/`` and
-    case counts. A store not under the home (``RAVEN_HOME`` elsewhere) has no
-    abbreviation to add and is matched by its absolute path alone, which is the
-    only spelling a call can use for it.
+    ignores case, as the filesystem does; on POSIX a separator is one or more
+    ``/`` and case counts. Between two segments a separator may repeat and a
+    ``.`` segment may sit between them, as ``.raven\\.\\oauth`` is the same
+    directory as ``.raven\\oauth``; the arguments are matched as the call wrote
+    them, and no caller normalizes a path first. A store not under the home
+    (``RAVEN_HOME`` elsewhere) has no abbreviation to add and is matched by its
+    absolute path alone, which is the only spelling a call can use for it.
 
     This is a second resolver beside :func:`_home_config`, not the same one: that
     one answers "is this any program's dot-directory of the home", this one "is
@@ -314,10 +317,13 @@ def _own_oauth_store() -> re.Pattern[str]:
     """
     from raven.home import oauth_home
 
-    flavour, sep, flags = _host_paths(_path_style())
+    style = _path_style()
+    flavour, sep, flags = _host_paths(style)
     store = flavour(str(oauth_home()))
     home_dir = flavour(os.path.expanduser("~"))
-    roots = [_spelled(store, sep)]
+    gap = sep if style == _WINDOWS else "/+"
+    gap += r"(?:\." + gap + r")*"
+    roots = [_spelled(store, gap)]
     # The shell spellings, derived from the store's own path rather than spelled
     # here. The old condition compared the store's *parent* with the home, which
     # held while the root was ``~/.raven`` and stopped holding the moment the
@@ -329,7 +335,7 @@ def _own_oauth_store() -> re.Pattern[str]:
     except ValueError:
         rel = None
     if rel is not None and rel.parts:
-        roots += [re.escape(prefix) + sep + _spelled(rel, sep) for prefix in ("~", "$HOME", "${HOME}")]
+        roots += [re.escape(prefix) + gap + _spelled(rel, gap) for prefix in ("~", "$HOME", "${HOME}")]
     return re.compile(r"(?:" + "|".join(dict.fromkeys(roots)) + r")(?:[/\\]|$|[\"'\s])", flags)
 
 
@@ -384,6 +390,9 @@ def _home_config() -> re.Pattern[str]:
     ignored, so ``C:\\Users\\a\\.raven\\Workspace`` is the ``workspace`` directory; on POSIX
     ``/`` separates and ``Workspace`` is not ``workspace``. Either way a name
     ends at a separator, a quote or the end, so ``pluginsfoo`` is not exempt.
+    Before the name, separators may repeat and ``.`` segments may sit between
+    them: the arguments are matched as the call wrote them, no caller
+    normalizes them first, and ``.raven//workspace`` is the same directory.
 
     The OAuth token store (``oauth/<provider>/...``) is deliberately not among
     them: it holds no source to edit, and a read of it is a credential file like
@@ -413,7 +422,8 @@ def _home_config() -> re.Pattern[str]:
     if own.parent == home_dir and own.name.startswith("."):
         name = re.escape(own.name[1:])
         boundary = r"(?:/|\\|$|[\"'\s])"
-        lead = sep if style == _WINDOWS else r"[/\\]"
+        lead = sep if style == _WINDOWS else "/+"
+        lead += r"(?:\." + lead + r")*"
         source = r"(?:" + lead + r"(?:" + "|".join(_OWN_SOURCE_DIRS) + r"))" + boundary
         skip = r"(?!" + name + r"(?:" + source + r"|(?:$|[\"'\s])))"
     return re.compile(r"(?:~|\$HOME|\$\{HOME\}|" + home + r")" + sep + r"\." + skip + r"[A-Za-z0-9_-]", flags)
