@@ -22,8 +22,15 @@ All notable changes to Raven are documented here.
   logins (`~/.raven/keys/<id>.password`, readable by the owner alone), handed
   to ssh on every connection through its askpass hook, and never on a command
   line, in a log or in an answer; such a machine gets no ssh alias and no jump
-  host, its password answers the registered account's own password prompt and
-  no other, Oncall campaigns run on it as Raven's own connections do and at
+  host, its password answers the registered account's own password prompt (at
+  the address as ssh resolves it, so a `Host` alias from the owner's ssh config
+  works too, though not one Raven wrote for another machine that sends ssh
+  elsewhere: such a pair is refused at registration in either order and again
+  on connecting, while a key machine whose alias names its own id as the
+  address, `gpu1` at `gpu1`, leaves a password machine at `gpu1` free to
+  register, and a password connection never canonicalizes the host)
+  and no other, Oncall campaigns run on it as Raven's own
+  connections do and at
   the registered address alone, and the mode is not offered on Windows. A failed
   or cancelled registration preserves the password written by another pending
   registration of the same machine, including when both passwords are identical.
@@ -544,6 +551,18 @@ All notable changes to Raven are documented here.
   asks the replay from the line its record kept as the prompt went out, not
   from the agent's first line; a CLI pick-up, whose task is the command's
   own, reads from the first line.
+
+- A password machine at the name of a key machine whose ssh alias names that
+  same address (key machine `gpu1` at `gpu1`, password machine `gpu1-shared`
+  at `gpu1`) registers and logs in. The check that keeps a `Host` alias Raven
+  wrote from taking another machine's password refused every such pair by
+  name; it now refuses only an alias that would send ssh elsewhere (another
+  `HostName`, a keyword Raven does not write, a block cut short), and its
+  refusal suggests the machine's IP address or full domain name rather than
+  the address it already had. The Oncall event watcher builds a password
+  machine's backend off the event loop as the ops tools do, so the `ssh -G`
+  that build runs no longer holds up the rest of Raven, for up to 10 seconds
+  on each pass.
 
 - The research, code, oncall and ppt agents follow an upgrade or a config
   change into the prompt files they keep in their workspace (`soul.md`,

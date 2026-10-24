@@ -82,10 +82,30 @@ What gets recorded, and where:
   the jump's own ssh would be handed this machine's password; a machine
   reached only through one has to be registered with a key. The helper
   answers one prompt: ssh's own, for the password of the registered account
-  at the registered address (`user@host`). Another account's prompt, a
-  second factor's (a verification code, a passcode) and a one-time
-  password's get no answer, so a machine whose login also asks for one is
-  registered with a key as well. The row carries `auth: password` and no key
+  at the registered address (`user@host`), named as ssh resolves it -- the
+  `HostName` or `HostKeyAlias` your ssh config gives an alias, an address in
+  its canonical form -- so the address can be an alias from your ssh config.
+  Not one of the `Host <id>` aliases Raven itself writes for key machines,
+  though, when it points elsewhere: a password machine whose address is such
+  an id would log in at that other machine's address, so it is refused by name
+  and its password is not sent. So is a block Raven did not write as it is:
+  one of its two marker lines gone, a keyword Raven does not write
+  (`ProxyCommand`, `Include` ...), a missing or second `HostName`, or a second
+  name on its `Host` line. An alias whose `HostName` is the id itself (key
+  machine `gpu1` at `gpu1`) moves nothing, and the pair is accepted.
+  Registration refuses a redirecting pair in either order -- a password machine at
+  a key machine's id, or a key machine whose id is a password machine's
+  address -- and connecting refuses it again for a pair registered before.
+  A password connection also turns off `CanonicalizeHostname`, so it reaches
+  the host `ssh -G` names rather than one a DNS lookup picks later; a machine
+  that relied on canonicalization is registered at its full name. When ssh
+  cannot say how it resolves the address, the helper waits for the registered
+  spelling, and a refusal then says the resolution failed.
+  Another account's prompt, a second factor's (a verification code, a
+  passcode) and a one-time password's get no answer, so a machine whose login
+  also asks for one is registered with a key as well; a registration refused
+  that way says the password was not sent. The row carries `auth: password`
+  and no key
   path. `raven ops connection doctor` counts the row usable, and Oncall
   campaigns run on it too, logging in the same way at the registered address
   alone: a campaign cannot point such a connection at another host, port or

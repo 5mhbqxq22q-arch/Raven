@@ -450,8 +450,16 @@ key, gets no ssh alias, no jump host and no shared connection, and is refused on
 whose OpenSSH cannot run Raven's POSIX askpass helper; a password under six characters is
 refused, since the scrubber would pass it as ordinary text, one with a line break too, since
 ssh would take only its first line, and the id rule is the one owner `connections.password_path`;
-the askpass helper answers the registered account's own password prompt (`user@host`, named by
-`transport.ASKPASS_FOR_ENV`) and no other, another account's, a second factor's and a one-time
+the askpass helper answers the registered account's own password prompt (`user@host`, the host as
+`ssh -G` resolves it -- the `HostKeyAlias`, else the `HostName` in canonical form -- named by
+`transport.ASKPASS_FOR_ENV`; a host that is the id of a `Host` alias Raven keeps for a key machine,
+`transport.ALIAS_MARK`, is refused rather than followed when that alias sends ssh to another
+`HostName` (`transport.managed_alias_hostnames`), and so is a block that is not the one Raven
+writes -- one of its two marks gone, a keyword Raven does not write (`ProxyCommand`, `Include`
+...), a missing or second `HostName`, a second pattern on its `Host` line -- at registration in
+either order by
+`connection_add.alias_collision` and again on connecting; one reader, `transport.resolve_with_ssh`,
+serves both this and a key machine's defaults, and a password connection never canonicalizes) and no other, another account's, a second factor's and a one-time
 password's included; Oncall's ssh and rsync log in to such a row the same way, at the registry's
 address alone, `oncall_flow.transport.password_row`), install the node in the background, doctor,
 and remove (`raven ops connection remove`, refused while a connected agent entry names the
