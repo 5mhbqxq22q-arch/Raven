@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import os
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
