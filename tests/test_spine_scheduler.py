@@ -259,6 +259,22 @@ async def test_is_busy_while_a_turn_runs_and_not_once_it_has_ended():
     assert not sched.is_busy("tg:1")
 
 
+async def test_is_busy_answers_for_the_lane_it_is_asked_about():
+    """The lane a refusal was refused on, and only that lane: ``turn.cancel``
+    says whether the lane it resolved to still has a turn to run, and a lane
+    with a turn on it says nothing about another lane's."""
+    runner = HangingRunner()
+    sched = _scheduler(runner)
+    handle = sched.submit(_req(channel="tg", chat_id="1"))
+    await runner.started.wait()
+    try:
+        assert sched.is_busy("tg:1")
+        assert not sched.is_busy("tg:2")
+    finally:
+        await handle.cancel()
+        assert await asyncio.wait_for(handle.result(), timeout=1.0) is None
+
+
 @pytest.mark.parametrize("behind", [None, BusyPolicy.APPEND, BusyPolicy.INJECT])
 async def test_a_lane_is_busy_only_with_what_waits_behind_a_turn_that_has_stopped(behind):
     """Between the running turn stopping and the worker resolving it,
