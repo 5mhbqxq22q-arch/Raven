@@ -6,7 +6,9 @@ import { resetTranslator, setTranslator } from '../../i18n/t'
 import { absorb, resetCapabilities } from '../../rpc/capabilities'
 import { _resetFreshForTests, unpitch } from '../../state/session/conversation'
 import { resetSources, setSources } from '../../state/sources'
+import * as details from './detailStore'
 import { DOOR_PREVIEW_MIN, EntryList, FOLLOW_SLACK, OVERSCAN, ROW_HEIGHT, measureColumns, windowOf } from './EntryList'
+import { DBL_MS } from './geometry'
 import * as store from './store'
 
 import type { TrajectoryEntry, TrajectoryIndexState, TrajectoryListResult, TrajectorySource } from './types'
@@ -62,6 +64,7 @@ beforeEach(() => {
   rows = []
   indexState = READY
   store._resetForTests()
+  details._resetForTests()
   resetCapabilities()
   _resetFreshForTests()
   absorb(['trajectory-v1'])
@@ -581,5 +584,66 @@ describe('the rows that lead to a Scope Tab', () => {
     expect(empty()).toBe('gui.trajectory.scope.gone')
     act(() => { store.switchScope(null) })
     expect(document.querySelector('.trajectory-empty')).toBeNull()
+  })
+})
+
+describe('a click on a row that opens a tab', () => {
+  const A = 't:runA'
+  const ROWS = (): TrajectoryEntry[] => [
+    entry('ask', 0, { turn_start: true }),
+    entry('door', 1, { kind: 'subagent.run', span_name: 'subagent.run', opens_subagent_scope: A }),
+    entry('plain', 2),
+    entry('a0', 3, { subagent_scope: A }),
+  ]
+  const row = (id: string): HTMLElement => document.querySelector(`[data-entry="${id}"]`) as HTMLElement
+  const wait = (ms: number): void => { act(() => { vi.advanceTimersByTime(ms) }) }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  async function drawn(): Promise<void> {
+    rows = ROWS()
+    details.install()
+    render(<EntryList />)
+    await act(async () => { await store.load() })
+  }
+
+  it('waits out a double click before it selects while the pane is closed, and opens the pane then', async () => {
+    await drawn()
+    act(() => { fireEvent.click(row('door')) })
+    expect([store.get().selectedId, details.get().open]).toEqual([null, false])
+    wait(DBL_MS)
+    expect([store.get().selectedId, store.get().selectedBy, details.get().open]).toEqual(['door', 'click', true])
+  })
+
+  it('opens the tab on a double click and never selects in the main session', async () => {
+    await drawn()
+    act(() => { fireEvent.click(row('door')); fireEvent.click(row('door')); fireEvent.doubleClick(row('door')) })
+    expect(store.get().scope).toBe(A)
+    wait(DBL_MS * 2)
+    expect([store.get().scope, store.get().selectedId, details.get().open]).toEqual([A, null, false])
+    act(() => { store.switchScope(null) })
+    expect([store.get().selectedId, details.get().open]).toEqual([null, false])
+  })
+
+  it('selects at once while the pane is open, and any other row always', async () => {
+    await drawn()
+    act(() => { fireEvent.click(row('plain')) })
+    expect([store.get().selectedId, details.get().open]).toEqual(['plain', true])
+    act(() => { fireEvent.click(row('door')) })
+    expect(store.get().selectedId).toBe('door')
+  })
+
+  it('drops the waiting click when the reader moves to another tab or picks another row first', async () => {
+    await drawn()
+    act(() => { fireEvent.click(row('door')) })
+    act(() => { store.openScope(A) })
+    wait(DBL_MS)
+    expect([store.get().scope, store.get().selectedId]).toEqual([A, null])
+    act(() => { store.switchScope(null) })
+    act(() => { fireEvent.click(row('door')) })
+    act(() => { fireEvent.click(row('plain')) })
+    wait(DBL_MS)
+    expect(store.get().selectedId).toBe('plain')
   })
 })

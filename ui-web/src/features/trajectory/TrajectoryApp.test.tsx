@@ -241,7 +241,7 @@ describe('the Scope Tabs in the island', () => {
 
   it('hands the focus to the new tab from the pane\'s button, and to the list on the way back to the door', async () => {
     await draw()
-    act(() => { fireEvent.click(entryRow('doorB')) })
+    act(() => { store.select('doorB', { source: 'click' }) })
     press(document.querySelector('.trajectory-scope-jump') as HTMLElement)
     expect([store.get().scope, active()]).toEqual([B, tab(1)])
     stays()

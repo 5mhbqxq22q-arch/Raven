@@ -16,7 +16,7 @@
  */
 
 import { ArrowUpRight01Icon } from '@hugeicons/core-free-icons'
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { Icon } from '../../components/Icon'
 import { t } from '../../i18n/t'
@@ -24,6 +24,7 @@ import { formatDuration } from '../../lib/duration'
 import * as lang from '../../state/lang'
 import { statusKey } from './blocks'
 import * as details from './detailStore'
+import { DBL_MS } from './geometry'
 import { isKnownKind, kindClass, kindLabel, kindLabels } from './palette'
 import * as scopes from './scopes'
 import * as store from './store'
@@ -99,8 +100,9 @@ function Door({ entry }: { entry: TrajectoryEntry }): JSX.Element {
   )
 }
 
-function Row({ entry, at, selected, total, revealed, turnTotal, inScope }: {
+function Row({ entry, at, selected, total, revealed, turnTotal, inScope, onPick, onOpen }: {
   entry: TrajectoryEntry; at: number; selected: boolean; total: number; revealed: boolean; turnTotal: number | null; inScope: boolean
+  onPick: (entry: TrajectoryEntry) => void; onOpen: (entry: TrajectoryEntry) => void
 }): JSX.Element {
   const known = isKnownKind(entry.kind)
   /* A turn a sub-agent's report started carries a mark after its number that
@@ -130,8 +132,8 @@ function Row({ entry, at, selected, total, revealed, turnTotal, inScope }: {
       data-revealed={revealed ? '' : undefined}
       title={revealed ? t('gui.trajectory.revealed_row') : undefined}
       style={{ top: at * ROW_HEIGHT }}
-      onClick={() => { store.select(entry.entry_id, { source: 'click' }); details.openDetails() }}
-      onDoubleClick={() => openFromList(entry)}
+      onClick={() => onPick(entry)}
+      onDoubleClick={() => onOpen(entry)}
     >
       <span className={turnClass} title={turnTitle}>
         {turnShown ? entry.turn_number : ''}
@@ -179,6 +181,32 @@ export function EntryList(): JSX.Element {
   const [size, setSize] = useState({ width: 0, height: 0 })
   const count = entries.length
   const paneOpen = useSyncExternalStore(details.subscribe, details.get).open
+  /* A click on a row that opens a tab, while the pane is closed, waits a
+     double click's time before it selects: the pane it would open takes the
+     list's right side, where the second click of a double click would then
+     land. A double click in the wait opens the tab instead; any other row,
+     or any row while the pane is up, selects at once. */
+  const waiting = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const settle = useCallback((): void => {
+    if (waiting.current !== null) clearTimeout(waiting.current)
+    waiting.current = null
+  }, [])
+  useEffect(() => settle, [settle])
+  const onPick = useCallback((entry: TrajectoryEntry): void => {
+    settle()
+    const pick = (): void => { store.select(entry.entry_id, { source: 'click' }); details.openDetails() }
+    if (scopes.openTarget(entry) === null || details.get().open) { pick(); return }
+    const { sessionKey, scope } = store.get()
+    waiting.current = setTimeout(() => {
+      waiting.current = null
+      const s = store.get()
+      if (s.sessionKey === sessionKey && s.scope === scope && entry.entry_id in s.visibleIndex) pick()
+    }, DBL_MS)
+  }, [settle])
+  const onOpen = useCallback((entry: TrajectoryEntry): void => {
+    settle()
+    openFromList(entry)
+  }, [settle])
   const wasOpen = useRef(paneOpen)
   /* The column widths follow the words of the current language: the labels
      are the subscription's snapshot, joined so the value compares by content. */
@@ -362,6 +390,8 @@ export function EntryList(): JSX.Element {
         revealed={store.hiddenOf(entry) !== null && !state.prefs.showHidden}
         turnTotal={turnTotal}
         inScope={state.scope !== null}
+        onPick={onPick}
+        onOpen={onOpen}
       />,
     )
   }

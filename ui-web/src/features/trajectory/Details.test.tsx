@@ -10,6 +10,7 @@ import { _resetFreshForTests, unpitch } from '../../state/session/conversation'
 import { resetSources, setSources } from '../../state/sources'
 import { shortName } from './Details'
 import * as details from './detailStore'
+import { DBL_MS } from './geometry'
 import * as list from './store'
 import { TrajectoryApp } from './TrajectoryApp'
 
@@ -520,10 +521,15 @@ describe('the way to a Scope Tab from the head', () => {
   })
 
   const jump = (): HTMLButtonElement | null => q<HTMLButtonElement>('.trajectory-head .trajectory-scope-jump')
+  /* A click on a row that opens a tab waits out a double click before the pane opens. */
+  const pickDoor = async (id: string): Promise<void> => {
+    await pick(id)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, DBL_MS + 10)) })
+  }
 
   it('offers to open a door\'s trajectory, and opens it', async () => {
     await draw()
-    await pick('door')
+    await pickDoor('door')
     expect(jump()?.textContent).toBe('gui.trajectory.scope.open')
     expect(jump()?.title).toBe('gui.trajectory.scope.open')
     /* It sits before the pin and the close button, and does not wait for the descriptor. */
@@ -536,7 +542,7 @@ describe('the way to a Scope Tab from the head', () => {
 
   it('names the sub-agent a report turn came from, and opens its tab', async () => {
     await draw()
-    await pick('back')
+    await pickDoor('back')
     expect(jump()?.textContent).toBe('gui.trajectory.scope.from {"title":"coder · Fix the parser"}')
     act(() => { fireEvent.click(jump()!) })
     expect(list.get().scope).toBe(A)
