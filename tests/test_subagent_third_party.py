@@ -5511,6 +5511,21 @@ def test_a_row_under_a_version_floor_is_told_what_is_too_old() -> None:
     assert "opencode upgrade" not in unreadable
 
 
+def test_a_version_nobody_can_read_is_not_a_gap() -> None:
+    """A build raven cannot read is not evidence of an old one.
+
+    The floor is a fact about a build, and an answer that is not a version
+    says nothing about which build it is -- so it names no gap.
+    """
+    from types import SimpleNamespace
+
+    from raven.agent.subagent.presets import version_gap_for
+
+    code = SimpleNamespace(name="OpenCode", preset="opencode", kind="acp")
+    assert version_gap_for(code, "not-a-version") is None
+    assert version_gap_for(code, "1.14.31") is not None
+
+
 def test_the_empty_turn_names_the_credential_check_beside_the_command_that_prints_why() -> None:
     """The one class Raven cannot classify is the credential, and the agent knows it.
 

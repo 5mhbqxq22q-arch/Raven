@@ -2633,6 +2633,25 @@ async def test_a_turn_that_reported_no_usage_is_not_read_as_one_that_spent_nothi
     assert excinfo.value.tokens is None
 
 
+def test_a_count_nobody_reported_is_not_read_as_one() -> None:
+    """The count comes off the agent's own answer, so an answer without one says nothing.
+
+    A turn that reports no usage, or reports something that is not a count, is
+    not read as one that spent nothing -- and a connection whose handshake
+    cannot be read has no version to give.
+    """
+    from types import SimpleNamespace
+
+    from raven.acp_client.acp_agent import _agent_version, _tokens_reported
+
+    assert _tokens_reported(None) is None
+    assert _tokens_reported({"usage": "none"}) is None
+    assert _tokens_reported({"usage": {"inputTokens": 3}}) is None
+    assert _tokens_reported({"usage": {"totalTokens": "many"}}) is None
+    assert _tokens_reported({"usage": {"total_tokens": 7}}) == 7
+    assert _agent_version(SimpleNamespace(initialize=None)) == ""
+
+
 async def test_an_empty_turn_names_a_request_raven_could_not_answer(tmp_path: Path) -> None:
     """The one cause the stderr tail cannot carry.
 
