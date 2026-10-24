@@ -244,6 +244,37 @@ describe('the strip', () => {
   })
 })
 
+describe('keeping the tab on screen in view', () => {
+  it('scrolls the strip alone, never the page around it', async () => {
+    rows = [door('d', 0, A), door('e', 1, B)]
+    vi.stubGlobal('ResizeObserver', class { observe(): void {} disconnect(): void {} })
+    const intoView = vi.fn()
+    const was = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = intoView
+    try {
+      await draw()
+      act(() => { list.openScope(A) })
+      const strip = q('.trajectory-scope-tabs') as HTMLElement
+      const rect = (left: number, width: number): DOMRect => ({ left, right: left + width, top: 0, bottom: 30, width, height: 30, x: left, y: 0, toJSON: () => ({}) })
+      strip.getBoundingClientRect = () => rect(0, 300)
+      strip.scrollLeft = 40
+      /* The tab about to be on screen sits past the strip's right edge by 150px. */
+      act(() => { list.openScope(B) })
+      ;(document.getElementById(scopes.scopeTabId(2)) as HTMLElement).getBoundingClientRect = () => rect(350, 100)
+      act(() => { list.switchScope(A) })
+      act(() => { list.switchScope(B) })
+      expect(strip.scrollLeft).toBe(190)
+      /* And one past its left edge comes back the other way. */
+      ;(document.getElementById(scopes.scopeTabId(0)) as HTMLElement).getBoundingClientRect = () => rect(-60, 80)
+      act(() => { list.switchScope(null) })
+      expect(strip.scrollLeft).toBe(130)
+      expect(intoView).not.toHaveBeenCalled()
+    } finally {
+      Element.prototype.scrollIntoView = was
+    }
+  })
+})
+
 describe('the overflow arrows as the tabs change what they say', () => {
   /* The strip's own box stays 300px wide; what is inside it is as wide as its
      words, `per` pixels a character and ten for a state mark. */

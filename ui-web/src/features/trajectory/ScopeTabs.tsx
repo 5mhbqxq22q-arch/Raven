@@ -15,7 +15,7 @@ import { t } from '../../i18n/t'
 import { formatDuration } from '../../lib/duration'
 import * as scopes from './scopes'
 import * as list from './store'
-import { ARROW_STEP } from './Tabs'
+import { ARROW_STEP, keepInStrip } from './Tabs'
 
 import type { JSX, KeyboardEvent as ReactKeyboardEvent } from 'react'
 
@@ -58,7 +58,9 @@ export function ScopeTabs(): JSX.Element | null {
   /* The tab on screen is kept in view, however it was chosen -- and again
      when the arrows come or go, or a tab before it grows. */
   useLayoutEffect(() => {
-    strip.current?.querySelector<HTMLElement>(`#${scopes.scopeTabId(current)}`)?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
+    const el = strip.current
+    const tab = el?.querySelector<HTMLElement>(`#${scopes.scopeTabId(current)}`)
+    if (el && tab) keepInStrip(el, tab)
     measure()
   }, [current, over, words, measure])
 
