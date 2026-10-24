@@ -240,62 +240,92 @@ _verdicts: dict[str, tuple[float, bool]] = {}
 _verdicts_lock = threading.Lock()
 
 
-def _answers(url: str) -> bool:
+def _answers(url: str, deadline: float | None = None) -> bool | None:
     """Whether anything answers at ``url``. Any HTTP status counts.
 
     urllib rather than httpx, for the node's sake (see :func:`unreachable`).
     Only a connection that never completed counts as no answer; any other
     failure is taken as one, so a fault of ours cannot send a runner to a mirror.
+
+    ``deadline`` is the time the preparation must not pass, and None when the
+    answer is on nobody's clock. The connect is given no longer than is left
+    of it, and a probe that ran out of time says nothing about the host: it
+    was not reached, and it was not found to be unreachable either. None says
+    that, where True says the host answered and False that it did not.
     """
     import urllib.error
     import urllib.request
 
+    timeout = _PROBE_TIMEOUT
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        timeout = min(timeout, remaining)
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=_PROBE_TIMEOUT):
+        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=timeout):
             return True
     except urllib.error.HTTPError:
         return True
     except Exception as exc:  # noqa: BLE001 - only the network may say no; see above
         if not unreachable(exc):
             return True
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
         logger.debug("{} could not be reached: {}", url, exc)
         return False
 
 
-def _reachable(url: str) -> bool:
-    """:func:`_answers`, remembered for :data:`_VERDICT_TTL`."""
+def _reachable(url: str, deadline: float | None = None) -> bool | None:
+    """:func:`_answers`, remembered for :data:`_VERDICT_TTL`.
+
+    A probe that ran out of time is not remembered: it says nothing about the
+    host, and the next launch asks again.
+    """
     with _verdicts_lock:
         known = _verdicts.get(url)
     if known is not None and time.monotonic() - known[0] < _VERDICT_TTL:
         return known[1]
-    answered = _answers(url)
+    answered = _answers(url, deadline)
+    if answered is None:
+        return None
     with _verdicts_lock:
         _verdicts[url] = (time.monotonic(), answered)
     return answered
 
 
-def _reachable_all(urls: Sequence[str]) -> dict[str, bool]:
+def _reachable_all(urls: Sequence[str], deadline: float | None = None) -> dict[str, bool | None]:
     """:func:`_reachable` for each of ``urls``, asked together, so hosts that
     drop every packet cost one wait between them rather than one each."""
     if len(urls) < 2:
-        return {url: _reachable(url) for url in urls}
+        return {url: _reachable(url, deadline) for url in urls}
     with ThreadPoolExecutor(max_workers=len(urls)) as pool:
-        return dict(zip(urls, pool.map(_reachable, urls), strict=True))
+        return dict(zip(urls, pool.map(lambda url: _reachable(url, deadline), urls), strict=True))
 
 
-def _moved(mirror_of: Mapping[str, str]) -> set[str]:
+def _moved(mirror_of: Mapping[str, str], deadline: float | None = None) -> set[str]:
     """Which of the default hosts in ``mirror_of`` to leave for its mirror.
 
     One that cannot be reached, and only when its mirror can: a runner offline
     still starts a package it fetched before, out of a cache it keeps by the
     registry's address, and pointed at a mirror it cannot reach either the
     same launch would fail.
+
+    ``deadline`` is the time the preparation must not pass. A host whose probe
+    ran out of time was neither reached nor found unreachable, so nothing
+    moves: a preparation past its budget leaves the launch as it was
+    configured.
     """
-    down = [url for url, answered in _reachable_all(list(mirror_of)).items() if not answered]
+    answers = _reachable_all(list(mirror_of), deadline)
+    if any(answered is None for answered in answers.values()):
+        return set()
+    down = [url for url, answered in answers.items() if not answered]
     if not down:
         return set()
-    up = _reachable_all([mirror_of[url] for url in down])
-    return {url for url in down if up[mirror_of[url]]}
+    up = _reachable_all([mirror_of[url] for url in down], deadline)
+    if any(answered is None for answered in up.values()):
+        return set()
+    return {url for url in down if up[mirror_of[url]] is True}
 
 
 def _host(url: str) -> str:
@@ -356,12 +386,21 @@ def _npm_registry(env: Mapping[str, str], cwd: str | None) -> str | None:
     return (_npm_config(env, cwd, ("registry",)) or {}).get("registry")
 
 
-def _npm_config(env: Mapping[str, str], cwd: str | None, names: Sequence[str]) -> dict[str, str] | None:
+def _npm_config(
+    env: Mapping[str, str], cwd: str | None, names: Sequence[str], deadline: float | None = None
+) -> dict[str, str] | None:
     """What npm, run in ``cwd`` with ``env``, holds for each of ``names``, or
-    None when it cannot say; see :func:`_npm_registry`."""
+    None when it cannot say; see :func:`_npm_registry`.
+
+    ``deadline`` is the time the preparation must not pass: npm gets no longer
+    than is left of it, and starting npm is most of what asking it costs.
+    """
     npm = shutil.which("npm", path=env.get("PATH") or os.environ.get("PATH", os.defpath))
     if npm is None:
         return None
+    timeout = _NPM_TIMEOUT
+    if deadline is not None:
+        timeout = max(0.0, min(timeout, deadline - time.monotonic()))
     where = Path(cwd) if cwd else None
     while where is not None and not where.is_dir():
         where = where.parent if where.parent != where else None
@@ -372,7 +411,7 @@ def _npm_config(env: Mapping[str, str], cwd: str | None, names: Sequence[str]) -
             env=dict(env),
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=_NPM_TIMEOUT,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -594,11 +633,17 @@ def _npx_launch(
     if request is None or _npm_registry_chosen(env):
         return argv
     where = Path(cwd) if cwd else Path.cwd()
-    if _npx_finds_locally(request, where) or not _moved({NPM_DEFAULT_REGISTRY: NPM_REGISTRY}):
+    if _npx_finds_locally(request, where):
+        return argv
+    if deadline is not None and time.monotonic() >= deadline:
+        return argv
+    if not _moved({NPM_DEFAULT_REGISTRY: NPM_REGISTRY}, deadline):
+        return argv
+    if deadline is not None and time.monotonic() >= deadline:
         return argv
     if _project_npmrc_names_a_registry(where, env):
         return argv
-    config = _npm_config(env, str(where), ("registry", "prefix")) or {}
+    config = _npm_config(env, str(where), ("registry", "prefix"), deadline) or {}
     if config.get("registry", "").rstrip("/") != NPM_DEFAULT_REGISTRY.rstrip("/"):
         return argv
     if request.command is None and "prefix" in config and (_global_bin(config["prefix"]) / request.specs[0]).is_file():
@@ -684,40 +729,6 @@ def _npx_install(
             (prefix / ".installed").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             return prefix
         return prefix if installed else None
-
-
-def _await_orphan(prefix: Path, deadline: float | None) -> None:
-    """Wait for an npm this Raven started before it died, if it is still running.
-
-    It writes the same directory this install would, so a second npm over it
-    would write the same files at once. The pid is in the directory beside the
-    lock, and a pid that is gone is removed.
-    """
-    from raven.utils.pid import pid_alive
-
-    pid_file = prefix / "install.pid"
-    try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return
-    if not pid_alive(pid):
-        with contextlib.suppress(OSError):
-            pid_file.unlink()
-        return
-    logger.info("waiting for an npm still installing in {}", prefix)
-    while pid_alive(pid):
-        if deadline is not None and time.monotonic() >= deadline:
-            return
-        time.sleep(0.2)
-    with contextlib.suppress(OSError):
-        pid_file.unlink()
-
-
-def _default_cache_root() -> Path:
-    """Where a launch's own install goes when the caller names no directory."""
-    from raven.home import raven_home
-
-    return raven_home() / "cache" / "npx"
 
 
 def _await_orphan(prefix: Path, deadline: float | None) -> None:
@@ -975,7 +986,7 @@ def package_launch(
     cwd: str | None = None,
     *,
     local: bool = True,
-    budget: float | None = None,
+    deadline: float | None = None,
     cache_root: Path | None = None,
 ) -> list[str]:
     """``argv``, or a command line that fetches the same package from a
@@ -1008,16 +1019,17 @@ def package_launch(
     for npm; see :func:`package_launch_async`. Never raises: a fault while
     deciding leaves the launch as it was configured.
 
-    ``budget`` is how long the preparation may take, in seconds: past it the
-    launch starts as configured rather than hold the answer back. A caller
-    that answers within a budget of its own -- the Raven node, whose host
-    waits 60 s for the answer -- passes it. ``cache_root`` is where the
-    install of an npx launch goes; a node keeps its own under its own
-    directory rather than in the home of the user it runs as.
+    ``deadline`` is the time the preparation must not pass, as
+    :func:`time.monotonic` counts it: past it the launch starts as it was
+    configured rather than hold the answer back. :func:`package_launch_async`
+    turns a budget in seconds into one, and takes it before the work is
+    queued, so waiting for a worker of the pool counts against it.
+    ``cache_root`` is where the install of an npx launch goes; a node keeps
+    its own under its own directory rather than in the home of the user it
+    runs as.
     """
     if not argv or not enabled(env):
         return list(argv)
-    deadline = time.monotonic() + budget if budget is not None else None
     try:
         return _package_launch(list(argv), env, cwd, local, deadline, cache_root)
     except Exception as exc:  # noqa: BLE001 - the mirror is a way around an outage, never a gate
@@ -1048,7 +1060,7 @@ def _uvx_launch(argv: list[str], env: Mapping[str, str], deadline: float | None)
         return argv
     if deadline is not None and time.monotonic() >= deadline:
         return argv
-    if not _moved({PYPI_DEFAULT_INDEX: PYPI_INDEX}):
+    if not _moved({PYPI_DEFAULT_INDEX: PYPI_INDEX}, deadline):
         return argv
     logger.info(
         "{} could not be reached; uvx fetches from {} instead ({}=1 turns this off)",
@@ -1068,8 +1080,26 @@ async def package_launch_async(
     budget: float | None = None,
     cache_root: Path | None = None,
 ) -> list[str]:
-    """:func:`package_launch` off the event loop, since its probe and npm block."""
-    return await asyncio.to_thread(package_launch, argv, env, cwd, local=local, budget=budget, cache_root=cache_root)
+    """``argv``, or a command line that fetches the same package from a mirror.
+
+    The preparation runs off the event loop, since its probe and npm block.
+
+    ``budget`` is how long the preparation may take, in seconds. The clock
+    starts here, before the work is queued, so the wait for a worker of the
+    pool counts against it: a daemon admits more launches at once than its
+    pool has workers, and a launch that waited for one has less of its budget
+    left. A preparation past the budget is abandoned -- the launch starts as
+    it was configured, and the answer comes in time.
+    """
+    deadline = time.monotonic() + budget if budget is not None else None
+    work = asyncio.to_thread(package_launch, argv, env, cwd, local=local, deadline=deadline, cache_root=cache_root)
+    if deadline is None:
+        return await work
+    try:
+        return await asyncio.wait_for(work, timeout=max(0.0, deadline - time.monotonic()))
+    except TimeoutError:
+        logger.info("the preparation took longer than its budget; the launch starts as it was configured")
+        return list(argv)
 
 
 __all__ = [

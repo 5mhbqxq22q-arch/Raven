@@ -147,7 +147,7 @@ async def test_an_acp_child_starts_the_way_the_mirror_fallback_says(
         cwd: str | None = None,
         *,
         local: bool = True,
-        budget: float | None = None,
+        deadline: float | None = None,
         cache_root: Path | None = None,
     ) -> list[str]:
         asked.append((list(argv), dict(env), cwd))

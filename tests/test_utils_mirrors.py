@@ -8,6 +8,7 @@ line, and the one switch that turns the whole fallback off.
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
 import http.server
@@ -195,7 +196,7 @@ class _Network:
         self.down: set[str] = set()
         self.asked: list[str] = []
 
-    def reachable(self, url: str) -> bool:
+    def reachable(self, url: str, deadline: float | None = None) -> bool:
         self.asked.append(url)
         return url not in self.down
 
@@ -208,7 +209,9 @@ class _Npm:
         self.prefix = global_prefix
         self.asked_in: list[str | None] = []
 
-    def config_in(self, _env: object, cwd: str | None, names: tuple[str, ...]) -> dict[str, str] | None:
+    def config_in(
+        self, _env: object, cwd: str | None, names: tuple[str, ...], deadline: float | None = None
+    ) -> dict[str, str] | None:
         self.asked_in.append(cwd)
         if self.registry is None:
             return None
@@ -942,7 +945,7 @@ class TestNpxLaunches:
         abandoned, and the command starts as it was configured."""
         argv = ["npx", "-y", "@acme/agent"]
 
-        assert mirrors.package_launch(argv, self._env(tmp_path), str(project), budget=0.0) == argv
+        assert mirrors.package_launch(argv, self._env(tmp_path), str(project), deadline=time.monotonic() - 1.0) == argv
         assert installs.runs == [], "no npm runs past the budget"
 
     def test_the_install_goes_where_the_caller_names(self, network, installs, project, tmp_path) -> None:
@@ -976,7 +979,9 @@ class TestNpxLaunches:
         npm = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
         (prefix / "install.pid").write_text(str(npm.pid), encoding="utf-8")
         try:
-            assert mirrors.package_launch(argv, self._env(tmp_path), str(project), budget=1.0) == argv
+            assert (
+                mirrors.package_launch(argv, self._env(tmp_path), str(project), deadline=time.monotonic() + 1.0) == argv
+            )
             assert installs.runs == [], "no npm runs beside the one that is still going"
         finally:
             npm.kill()
@@ -995,7 +1000,9 @@ class TestNpxLaunches:
 
         with mirrors._exclusive(prefix / ".lock", 30):
             began = time.monotonic()
-            assert mirrors.package_launch(argv, self._env(tmp_path), str(project), budget=0.5) == argv
+            assert (
+                mirrors.package_launch(argv, self._env(tmp_path), str(project), deadline=time.monotonic() + 0.5) == argv
+            )
 
         assert time.monotonic() - began < 20, "the wait for another launch's lock is bounded by the budget"
 
@@ -1187,7 +1194,7 @@ def test_an_npx_launch_starts_from_the_mirror_with_nothing_of_it_left_behind(
     the bin starts, takes its arguments, and finds no registry in its
     environment; the lockfile Raven's install wrote names the mirror."""
     monkeypatch.setattr(mirrors, "NPM_REGISTRY", npm_registry)
-    monkeypatch.setattr(mirrors, "_reachable", lambda url: url != mirrors.NPM_DEFAULT_REGISTRY)
+    monkeypatch.setattr(mirrors, "_reachable", lambda url, deadline=None: url != mirrors.NPM_DEFAULT_REGISTRY)
     monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
     monkeypatch.setenv("RAVEN_HOME", str(tmp_path / "raven"))
     home = tmp_path / "home"
@@ -1377,7 +1384,7 @@ class TestTheProbe:
     def test_a_verdict_is_remembered_for_a_while(self, monkeypatch: pytest.MonkeyPatch) -> None:
         asked: list[str] = []
         now = [1000.0]
-        monkeypatch.setattr(mirrors, "_answers", lambda url: asked.append(url) or True)
+        monkeypatch.setattr(mirrors, "_answers", lambda url, deadline=None: asked.append(url) or True)
         monkeypatch.setattr(mirrors.time, "monotonic", lambda: now[0])
 
         mirrors._reachable("https://registry.npmjs.org/")
@@ -1411,3 +1418,126 @@ class TestTheProbe:
         mirrors._reachable("https://registry.npmjs.org/")
 
         assert isinstance(seen["timeout"], (int, float)) and seen["timeout"] <= 5
+
+
+class TestThePreparationBudget:
+    """A Raven node's host waits 60 s for the answer to a launch and drops
+    every agent of that machine when it does not come, so the daemon prepares
+    a launch within a budget the protocol names.
+
+    The clock starts when the daemon decides to prepare, before the work is
+    queued: a launch that waited for a worker of the pool has less of its
+    budget left, and a preparation past the budget is abandoned, so the answer
+    comes in time and the machine's link is kept.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_opt_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+
+    async def test_launches_that_outnumber_the_workers_still_answer_in_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The daemon admits as many launches at once as the protocol allows
+        and prepares them in a pool with as many workers as the machine has
+        cores: more launches than workers. Every answer comes within the
+        budget, and the launches that waited for a worker prepare nothing."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        prepared: list[str] = []
+        release = threading.Event()
+
+        def package_launch(argv, env, cwd=None, *, local=True, deadline=None, cache_root=None):
+            prepared.append(argv[0])
+            release.wait(10)
+            return list(argv)
+
+        monkeypatch.setattr(mirrors, "package_launch", package_launch)
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+        argv = ["npx", "-y", "@acme/agent"]
+        began = time.monotonic()
+        try:
+            answers = await asyncio.gather(*(mirrors.package_launch_async(argv, {}, budget=1.0) for _ in range(4)))
+        finally:
+            release.set()
+
+        assert time.monotonic() - began < 5.0, "every answer came within the budget"
+        assert answers == [argv] * 4, "a launch past its budget starts as it was configured"
+        assert len(prepared) == 2, "only the launches that got a worker prepared anything"
+
+    async def test_a_launch_that_waited_for_a_worker_is_given_the_caller_s_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The clock starts before the work is queued: the launch that waited
+        for a worker is given the deadline the caller set, not one of its own
+        starting when the worker began, so the wait counts against it."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        prepared: list[float | None] = []
+
+        def package_launch(argv, env, cwd=None, *, local=True, deadline=None, cache_root=None):
+            prepared.append(deadline)
+            time.sleep(0.3)
+            return list(argv)
+
+        monkeypatch.setattr(mirrors, "package_launch", package_launch)
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+        argv = ["npx", "-y", "@acme/agent"]
+
+        await asyncio.gather(
+            mirrors.package_launch_async(argv, {}, budget=30.0),
+            mirrors.package_launch_async(argv, {}, budget=30.0),
+        )
+
+        assert len(prepared) == 2, "both launches were prepared"
+        assert prepared[0] is not None and prepared[1] is not None
+        assert prepared[1] - prepared[0] < 0.1, "both were given the deadline the caller set"
+
+    def test_a_launch_past_its_budget_asks_no_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Nothing is asked and nothing is installed: the budget is spent."""
+        asked: list[str] = []
+
+        def answer(url: str, deadline: float | None = None) -> bool | None:
+            asked.append(url)
+            return True
+
+        monkeypatch.setattr(mirrors, "_answers", answer)
+        argv = ["npx", "-y", "@acme/agent"]
+
+        assert mirrors.package_launch(argv, {}, deadline=time.monotonic() - 1.0) == argv
+        assert asked == [], "no host is asked for a launch that is out of time"
+
+    def test_a_probe_that_ran_out_of_time_moves_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The host was neither reached nor found unreachable, so it does not
+        move to its mirror: a preparation past its budget leaves the launch as
+        it was configured. The mirror is not asked about it either."""
+        asked: list[str] = []
+        answers = {mirrors.PYPI_DEFAULT_INDEX: None, mirrors.PYPI_INDEX: True}
+
+        def answer(url: str, deadline: float | None = None) -> bool | None:
+            asked.append(url)
+            return answers[url]
+
+        monkeypatch.setattr(mirrors, "_answers", answer)
+
+        assert mirrors._moved({mirrors.PYPI_DEFAULT_INDEX: mirrors.PYPI_INDEX}) == set()
+        assert asked == [mirrors.PYPI_DEFAULT_INDEX], "the mirror is not asked about a host nothing is known of"
+
+    def test_the_probe_gets_no_longer_than_is_left_of_the_budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A probe that waited out a dropped connection would hold the launch
+        just as long, so the connect is given what is left of the budget."""
+        import urllib.request
+
+        now = [1000.0]
+        seen: dict[str, object] = {}
+
+        def answer(request: object, timeout: float | None = None):
+            seen["timeout"] = timeout
+            now[0] += 100.0
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(mirrors.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(urllib.request, "urlopen", answer)
+
+        assert mirrors._answers("https://registry.npmjs.org/", deadline=1000.0 + 2.0) is None
+        assert seen["timeout"] == 2.0, "the connect was given what was left of the budget"

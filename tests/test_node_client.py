@@ -961,6 +961,13 @@ async def test_the_launch_is_answered_within_the_budget_the_protocol_names(tmp_p
     assert asked == [(protocol.AGENT_LAUNCH, protocol.AGENT_LAUNCH_TIMEOUT_S)]
 
 
+def test_the_daemon_prepares_a_launch_within_the_time_the_host_waits():
+    """The host waits so long for the answer, and drops every agent of that
+    machine when it does not come; the daemon prepares a launch within that
+    time, so the answer comes in time."""
+    assert protocol.AGENT_LAUNCH_PREPARE_S < protocol.AGENT_LAUNCH_TIMEOUT_S
+
+
 async def test_a_call_that_timed_out_drops_the_node(tmp_path):
     pool = NodePool(backoff_s=())
     client = _live(pool, tmp_path, raises=AcpTimeoutError("no answer", method=protocol.READ))

@@ -54,7 +54,7 @@ async def test_a_stdio_server_starts_the_way_the_mirror_fallback_says(tmp_path, 
     observed = tmp_path / "observed.json"
     asked: list[tuple[list[str], dict[str, str], bool]] = []
 
-    def package_launch(argv, env, cwd=None, *, local=True, budget=None, cache_root=None):
+    def package_launch(argv, env, cwd=None, *, local=True, deadline=None, cache_root=None):
         asked.append((list(argv), dict(env), local))
         return [*argv, "--as-the-answer-says"]
 
@@ -96,7 +96,7 @@ async def test_a_sandboxed_stdio_server_starts_the_same_way(monkeypatch):
 
     asked: list[bool] = []
 
-    def package_launch(argv, env, cwd=None, *, local=True, budget=None, cache_root=None):
+    def package_launch(argv, env, cwd=None, *, local=True, deadline=None, cache_root=None):
         asked.append(local)
         return [argv[0], "--default-index", mirrors.PYPI_INDEX, *argv[1:]]
 
