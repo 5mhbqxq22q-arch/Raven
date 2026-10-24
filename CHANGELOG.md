@@ -60,6 +60,28 @@ All notable changes to Raven are documented here.
   lists `on_machines` (connected) apart from `off_on_machines` (switched off,
   with the entry's name).
 
+- The Machines tab's connect form can be waited on and stopped. Its line
+  counts the seconds, the hint says what the wait is for and its limit, and
+  **Cancel** stops the run on the machine and writes nothing:
+  `subagents.test_cancel` now reaches the proof prompt a `subagents.add`,
+  `subagents.toggle` or `subagents.update` sends, under the entry's name --
+  and the capability record an acp row is measured with once it answers --
+  and that call then refuses with `cancelled: true` in its error data. A
+  Cancel that finds nothing left to stop is not said as a cancel: the form
+  says it is too late to cancel and waits for the connect's own answer, and
+  one whose stop gives no answer is said as not confirmed, since only the
+  stop's answer says whether anything was written. While the
+  proof runs the row reports `test_running`, a Test on it is refused as a
+  second test is, and a connect pressed during a Test is refused the same
+  way, before anything is spent. A wait with no answer ends after ten
+  minutes -- above the server's own worst case, the capability record
+  included -- with the run asked to stop and the
+  Agents page named as where to look, instead of one line that never changed
+  (seen once on 2026-10-20, after the socket dropped without saying so). A
+  machine nobody has reached yet reads *Not connected; the link opens when
+  work is sent* instead of *No link*, which read as a fault on every card
+  when the tab opened.
+
 - The bug report review remembers your redaction decisions. Every keep or
   replace answer is stored in `redaction_history.json` under the Raven home
   (hashes and masked samples only), and the next `report-bug` or browser

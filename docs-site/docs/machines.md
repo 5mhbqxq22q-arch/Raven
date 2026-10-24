@@ -135,6 +135,11 @@ own identities first (`~/.ssh/id_rsa` before `id_ed25519`, the order ssh tries t
 named, with the others to pick from; when none is found the form says so, and
 *Password* is the other way in.
 
+A card's state line is about the link now. *Not connected; the link opens
+when work is sent* is the resting state, not a fault: a link is opened by a
+dispatch, by **Test link** or by a node install, and opening the tab reaches
+no machine. **Test link** opens this one's and reads its node's version.
+
 ## 2. Install the node
 
 ```bash
@@ -199,7 +204,15 @@ step and offers **Connect an agent on this machine**: pick the agent, give
 its working directory there, and **Connect** adds `<preset>@<machine id>`
 (`codex@gpu1`) the way section 4's `subagents.add` does, one real prompt run
 on the machine first, and refused the same way when the machine already has
-that preset. The list has every preset a machine's node can start, including
+that preset. While it runs, the form counts the seconds and offers
+**Cancel**, which stops the run on the machine and writes nothing
+(`subagents.test_cancel` by the entry's name, the call that stops a test);
+a Cancel that finds nothing left to stop -- the agent has answered and the
+entry is being written -- is said as too late to cancel, and the form waits
+for the connect to finish; a Cancel whose stop gives no answer is said as not
+confirmed, since only the stop's answer says whether anything was written;
+after ten minutes with no answer the form asks it to stop itself and says to look
+at the Agents page for whether it connected. The list has every preset a machine's node can start, including
 one already connected on this computer -- that is a second entry, on the
 machine, not a conflict. An entry on the machine that is switched off is shown
 too, marked *switched off*, on the card and in the form: it still holds the

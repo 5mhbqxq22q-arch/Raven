@@ -1525,7 +1525,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.state_connected': '{n} agents running',
     'gui.machine.state_idle': 'Link up, no agent running',
     'gui.machine.state_lost': 'Link down; agents wait',
-    'gui.machine.state_off': 'No link',
+    'gui.machine.state_off': 'Not connected; the link opens when work is sent',
     'gui.machine.state_error': 'Error',
     'gui.machine.node_version': 'Node {v}',
     'gui.machine.node_none': 'Node not installed',
@@ -1629,6 +1629,24 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.reconnected_said': '{name} is connected again; it is on the Agents page.',
     'gui.machine.preset_connecting': '{name} (being connected on this machine right now)',
     'gui.machine.connecting': 'Starting it on the machine',
+    'gui.machine.connecting_for': 'Starting it on the machine, {s}s so far',
+    'gui.machine.connecting_hint':
+      'The node on the machine starts it, then it has to answer one test message: a few seconds to a minute as a rule, ten minutes at most. Cancel asks it to stop, and this form says whether anything was written.',
+    'gui.machine.cancelling': 'Stopping',
+    'gui.machine.connect_cancelled_head': 'Cancelled',
+    'gui.machine.connect_cancelled': 'Cancelled; nothing was written. It can be connected again.',
+    'gui.machine.connect_timeout_head': 'No answer',
+    'gui.machine.connect_timeout':
+      'No answer in ten minutes, so the form asked the run to stop. See the Agents page for whether it connected; if not, connect again.',
+    'gui.machine.connect_late_for': 'Too late to cancel; waiting for it to finish, {s}s so far',
+    'gui.machine.connect_late_hint':
+      'There was nothing left to stop: it had already answered, or had not started yet, so it may still be written. This form says how it ends.',
+    'gui.machine.connect_missed_head': 'Not stopped',
+    'gui.machine.connect_missed':
+      'It was past the point where it could be cancelled, so it may have been written. See the Agents page for whether it connected; if not, connect again.',
+    'gui.machine.connect_unconfirmed_head': 'Cancel not confirmed',
+    'gui.machine.connect_unconfirmed':
+      'The stop gave no answer, so it may still be written. See the Agents page for whether it connected; if not, connect again.',
     'gui.machine.connected_said': '{name} is connected; it is on the Agents page.',
     'gui.machine.connect_bad': 'Not connected',
     'gui.machine.connect_bad_named': 'Not connected: {name}',
@@ -4907,7 +4925,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.state_connected': '{n} 个 Agent 在跑',
     'gui.machine.state_idle': '链路在，没有 Agent 在跑',
     'gui.machine.state_lost': '链路断了，Agent 在等',
-    'gui.machine.state_off': '没有链路',
+    'gui.machine.state_off': '未连接（派活时自动连上）',
     'gui.machine.state_error': '出错',
     'gui.machine.node_version': '节点 {v}',
     'gui.machine.node_none': '节点未安装',
@@ -5006,6 +5024,23 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.reconnected_said': '已重新接入 {name}，到「智能体」页可以看到。',
     'gui.machine.preset_connecting': '{name}（正在接到这台机器上）',
     'gui.machine.connecting': '正在机器上启动它',
+    'gui.machine.connecting_for': '正在机器上启动它，已等 {s} 秒',
+    'gui.machine.connecting_hint':
+      '机器上的节点先启动它，再等它答一句测试消息：一般几秒到一分钟，最多等 10 分钟。点「取消」会请求停掉这一跑，这里会说有没有写入。',
+    'gui.machine.cancelling': '正在停止',
+    'gui.machine.connect_cancelled_head': '已取消',
+    'gui.machine.connect_cancelled': '已取消，没有写入。可以再接一次。',
+    'gui.machine.connect_timeout_head': '没有等到答复',
+    'gui.machine.connect_timeout': '等了 10 分钟没有答复，已请求停止。到「智能体」页看它有没有接上；没有的话再接一次。',
+    'gui.machine.connect_late_for': '已经来不及取消，正在等它收尾，已等 {s} 秒',
+    'gui.machine.connect_late_hint':
+      '已经没有可停的了：它要么已经答过，要么还没开始，所以仍可能写入。结束后这里会说结果。',
+    'gui.machine.connect_missed_head': '没能停下',
+    'gui.machine.connect_missed':
+      '已经过了能取消的时候，可能已经写入。到「智能体」页看它有没有接上；没有的话再接一次。',
+    'gui.machine.connect_unconfirmed_head': '取消未确认',
+    'gui.machine.connect_unconfirmed':
+      '停止请求没有答复，所以仍可能写入。到「智能体」页看它有没有接上；没有的话再接一次。',
     'gui.machine.connected_said': '已接入 {name}，到「智能体」页可以看到。',
     'gui.machine.connect_bad': '没有接入',
     'gui.machine.connect_bad_named': '没有接入 {name}',
