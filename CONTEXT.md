@@ -2583,6 +2583,34 @@ its attempts' reports included, so those turns stay main-line (**Main-line Turn*
 _Avoid_: reading a spawned run's `status.code` as its result -- the run reports its own
 failures and returns, so that span is `OK` whatever the outcome.
 
+**Sub-agent Scope** (`raven/trajectory/entries.py`, `_span_scopes`):
+The part of a session's trajectory one sub-agent boundary owns, named by that boundary span's
+`trace_id:span_id`. A boundary is a **run** -- a Sub-agent Run Span (`subagent.run`), so a
+spawned run or one attempt of a DAG node -- or a **graph**: a `tool.call` whose `tool.name` is
+`run_subagent_dag` or `resolve_dag_node`, which owns a graph's steps where no node span holds
+them (records written before node spans existed) and, for `resolve_dag_node`, the round a
+replan it chose started under it. An entry belongs to the nearest boundary above its span in
+its own trace, its own span not counted; a boundary's own entries look only for a run above,
+so a node's entry and a graph's call stay where the graph was dispatched. A dispatched agent
+cannot dispatch again, so scopes do not nest past one run, and since a spawned run's steps
+share the trace of the turn that spawned it and run alongside later turns, the scope is read
+from span ancestry alone, never from time. Three Trajectory Entry fields carry it:
+`subagent_scope`, the scope the entry belongs to (null for the main session);
+`opens_subagent_scope`, on a boundary's own entries, the scope it opens -- always for a run,
+for a graph only while at least one entry belongs to its scope (a graph whose rounds all ran
+in node spans opens nothing); and `dispatched_by_subagent_scope`, on the root entries of a
+dispatched `session.turn` trace, the scope that dispatched it -- the dispatching span itself
+when it is a boundary, else that span's own scope, null when the span is unknown, in the
+main session, or a graph scope no entry belongs to (a graph's result, once its nodes have
+spans). The dispatched turn itself -- a report injected back -- belongs to the main session,
+as does a trace linked in from another session. A step whose parent is not on record yet
+has no scope until the parent arrives, when the index reprojects it under a new revision;
+a boundary trimmed to a skeleton loses its entries, so its scope has no entry to open it
+while its descendants keep the scope id. These fields are the input the trajectory view's
+per-sub-agent tabs are built from.
+_Avoid_: "Lane" -- the scheduler's term; "sub-agent trace" -- a spawned run's steps live in the
+spawning turn's trace; `origin` for the boundary -- it says only whether a trace was dispatched.
+
 **Trajectory Entry** (`raven/trajectory/entries.py`):
 One row of the trajectory view, projected by `project_entries` from a logical
 span (`traceId + spanId`, checkpoints merged last-write-wins, an in-progress
@@ -2590,7 +2618,10 @@ snapshot -- a turn's or a Sub-agent Run Span's -- never overriding a terminal re
 nor the skeleton the index keeps of a trimmed one) at a stable slot (`llm.input`,
 `tool.output`, `artifact:<key>`, `summary`, `error`, …). Its id is
 `trace:span:slot` — never a sequence number, array index or text hash — so it
-survives re-reads, late inputs and checkpoint upgrades. It carries the owning
+survives re-reads, late inputs and checkpoint upgrades. It names the Sub-agent Scope it
+belongs to, opens or was dispatched by (`subagent_scope`, `opens_subagent_scope`,
+`dispatched_by_subagent_scope`), apart from `origin`, which says only whether its trace was
+dispatched from another (`subagent`) or not (`main`). It carries the owning
 operation's status (`running` / `ok` / `error` / `cancelled` / `unknown`) with the
 evidence codes that produced it, data-integrity codes kept separate from status,
 and the span's clock with a Timing Owner; an in-progress snapshot's entries have no
