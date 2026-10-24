@@ -402,3 +402,77 @@ describe('what the rows say about themselves', () => {
     expect(el.scrollTop).toBe(1 * ROW_HEIGHT + 4)
   })
 })
+
+describe('the place of a Scope Tab', () => {
+  const A = 't:runA'
+  const B = 't:runB'
+  const step = (id: string, at: number, scope: string, over: Partial<TrajectoryEntry> = {}): TrajectoryEntry =>
+    entry(id, at, { subagent_scope: scope, ...over })
+
+  it('puts each tab back where it was, the tail or an anchored row', async () => {
+    rows = [
+      ...Array.from({ length: 40 }, (_, k) => step(`a${k}`, k, A)),
+      ...Array.from({ length: 30 }, (_, k) => step(`b${k}`, 100 + k, B)),
+    ]
+    await draw()
+    act(() => { store.openScope(A) })
+    const el = list()
+    size(el, 320, 40 * ROW_HEIGHT)
+    el.scrollTop = 12 * ROW_HEIGHT + 5
+    act(() => { fireEvent.scroll(el) })
+    expect(store.get().anchor).toEqual({ id: 'a12', offset: 5 })
+    act(() => { store.openScope(B) })
+    expect(el.scrollTop).toBe(el.scrollHeight)
+    act(() => { store.switchScope(A) })
+    expect(el.scrollTop).toBe(12 * ROW_HEIGHT + 5)
+    act(() => { store.switchScope(B) })
+    expect(el.scrollTop).toBe(el.scrollHeight)
+  })
+
+  it('comes back on the replacement, the next row, or the tail when the anchor went while the reader was away', async () => {
+    rows = [
+      ...Array.from({ length: 6 }, (_, k) => step(`a${k}`, k, A)),
+      step('ah', 6, A, { meta: { hidden: 'empty_internal' } }),
+      ...Array.from({ length: 30 }, (_, k) => step(`b${k}`, 100 + k, B)),
+    ]
+    await draw()
+    const batch = (removed: Array<{ entry_id: string; replaced_by: string | null }>, upserts: TrajectoryEntry[] = [], n = 1) => ({
+      epoch: 'e1', from_revision: 100 + n - 1, to_revision: 100 + n, upserts,
+      removed: removed.map((r) => ({ ...r, revision: 100 + n })), has_more: false, reset_required: false, index_state: READY,
+    })
+    const goAndBack = (): HTMLElement => {
+      act(() => { store.openScope(B) })
+      const el = list()
+      size(el, 64, 30 * ROW_HEIGHT)
+      el.scrollTop = 96
+      act(() => { store.switchScope(A) })
+      return el
+    }
+    act(() => { store.openScope(A); store.setPlace(false, { id: 'a2', offset: 7 }) })
+    act(() => { store.applyChanges(batch([{ entry_id: 'a2', replaced_by: 'a2b' }], [step('a2b', 2, A)])) })
+    let el = goAndBack()
+    expect(el.scrollTop).toBe(2 * ROW_HEIGHT + 7)
+    act(() => { store.setPlace(false, { id: 'a2b', offset: 0 }); store.applyChanges(batch([{ entry_id: 'a2b', replaced_by: null }], [], 2)) })
+    el = goAndBack()
+    expect(store.get().anchor).toEqual({ id: 'a3', offset: 0 })
+    expect(el.scrollTop).toBe(2 * ROW_HEIGHT)
+    /* Only the hidden row is left after the last visible one, which goes. */
+    act(() => { store.setPlace(false, { id: 'a5', offset: 3 }); store.applyChanges(batch([{ entry_id: 'a5', replaced_by: null }], [], 3)) })
+    el = goAndBack()
+    expect(store.get().follow).toBe(true)
+    expect(el.scrollTop).toBe(el.scrollHeight)
+  })
+
+  it('follows the tail when a switch hides the anchored row and every row after it', () => {
+    const list = [entry('a', 0), entry('b', 1), entry('hid', 2, { meta: { hidden: 'empty_internal' } })]
+    render(<EntryList />)
+    act(() => { feed(list); store.setPrefs({ showHidden: true }) })
+    act(() => { store.setPlace(false, { id: 'hid', offset: 4 }) })
+    const el = document.querySelector('.trajectory-list') as HTMLElement
+    size(el, 64, 3 * ROW_HEIGHT)
+    act(() => { store.setPrefs({ showHidden: false }) })
+    expect([store.get().follow, store.get().anchor]).toEqual([true, null])
+    expect(el.scrollTop).toBe(el.scrollHeight)
+    localStorage.removeItem(store.PREFS_KEY)
+  })
+})

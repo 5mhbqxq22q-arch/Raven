@@ -225,19 +225,21 @@ export function EntryList(): JSX.Element {
     if (anchor) {
       /* The anchored row, or -- when a switch hid it -- the first visible row after it. */
       let at = index[anchor.id]
-      if (at === undefined) {
-        const whole = state.index[anchor.id]
-        if (whole !== undefined) {
-          const next = state.entries.slice(whole).find((e) => e.entry_id in index)
-          at = next ? index[next.entry_id] : undefined
-        }
+      const whole = state.index[anchor.id]
+      if (at === undefined && whole !== undefined) {
+        const next = state.entries.slice(whole).find((e) => e.entry_id in index)
+        at = next ? index[next.entry_id] : undefined
       }
       if (at !== undefined) {
         el.scrollTop = at * ROW_HEIGHT + anchor.offset
         setScrollTop(el.scrollTop)
+      } else if (whole !== undefined && !state.listing) {
+        /* The row and everything after it are hidden: the place it marked is the
+           list's end. An anchor the rows do not hold yet waits for its page. */
+        store.setPlace(true, null)
       }
     }
-  }, [entries, follow, anchor, index, state.index, state.entries])
+  }, [entries, follow, anchor, index, state.index, state.entries, state.listing])
 
   /* Last in every commit: a selection's reveal holds the tail only in its own. */
   useLayoutEffect(() => { revealing.current = false })

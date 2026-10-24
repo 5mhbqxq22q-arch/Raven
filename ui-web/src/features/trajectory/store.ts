@@ -571,37 +571,53 @@ export function closeScope(id: string): void {
   patch({ scopes, saved, revealed, ...(shown ? rows(s.entries, { ...s, revealed }) : {}) })
 }
 
-/* The rows before and after a change, and what the change replaced, for
-   carrying a tab's place across it. */
+/* The rows before and after a change, what the change replaced, and which
+   rows the list draws under the reader's switches, for carrying a tab's
+   place across it. */
 interface Change {
   before: TrajectoryEntry[]
   beforeIndex: Record<string, number>
   after: TrajectoryEntry[]
   afterIndex: Record<string, number>
   replaced: ReadonlyMap<string, string | null>
+  drawn: (entry: TrajectoryEntry) => boolean
 }
+
+const drawnUnder = (prefs: Prefs, revealed: string[]) => (entry: TrajectoryEntry): boolean =>
+  hiddenOf(entry) === null || prefs.showHidden || revealed.includes(entry.entry_id)
 
 /* A tab's place after the rows changed under it, worked out in the same
    write as the change: once the change is past, a gone anchor has nothing
    left to be found by and its replacement is forgotten, and a tab left in
-   the meantime would keep it. The anchor stays when it is still a row of
-   the tab, else becomes its replacement, else the first row after it that
-   still is one; with none the tab follows the tail -- with neither an
+   the meantime would keep it. An anchor holds while it is a row of the tab
+   that the list can still put on screen -- itself drawn, or a drawn row of
+   the tab after it, which is where the list puts a hidden anchor. Else its
+   replacement on the same terms, else the first drawn row of the tab after
+   where it was; with none the tab follows the tail -- with neither an
    anchor nor the tail, the list would keep the scroll position the previous
    tab left, which says nothing about this one. */
 function carryPlace(place: Pick<ScopeView, 'follow' | 'anchor'>, scope: string | null, c: Change): Pick<ScopeView, 'follow' | 'anchor'> {
   const { follow, anchor } = place
   if (anchor === null) return { follow, anchor }
-  const ours = (id: string): boolean => {
+  const shown = (e: TrajectoryEntry): boolean => scopeOf(e) === scope && c.drawn(e)
+  const placeable = (id: string): boolean => {
     const at = c.afterIndex[id]
-    return at !== undefined && scopeOf(c.after[at]!) === scope
+    if (at === undefined || scopeOf(c.after[at]!) !== scope) return false
+    for (let k = at; k < c.after.length; k += 1) if (shown(c.after[k]!)) return true
+    return false
   }
-  if (ours(anchor.id)) return { follow, anchor }
+  if (placeable(anchor.id)) return { follow, anchor }
   const by = c.replaced.get(anchor.id)
-  if (by && ours(by)) return { follow, anchor: { id: by, offset: anchor.offset } }
+  if (by && placeable(by)) return { follow, anchor: { id: by, offset: anchor.offset } }
   const from = c.beforeIndex[anchor.id]
-  const next = from === undefined ? undefined : c.before.slice(from + 1).find((e) => ours(e.entry_id))
-  return next ? { follow, anchor: { id: next.entry_id, offset: 0 } } : { follow: true, anchor: null }
+  if (from !== undefined) {
+    for (let k = from + 1; k < c.before.length; k += 1) {
+      const at = c.afterIndex[c.before[k]!.entry_id]
+      const now = at === undefined ? undefined : c.after[at]
+      if (now && shown(now)) return { follow, anchor: { id: now.entry_id, offset: 0 } }
+    }
+  }
+  return { follow: true, anchor: null }
 }
 
 /* The saved tabs after a change: each one's place, and its selection --
@@ -754,6 +770,7 @@ export async function load(): Promise<void> {
       const next = rows(entries)
       const change: Change = {
         before: was.entries, beforeIndex: was.index, after: entries, afterIndex: next.index, replaced: NOTHING_REPLACED,
+        drawn: drawnUnder(was.prefs, was.revealed),
       }
       patch({
         ...next,
@@ -815,6 +832,7 @@ export function applyChanges(batch: TrajectoryChangesResult): void {
   const change: Change = {
     before: s.entries, beforeIndex: s.index, after: entries, afterIndex: index,
     replaced: new Map(batch.removed.map((r) => [r.entry_id, r.replaced_by ?? null])),
+    drawn: drawnUnder(s.prefs, s.revealed),
   }
   patch({
     ...rows(entries, s),

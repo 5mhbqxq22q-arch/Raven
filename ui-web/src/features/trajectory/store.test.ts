@@ -963,9 +963,12 @@ describe('Scope Tabs', () => {
 
   describe('the place of the tab on screen, carried in the same write as the change', () => {
     /* Anchored in A, the feed takes the anchor away, and the reader goes to B and back without scrolling. */
-    async function away(anchor: string, removed: TrajectoryChangesResult['removed'], upserts: TrajectoryEntry[] = []): Promise<void> {
+    async function away(
+      anchor: string, removed: TrajectoryChangesResult['removed'], upserts: TrajectoryEntry[] = [], first = (): void => {},
+    ): Promise<void> {
       await loaded()
       store.openScope(A)
+      first()
       store.setPlace(false, { id: anchor, offset: 7 })
       store.applyChanges(batch({ removed, upserts }))
       store.openScope(B)
@@ -984,6 +987,34 @@ describe('Scope Tabs', () => {
 
     it('to the tail when no row of the tab is left after it', async () => {
       await away('a3', [{ entry_id: 'a3', revision: 101, replaced_by: null }, { entry_id: 'ah', revision: 101, replaced_by: null }])
+      expect([store.get().follow, store.get().anchor]).toEqual([true, null])
+    })
+
+    it('to the tail when the rows of the tab left after it are all hidden', async () => {
+      await away('a3', [{ entry_id: 'a3', revision: 101, replaced_by: null }])
+      expect(store.entry('ah')).not.toBeNull()
+      expect([store.get().follow, store.get().anchor]).toEqual([true, null])
+    })
+
+    it('to a hidden row after it that the switch shows', async () => {
+      await away('a3', [{ entry_id: 'a3', revision: 101, replaced_by: null }], [], () => { store.setPrefs({ showHidden: true }) })
+      expect([store.get().follow, store.get().anchor]).toEqual([false, { id: 'ah', offset: 0 }])
+      store.setPrefs({ showHidden: false })
+      localStorage.removeItem(store.PREFS_KEY)
+    })
+
+    it('to a hidden row after it that a link showed', async () => {
+      await away('a3', [{ entry_id: 'a3', revision: 101, replaced_by: null }], [], () => { store.select('ah', { source: 'link' }) })
+      expect([store.get().follow, store.get().anchor]).toEqual([false, { id: 'ah', offset: 0 }])
+    })
+
+    it('nowhere while a hidden anchor still has a drawn row of its tab after it', async () => {
+      await loaded([step('a0', 0, A), step('ah0', 1, A, { meta: { hidden: 'empty_internal' } }), step('a1', 2, A), entry('m0', 3)])
+      store.openScope(A)
+      store.setPlace(false, { id: 'ah0', offset: 3 })
+      store.applyChanges(batch({ upserts: [entry('m0', 3, { preview: 'changed' })] }))
+      expect([store.get().follow, store.get().anchor]).toEqual([false, { id: 'ah0', offset: 3 }])
+      store.applyChanges(batch({ removed: [{ entry_id: 'a1', revision: 102, replaced_by: null }], from_revision: 101, to_revision: 102 }))
       expect([store.get().follow, store.get().anchor]).toEqual([true, null])
     })
 

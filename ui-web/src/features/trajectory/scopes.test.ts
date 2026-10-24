@@ -1,4 +1,7 @@
 // @vitest-environment happy-dom
+/* The reader's moves between Scope Tabs: which tab a row leads to, a freshly
+   opened external agent's tab landing on its entry and recorded block, closing
+   a tab, and going back to the entry that opens a scope. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { absorb, resetCapabilities } from '../../rpc/capabilities'
