@@ -885,7 +885,7 @@ def _is_prefix(shorter: Sequence[str], longer: Sequence[str]) -> bool:
 
 
 def _chain_of(entry: TrajectoryEntry) -> tuple[str, ...]:
-    return (ORIGIN_MAIN,) if entry.origin == ORIGIN_MAIN else (ORIGIN_SUBAGENT, entry.trace_id)
+    return (ORIGIN_MAIN,) if entry.subagent_scope is None else (entry.subagent_scope,)
 
 
 def preview_start(meta: Mapping[str, Any]) -> int | None:
@@ -1003,11 +1003,11 @@ def _apply_delta(entries: list[TrajectoryEntry], record_of: Mapping[str, dict[st
     """Mark every model input with what it adds to the conversation before it.
 
     Continuity is proven, never assumed: an earlier input in the same chain
-    (the main line, or one sub-agent trace) and with a compatible purpose
-    counts as the predecessor only when its message sequence is an ordered
-    prefix of this one; what it adds starts after that prefix, and after the
-    predecessor's own output when the message there is an assistant one
-    (``echo_at``). The first input of a chain is all new; an input no
+    (the main session, report turns included, or one Sub-agent Scope) and
+    with a compatible purpose counts as the predecessor only when its message
+    sequence is an ordered prefix of this one; what it adds starts after that
+    prefix, and after the predecessor's own output when the message there is
+    an assistant one (``echo_at``). The first input of a chain is all new; an input no
     candidate precedes is independent and all new too; an input whose own
     messages or whose candidates' messages are not read yet is unknown, and
     is decided again once they are. A candidate whose messages were read and
@@ -1100,11 +1100,13 @@ def _record_content_empty(record: dict[str, Any] | None) -> bool:
 
 def _apply_hidden(entries: list[TrajectoryEntry], record_of: Mapping[str, dict[str, Any]]) -> None:
     """Mark the rows the list need not show: a turn's end that repeats the
-    turn's last model output word for word, a turn's end that finished well
-    with nothing in it, and an internal step that recorded nothing."""
+    turn's last model output in the main session word for word, a turn's end
+    that finished well with nothing in it, and an internal step that recorded
+    nothing. A sub-agent's steps share the turn that dispatched them and may
+    write outputs after that turn has ended, so they are never its last word."""
     last_output: dict[str, str | None] = {}
     for entry in entries:
-        if entry.slot != "llm.output" or entry.turn_span_id is None:
+        if entry.slot != "llm.output" or entry.turn_span_id is None or entry.subagent_scope is not None:
             continue
         purpose = entry.meta.get("purpose")
         if purpose not in (None, "main"):

@@ -2636,7 +2636,9 @@ records around it: for a model input the Message Delta (`delta` ∈ `first` /
 `continued` / `independent` / `unknown`, `new_from`, `echo_at`,
 `message_count`) and the LLM Purpose (`purpose`); and `hidden` for a row the
 list need not show — `redundant_reply`, a turn's end that repeats the turn's
-last model output word for word; `empty_reply`, a turn's end of a turn that
+last model output in the main session word for word (a sub-agent's outputs, though
+they belong to the turn that dispatched it and may come after its end, are never
+compared); `empty_reply`, a turn's end of a turn that
 finished `ok` whose recorded content was read and is null or blank;
 `empty_internal`, an outer-only summary that recorded nothing. A hidden row
 stays in the index and keeps its clock. While the recorder writes the turn's
@@ -2650,14 +2652,17 @@ projection, without identity, structured status or timing.
 
 **Message Delta** (`raven/trajectory/entries.py`, `_apply_delta`):
 What one model input adds to the conversation before it, proven rather than
-assumed: an earlier input of the same chain (the main line, or one sub-agent
-trace) with a compatible LLM Purpose counts as the predecessor only when its
+assumed: an earlier input of the same chain (the main session, or one Sub-agent
+Scope) with a compatible LLM Purpose counts as the predecessor only when its
 message sequence — the content addresses of a v2 artifact's messages — is an
 ordered prefix of this one; then `new_from = len(prefix)`, one more when the
 message right after the prefix is an assistant one — the predecessor's own
 output written back into the history, already a row of its own (`echo_at`
 names it; the role of a referenced message is learnt by a bounded read, and
-until then the prefix alone counts). The chain's first
+until then the prefix alone counts). A turn reported back belongs to the main
+session, so its inputs continue the main agent's history; a sub-agent's inputs
+find a predecessor only within their own scope, so they neither take the main
+session's candidate places nor leave its inputs `unknown`. The chain's first
 input is `first` (all new); an input no candidate precedes is `independent`
 (all new); an input whose own or whose candidates' messages are not read yet is
 `unknown`, decided again when they are. Computed at projection time from the

@@ -1769,28 +1769,74 @@ def test_a_continued_input_whose_added_messages_start_with_a_system_message_prev
     assert _one(entries, "a3", "llm.input").preview == "a reminder slipped in"
 
 
-def test_sub_agent_inputs_are_measured_against_their_own_trace(state):
-    s, u1, a1, u2 = _m("system", "rules"), _m("user", "q1"), _m("assistant", "a1"), _m("user", "q2")
+def test_a_turn_reported_back_continues_the_main_session_and_a_sub_agent_starts_its_own(state):
+    s, u1, a1 = _m("system", "rules"), _m("user", "q1"), _m("assistant", "a1")
+    ss, task, worked, found = (
+        _m("system", "you are a helper"),
+        _m("user", "look around"),
+        _m("assistant", "looking"),
+        _m("tool", "found it"),
+    )
+    report = _m("user", "the helper finished: found it")
+    link = {"trace.dispatched_in_trace_id": "A", "trace.dispatched_by_span_id": "run"}
     spans = [
-        _span("A", "tA", "session.turn", start=0, end=30, attrs=_turn_attrs(state, "tA")),
-        _call(state, "A", "a1", "tA", start=1, messages=[s, u1, a1, u2], purpose="main"),
-        _span(
-            "S",
-            "sub",
-            "session.turn",
-            start=2,
-            end=20,
-            attrs={**_turn_attrs(state, "sub"), "trace.dispatched_in_trace_id": "A"},
-        ),
-        _call(state, "S", "s1", "sub", start=3, messages=[s, u1], purpose="main"),
-        _call(state, "S", "s2", "sub", start=4, messages=[s, u1, a1], purpose="main"),
+        _turn_span(state, "A", "tA", start=0, end=10),
+        _call(state, "A", "m1", "tA", start=1, messages=[s, u1], purpose="main"),
+        _tool_span(state, "A", "spawn", "tA", "spawn", start=2),
+        _run_span("A", "run", "spawn", start=3, end=20),
+        _call(state, "A", "sub1", "run", start=4, messages=[ss, task]),
+        _call(state, "A", "sub2", "run", start=5, messages=[ss, task, worked, found]),
+        _turn_span(state, "R", "report", start=30, end=40, extra=link),
+        _call(state, "R", "r1", "report", start=31, messages=[s, u1, a1, report], purpose="main"),
     ]
     entries = tent.project_entries(spans, state=state, read=True).entries
-    assert _one(entries, "s1", "llm.input").origin == "subagent"
-    assert _delta(entries, "s1") == ("first", 0, 2)
-    # Only s1's own output was added: nothing new, and the row keeps its prompt.
-    assert _delta(entries, "s2") == ("continued", 3, 3)
-    assert _one(entries, "s2", "llm.input").preview == "a1"
+    assert _delta(entries, "m1") == ("first", 0, 2)
+    # The run's first input is the first of its own scope, not an input the session failed to continue.
+    assert _delta(entries, "sub1") == ("first", 0, 2)
+    assert _delta(entries, "sub2") == ("continued", 3, 4)
+    assert _one(entries, "sub2", "llm.input").meta["echo_at"] == 2
+    # The report is the main agent's next call on its own history.
+    assert _delta(entries, "r1") == ("continued", 3, 4)
+    assert _one(entries, "r1", "llm.input").meta["echo_at"] == 2
+    assert _one(entries, "r1", "llm.input").preview == "the helper finished: found it"
+    assert _one(entries, "r1", "llm.input").origin == "subagent"
+
+
+def test_sub_agent_inputs_never_crowd_the_main_session_s_predecessor_out_of_its_window(state):
+    s, u1, a1, u2 = _m("system", "rules"), _m("user", "q1"), _m("assistant", "a1"), _m("user", "q2")
+    crowd = [_m("system", "you are a helper"), _m("user", "look around")]
+    spans = [
+        _turn_span(state, "t", "turn", start=0, end=30),
+        _call(state, "t", "m1", "turn", start=1, messages=[s, u1], purpose="main"),
+        _tool_span(state, "t", "spawn", "turn", "spawn", start=2),
+        _run_span("t", "run", "spawn", start=3, end=20),
+        *(_call(state, "t", f"s{n:02d}", "run", start=4, messages=crowd) for n in range(tent.DELTA_CANDIDATES + 1)),
+        _call(state, "t", "m2", "turn", start=10, messages=[s, u1, a1, u2], purpose="main"),
+    ]
+    entries = tent.project_entries(spans, state=state, read=True).entries
+    assert _delta(entries, "s00") == ("first", 0, 2)
+    assert _delta(entries, "m2") == ("continued", 3, 4)
+    assert _one(entries, "m2", "llm.input").meta["echo_at"] == 2
+
+
+def test_a_sub_agent_input_not_read_yet_leaves_the_main_session_s_inputs_decided(state):
+    s, u1, a1, u2 = _m("system", "rules"), _m("user", "q1"), _m("assistant", "a1"), _m("user", "q2")
+    m1 = _call(state, "t", "m1", "turn", start=1, messages=[s, u1], purpose="main")
+    sub = _call(state, "t", "sub", "run", start=4, messages=[_m("user", "look around")])
+    m2 = _call(state, "t", "m2", "turn", start=6, messages=[s, u1, a1, u2], purpose="main")
+    spans = [
+        _turn_span(state, "t", "turn", start=0, end=30),
+        m1,
+        _tool_span(state, "t", "spawn", "turn", "spawn", start=2),
+        _run_span("t", "run", "spawn", start=3, end=20),
+        sub,
+        m2,
+    ]
+    budget = tent.ReadBudget(10, 10**7)
+    cached = {("t", c["spanId"]): tent.preview_records(c, state=state, budget=budget).records for c in (m1, m2)}
+    entries = tent.project_entries(spans, state=state, cached_records=cached).entries
+    assert _delta(entries, "sub")[0] == "unknown"
+    assert _delta(entries, "m2") == ("continued", 3, 4)
 
 
 def test_delta_is_unknown_until_the_predecessor_is_read(state):
@@ -1911,6 +1957,22 @@ def test_replies_repeating_the_last_model_output_are_marked_hidden(state):
     assert "hidden" not in _one(entries, "fb1", "summary").meta
     # The hidden reply still owns the turn's clock.
     assert _one(entries, "turn", "turn.output").charged_ms == 10000
+
+
+@pytest.mark.parametrize("spawned", [False, True], ids=["alone", "with_a_sub_agent_answering_later"])
+def test_a_turn_s_end_is_compared_with_the_main_session_s_last_output_only(state, spawned):
+    spans = [
+        _span("t", "turn", "session.turn", start=0, end=10, attrs=_turn_attrs(state, "turn", content_out="Done.")),
+        _call(state, "t", "l1", "turn", start=1, messages=[_m("user", "go")], content="Done.", purpose="main"),
+    ]
+    if spawned:
+        spans += [
+            _tool_span(state, "t", "spawn", "turn", "spawn", start=2),
+            _run_span("t", "run", "spawn", start=3, end=30),
+            _call(state, "t", "sub", "run", start=20, messages=[_m("user", "look around")], content="Found it."),
+        ]
+    entries = tent.project_entries(spans, state=state, read=True).entries
+    assert _one(entries, "turn", "turn.output").meta.get("hidden") == "redundant_reply"
 
 
 def _end_attrs(state, name, content, *, written=True):
