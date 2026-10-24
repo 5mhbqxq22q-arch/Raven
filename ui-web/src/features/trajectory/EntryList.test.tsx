@@ -634,16 +634,62 @@ describe('a click on a row that opens a tab', () => {
     expect(store.get().selectedId).toBe('door')
   })
 
-  it('drops the waiting click when the reader moves to another tab or picks another row first', async () => {
+  it('gives way to a keyboard move made in the wait, which keeps its own selection and pane', async () => {
     await drawn()
     act(() => { fireEvent.click(row('door')) })
-    act(() => { store.openScope(A) })
-    wait(DBL_MS)
-    expect([store.get().scope, store.get().selectedId]).toEqual([A, null])
-    act(() => { store.switchScope(null) })
-    act(() => { fireEvent.click(row('door')) })
-    act(() => { fireEvent.click(row('plain')) })
-    wait(DBL_MS)
+    act(() => { fireEvent.keyDown(list(), { key: 'End' }) })
     expect(store.get().selectedId).toBe('plain')
+    wait(DBL_MS * 2)
+    expect([store.get().selectedId, store.get().selectedBy, details.get().open]).toEqual(['plain', 'keyboard', true])
+  })
+
+  it('gives way to a selection made through any other door in the wait', async () => {
+    await drawn()
+    const wrong: string[] = []
+    for (const source of ['bar', 'link', 'migrate'] as const) {
+      act(() => { store.select(null, { source: 'migrate' }); details.closeDetails() })
+      act(() => { fireEvent.click(row('door')) })
+      act(() => { store.select('ask', { source }) })
+      wait(DBL_MS * 2)
+      if (store.get().selectedId !== 'ask') wrong.push(source)
+    }
+    expect(wrong).toEqual([])
+  })
+
+  it('gives way to a move to another tab, also when the reader comes straight back', async () => {
+    await drawn()
+    act(() => { fireEvent.click(row('door')) })
+    act(() => { store.openScope(A); store.switchScope(null) })
+    wait(DBL_MS * 2)
+    expect([store.get().scope, store.get().selectedId, details.get().open]).toEqual([null, null, false])
+  })
+
+  it('gives way to the other view and to another conversation, also on the way back', async () => {
+    await drawn()
+    await act(async () => { await store.refreshState() })
+    act(() => { store.setView('trajectory') })
+    act(() => { fireEvent.click(row('door')) })
+    act(() => { store.setView('chat'); store.setView('trajectory') })
+    wait(DBL_MS * 2)
+    expect(store.get().selectedId).toBeNull()
+    act(() => { fireEvent.click(row('door')) })
+    act(() => { store.sessionChanged('gui:b'); store.sessionChanged('gui:a') })
+    await act(async () => { await store.load() })
+    expect(row('door')).not.toBeNull()
+    wait(DBL_MS * 2)
+    expect([store.get().selectedId, details.get().open]).toEqual([null, false])
+  })
+
+  it('lets the feed through: a batch in the wait does not drop the click', async () => {
+    await drawn()
+    act(() => { fireEvent.click(row('door')) })
+    act(() => {
+      store.applyChanges({
+        epoch: 'e1', from_revision: 100, to_revision: 101, upserts: [entry('plain', 2, { preview: 'changed' })], removed: [],
+        has_more: false, reset_required: false, index_state: READY,
+      })
+    })
+    wait(DBL_MS)
+    expect([store.get().selectedId, details.get().open]).toEqual(['door', true])
   })
 })

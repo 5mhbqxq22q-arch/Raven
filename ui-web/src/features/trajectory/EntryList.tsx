@@ -185,23 +185,33 @@ export function EntryList(): JSX.Element {
      double click's time before it selects: the pane it would open takes the
      list's right side, where the second click of a double click would then
      land. A double click in the wait opens the tab instead; any other row,
-     or any row while the pane is up, selects at once. */
-  const waiting = useRef<ReturnType<typeof setTimeout> | null>(null)
+     or any row while the pane is up, selects at once. The wait gives way to
+     whatever the reader does next -- another selection by any door, another
+     tab, another conversation, the other view -- the moment it happens, so a
+     click from before can never land over it; the feed alone does not count. */
+  const waiting = useRef<{ timer: ReturnType<typeof setTimeout>; unwatch: () => void } | null>(null)
   const settle = useCallback((): void => {
-    if (waiting.current !== null) clearTimeout(waiting.current)
+    const w = waiting.current
     waiting.current = null
+    if (!w) return
+    clearTimeout(w.timer)
+    w.unwatch()
   }, [])
   useEffect(() => settle, [settle])
   const onPick = useCallback((entry: TrajectoryEntry): void => {
     settle()
     const pick = (): void => { store.select(entry.entry_id, { source: 'click' }); details.openDetails() }
     if (scopes.openTarget(entry) === null || details.get().open) { pick(); return }
-    const { sessionKey, scope } = store.get()
-    waiting.current = setTimeout(() => {
-      waiting.current = null
+    const was = store.get()
+    const unwatch = store.subscribe(() => {
       const s = store.get()
-      if (s.sessionKey === sessionKey && s.scope === scope && entry.entry_id in s.visibleIndex) pick()
+      if (s.selections !== was.selections || s.scope !== was.scope || s.sessionKey !== was.sessionKey || s.view !== was.view) settle()
+    })
+    const timer = setTimeout(() => {
+      settle()
+      if (entry.entry_id in store.get().visibleIndex) pick()
     }, DBL_MS)
+    waiting.current = { timer, unwatch }
   }, [settle])
   const onOpen = useCallback((entry: TrajectoryEntry): void => {
     settle()
