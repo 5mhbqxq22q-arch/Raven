@@ -22,8 +22,15 @@ All notable changes to Raven are documented here.
   logins (`~/.raven/keys/<id>.password`, readable by the owner alone), handed
   to ssh on every connection through its askpass hook, and never on a command
   line, in a log or in an answer; such a machine gets no ssh alias and no jump
-  host, its password answers the registered account's own password prompt and
-  no other, Oncall campaigns run on it as Raven's own connections do and at
+  host, its password answers the registered account's own password prompt (at
+  the address as ssh resolves it, so a `Host` alias from the owner's ssh config
+  works too, though not one Raven wrote for another machine that sends ssh
+  elsewhere: such a pair is refused at registration in either order and again
+  on connecting, while a key machine whose alias names its own id as the
+  address, `gpu1` at `gpu1`, leaves a password machine at `gpu1` free to
+  register, and a password connection never canonicalizes the host)
+  and no other, Oncall campaigns run on it as Raven's own
+  connections do and at
   the registered address alone, and the mode is not offered on Windows. A failed
   or cancelled registration preserves the password written by another pending
   registration of the same machine, including when both passwords are identical.
@@ -59,6 +66,28 @@ All notable changes to Raven are documented here.
   adding a second one. `machines.list` rows carry `agents_off_here`; `subagents.presets`
   lists `on_machines` (connected) apart from `off_on_machines` (switched off,
   with the entry's name).
+
+- The Machines tab's connect form can be waited on and stopped. Its line
+  counts the seconds, the hint says what the wait is for and its limit, and
+  **Cancel** stops the run on the machine and writes nothing:
+  `subagents.test_cancel` now reaches the proof prompt a `subagents.add`,
+  `subagents.toggle` or `subagents.update` sends, under the entry's name --
+  and the capability record an acp row is measured with once it answers --
+  and that call then refuses with `cancelled: true` in its error data. A
+  Cancel that finds nothing left to stop is not said as a cancel: the form
+  says it is too late to cancel and waits for the connect's own answer, and
+  one whose stop gives no answer is said as not confirmed, since only the
+  stop's answer says whether anything was written. While the
+  proof runs the row reports `test_running`, a Test on it is refused as a
+  second test is, and a connect pressed during a Test is refused the same
+  way, before anything is spent. A wait with no answer ends after ten
+  minutes -- above the server's own worst case, the capability record
+  included -- with the run asked to stop and the
+  Agents page named as where to look, instead of one line that never changed
+  (seen once on 2026-10-20, after the socket dropped without saying so). A
+  machine nobody has reached yet reads *Not connected; the link opens when
+  work is sent* instead of *No link*, which read as a fault on every card
+  when the tab opened.
 
 - The bug report review remembers your redaction decisions. Every keep or
   replace answer is stored in `redaction_history.json` under the Raven home
@@ -369,6 +398,20 @@ All notable changes to Raven are documented here.
 
 ### Fixed
 
+- Installing the Raven node on a machine whose package index crawls there no
+  longer stalls the install. The index pip is configured with (else PyPI) is
+  timed from the machine first; when it cannot be reached there, or serves
+  slower than 256 KB/s, the packages come from the faster of two PyPI mirrors
+  in mainland China (Tsinghua's TUNA, Alibaba Cloud's), with the machine's own
+  index tried after it, and the plan says so; `RAVEN_NO_MIRROR=1` keeps every
+  install on the machine's index. The **Machines** tab now waits for as long as
+  an install runs, where a fifteen-minute deadline of its own gave up just before
+  the gateway reported a step out of time and left the card spinning; such a
+  step now names itself and the index it was downloading from instead of
+  saying the machine did not answer; a half-made Raven node left by a step
+  given up on no longer fails the next attempt; and the optional search package
+  running out of time no longer fails the install.
+
 - A turn's sub-agent marking in the trajectory view, and whether the export
   and bug-report turn picker lists it, now depend on that turn alone. A
   message sent after a sub-agent had reported into an idle session was
@@ -543,6 +586,18 @@ All notable changes to Raven are documented here.
   asks the replay from the line its record kept as the prompt went out, not
   from the agent's first line; a CLI pick-up, whose task is the command's
   own, reads from the first line.
+
+- A password machine at the name of a key machine whose ssh alias names that
+  same address (key machine `gpu1` at `gpu1`, password machine `gpu1-shared`
+  at `gpu1`) registers and logs in. The check that keeps a `Host` alias Raven
+  wrote from taking another machine's password refused every such pair by
+  name; it now refuses only an alias that would send ssh elsewhere (another
+  `HostName`, a keyword Raven does not write, a block cut short), and its
+  refusal suggests the machine's IP address or full domain name rather than
+  the address it already had. The Oncall event watcher builds a password
+  machine's backend off the event loop as the ops tools do, so the `ssh -G`
+  that build runs no longer holds up the rest of Raven, for up to 10 seconds
+  on each pass.
 
 - The research, code, oncall and ppt agents follow an upgrade or a config
   change into the prompt files they keep in their workspace (`soul.md`,

@@ -1525,7 +1525,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.state_connected': '{n} agents running',
     'gui.machine.state_idle': 'Link up, no agent running',
     'gui.machine.state_lost': 'Link down; agents wait',
-    'gui.machine.state_off': 'No link',
+    'gui.machine.state_off': 'Not connected; the link opens when work is sent',
     'gui.machine.state_error': 'Error',
     'gui.machine.node_version': 'Node {v}',
     'gui.machine.node_none': 'Node not installed',
@@ -1578,7 +1578,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.f_node_dir': 'Install into (optional)',
     'gui.machine.node_dir_hint': 'Where the node lives on the machine: ~/.raven-node unless its home disk has no room.',
     'gui.machine.install_bad_hint':
-      'Fix what the line says, then press Install node again. Nothing was left on the machine.',
+      'Fix what the line says, then press Install node again: the next try clears what this one left of the node first.',
     'gui.machine.remove_do': 'Remove machine',
     'gui.machine.remove_body':
       '{name} ({id}) is taken out of the registry and its ssh alias goes with it. Agent entries that run there have to be disconnected first. The node installed on the machine stays there.',
@@ -1592,6 +1592,8 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
       'The machine could not be reached: check the address and port, and that the machine is on and reachable from this computer.',
     'gui.machine.why_login':
       "The machine refused the login. With a key: check the user name and the private key path, and that the key's public half is on the machine. With a password: check it, and that the machine accepts password logins at all.",
+    'gui.machine.why_prompt':
+      "The machine asked something the kept password does not answer -- a one-time code, another account's password, or a password prompt that names a host other than the registered one -- so the password was not sent: see the line below.",
     'gui.machine.why_hostkey':
       "The machine's host key differs from the one on record: check the machine before trusting it again, then take the old line out of ~/.ssh/known_hosts.",
     'gui.machine.why_timeout': 'The machine did not answer in time: check that it is on and that the port is open.',
@@ -1629,6 +1631,24 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.reconnected_said': '{name} is connected again; it is on the Agents page.',
     'gui.machine.preset_connecting': '{name} (being connected on this machine right now)',
     'gui.machine.connecting': 'Starting it on the machine',
+    'gui.machine.connecting_for': 'Starting it on the machine, {s}s so far',
+    'gui.machine.connecting_hint':
+      'The node on the machine starts it, then it has to answer one test message: a few seconds to a minute as a rule, ten minutes at most. Cancel asks it to stop, and this form says whether anything was written.',
+    'gui.machine.cancelling': 'Stopping',
+    'gui.machine.connect_cancelled_head': 'Cancelled',
+    'gui.machine.connect_cancelled': 'Cancelled; nothing was written. It can be connected again.',
+    'gui.machine.connect_timeout_head': 'No answer',
+    'gui.machine.connect_timeout':
+      'No answer in ten minutes, so the form asked the run to stop. See the Agents page for whether it connected; if not, connect again.',
+    'gui.machine.connect_late_for': 'Too late to cancel; waiting for it to finish, {s}s so far',
+    'gui.machine.connect_late_hint':
+      'There was nothing left to stop: it had already answered, or had not started yet, so it may still be written. This form says how it ends.',
+    'gui.machine.connect_missed_head': 'Not stopped',
+    'gui.machine.connect_missed':
+      'It was past the point where it could be cancelled, so it may have been written. See the Agents page for whether it connected; if not, connect again.',
+    'gui.machine.connect_unconfirmed_head': 'Cancel not confirmed',
+    'gui.machine.connect_unconfirmed':
+      'The stop gave no answer, so it may still be written. See the Agents page for whether it connected; if not, connect again.',
     'gui.machine.connected_said': '{name} is connected; it is on the Agents page.',
     'gui.machine.connect_bad': 'Not connected',
     'gui.machine.connect_bad_named': 'Not connected: {name}',
@@ -4922,7 +4942,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.state_connected': '{n} 个 Agent 在跑',
     'gui.machine.state_idle': '链路在，没有 Agent 在跑',
     'gui.machine.state_lost': '链路断了，Agent 在等',
-    'gui.machine.state_off': '没有链路',
+    'gui.machine.state_off': '未连接（派活时自动连上）',
     'gui.machine.state_error': '出错',
     'gui.machine.node_version': '节点 {v}',
     'gui.machine.node_none': '节点未安装',
@@ -4973,7 +4993,7 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.update': '更新节点',
     'gui.machine.f_node_dir': '安装到（可不填）',
     'gui.machine.node_dir_hint': '节点在机器上的存放目录：默认 ~/.raven-node，只有主目录所在磁盘放不下时才需要改。',
-    'gui.machine.install_bad_hint': '按这一行的提示处理后，再点一次「安装节点」。机器上没有留下东西。',
+    'gui.machine.install_bad_hint': '按这一行的提示处理后，再点一次「安装节点」：下一次会先清掉这次没装完的节点。',
     'gui.machine.remove_do': '移除机器',
     'gui.machine.remove_body':
       '{name}（{id}）会从登记表里去掉，ssh 别名一起去掉；在它上面跑的 Agent 条目要先断开。装在机器上的节点会留在那里。',
@@ -4986,6 +5006,8 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.why_unreachable': '连不上这台机器：检查地址和端口，确认机器开着、从这台电脑能连到它。',
     'gui.machine.why_login':
       '机器拒绝了登录。用密钥时：检查用户名和私钥路径，确认对应的公钥已经放到机器上。用密码时：检查密码，并确认这台机器允许密码登录。',
+    'gui.machine.why_prompt':
+      '机器问的不是这个账号自己的密码提示（比如一次性验证码、别的账号的密码，或者提示里的主机不是登记的那台），所以没有发送密码：详见下一行。',
     'gui.machine.why_hostkey':
       '机器的主机密钥和记录的不一样：先确认机器没问题，再把 ~/.ssh/known_hosts 里的旧记录删掉。',
     'gui.machine.why_timeout': '机器没有按时应答：确认机器开着、端口放行。',
@@ -5021,6 +5043,23 @@ export const UI_TEXT: Record<Locale, Record<string, string>> = {
     'gui.machine.reconnected_said': '已重新接入 {name}，到「智能体」页可以看到。',
     'gui.machine.preset_connecting': '{name}（正在接到这台机器上）',
     'gui.machine.connecting': '正在机器上启动它',
+    'gui.machine.connecting_for': '正在机器上启动它，已等 {s} 秒',
+    'gui.machine.connecting_hint':
+      '机器上的节点先启动它，再等它答一句测试消息：一般几秒到一分钟，最多等 10 分钟。点「取消」会请求停掉这一跑，这里会说有没有写入。',
+    'gui.machine.cancelling': '正在停止',
+    'gui.machine.connect_cancelled_head': '已取消',
+    'gui.machine.connect_cancelled': '已取消，没有写入。可以再接一次。',
+    'gui.machine.connect_timeout_head': '没有等到答复',
+    'gui.machine.connect_timeout': '等了 10 分钟没有答复，已请求停止。到「智能体」页看它有没有接上；没有的话再接一次。',
+    'gui.machine.connect_late_for': '已经来不及取消，正在等它收尾，已等 {s} 秒',
+    'gui.machine.connect_late_hint':
+      '已经没有可停的了：它要么已经答过，要么还没开始，所以仍可能写入。结束后这里会说结果。',
+    'gui.machine.connect_missed_head': '没能停下',
+    'gui.machine.connect_missed':
+      '已经过了能取消的时候，可能已经写入。到「智能体」页看它有没有接上；没有的话再接一次。',
+    'gui.machine.connect_unconfirmed_head': '取消未确认',
+    'gui.machine.connect_unconfirmed':
+      '停止请求没有答复，所以仍可能写入。到「智能体」页看它有没有接上；没有的话再接一次。',
     'gui.machine.connected_said': '已接入 {name}，到「智能体」页可以看到。',
     'gui.machine.connect_bad': '没有接入',
     'gui.machine.connect_bad_named': '没有接入 {name}',

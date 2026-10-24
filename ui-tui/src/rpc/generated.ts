@@ -3146,7 +3146,7 @@ export interface TrajectoryEntry {
    */
   origin: 'main' | 'subagent';
   /**
-   * The Sub-agent Scope the entry belongs to: trace_id:span_id of the nearest sub-agent boundary above its span (a subagent.run span, or a run_subagent_dag / resolve_dag_node tool call; a boundary's own entries look only for a subagent.run above). Null for the main session. Decided by span ancestry, never by time; kept when the boundary is trimmed to a skeleton.
+   * The Sub-agent Scope the entry belongs to: trace_id:span_id of the nearest sub-agent boundary above its span (a subagent.run span, or a run_subagent_dag / resolve_dag_node tool call; a boundary's own entries, and the permission reviewer's llm.call recorded under the call it reviews, look only for a subagent.run above). Null for the main session. Decided by span ancestry, never by time; kept when the boundary is trimmed to a skeleton.
    */
   subagent_scope?: string | null;
   /**
@@ -4605,12 +4605,13 @@ export interface MachinesAddResult {
    */
   detail: string;
   /**
-   * Why the row was not written, as a kind the page can explain: the machine could not be reached, refused the login, presented a changed host key, did not answer in time, ssh is missing here, this computer cannot use the login picked (a password on Windows), the id is taken, the fields are not usable, or the registry file cannot be changed. Empty when it was written.
+   * Why the row was not written, as a kind the page can explain: the machine could not be reached, refused the login, asked a question the kept password does not answer (so the password was not sent), presented a changed host key, did not answer in time, ssh is missing here, this computer cannot use the login picked (a password on Windows), the id is taken, the fields are not usable, or the registry file cannot be changed. Empty when it was written.
    */
   reason:
     | ''
     | 'unreachable'
     | 'login'
+    | 'prompt'
     | 'hostkey'
     | 'timeout'
     | 'nossh'

@@ -425,7 +425,15 @@ preset is, with `machine` (and
 Hub, whose preset sheet picks the machine (*Runs on*) among those with this
 Raven's node — refused before anything is spent when
 the id is not usable or the preset is a built-in agent, and proved by the same
-readiness ping as a local add, run on that machine.
+readiness ping as a local add, run on that machine. That ping, and the
+capability record an acp row is measured with once it answers, is one run held
+under the entry's name in `subagents._RUNNING`, the map a test's run is held in
+(`subagents._run_once`), so `subagents.test_cancel` stops it -- the hub's connect
+form counts the seconds, offers Cancel, and stops the run itself after five
+minutes with no answer -- and the add, switch or update then refuses with
+`cancelled` in its error data and writes nothing; one run per name at a time, a
+Test during it refused as a second test is, the row reporting `test_running`
+meanwhile.
 Registered-machine dispatch, file access and recovery are available without an
 environment switch. An entry without `machine` still runs here. Registration,
 SSH authentication, file permissions and concurrency limits govern remote work;
@@ -442,8 +450,16 @@ key, gets no ssh alias, no jump host and no shared connection, and is refused on
 whose OpenSSH cannot run Raven's POSIX askpass helper; a password under six characters is
 refused, since the scrubber would pass it as ordinary text, one with a line break too, since
 ssh would take only its first line, and the id rule is the one owner `connections.password_path`;
-the askpass helper answers the registered account's own password prompt (`user@host`, named by
-`transport.ASKPASS_FOR_ENV`) and no other, another account's, a second factor's and a one-time
+the askpass helper answers the registered account's own password prompt (`user@host`, the host as
+`ssh -G` resolves it -- the `HostKeyAlias`, else the `HostName` in canonical form -- named by
+`transport.ASKPASS_FOR_ENV`; a host that is the id of a `Host` alias Raven keeps for a key machine,
+`transport.ALIAS_MARK`, is refused rather than followed when that alias sends ssh to another
+`HostName` (`transport.managed_alias_hostnames`), and so is a block that is not the one Raven
+writes -- one of its two marks gone, a keyword Raven does not write (`ProxyCommand`, `Include`
+...), a missing or second `HostName`, a second pattern on its `Host` line -- at registration in
+either order by
+`connection_add.alias_collision` and again on connecting; one reader, `transport.resolve_with_ssh`,
+serves both this and a key machine's defaults, and a password connection never canonicalizes) and no other, another account's, a second factor's and a one-time
 password's included; Oncall's ssh and rsync log in to such a row the same way, at the registry's
 address alone, `oncall_flow.transport.password_row`), install the node in the background, doctor,
 and remove (`raven ops connection remove`, refused while a connected agent entry names the
@@ -637,8 +653,10 @@ covers the work, by its label. Work no worker covers is put to the user -- a wor
 it, or another Harness -- rather than done by the host or sent to an agent outside the enum,
 which offers labels alone. A table a call binds mid-turn (`load_playbook`) arrives after the
 identity was assembled, so that call's result carries the same rule, after its untrusted
-fence. A `spawn` result carries the open-decision rule the same way, since the host writes
-its closing text right after reading one. Rendered only in a process that is
+fence. A dispatch receipt (`spawn`, `run_subagent_dag`) and a background DAG run's
+announcement carry the open-decision rule the same way, together with the reply rule that
+gives each task a reply covers its own heading, since the host writes its closing text right
+after reading one. Rendered only in a process that is
 not a **Sub-agent role** and on a turn holding a dispatch path -- elsewhere the identity
 stays "a helpful AI assistant", byte for byte. The reply rules (`## How you reply`) say the
 open-decision rule again, the declined offer included, on every turn outside a
@@ -2591,8 +2609,10 @@ spawned run or one attempt of a DAG node -- or a **graph**: a `tool.call` whose 
 them (records written before node spans existed) and, for `resolve_dag_node`, the round a
 replan it chose started under it. An entry belongs to the nearest boundary above its span in
 its own trace, its own span not counted; a boundary's own entries look only for a run above,
-so a node's entry and a graph's call stay where the graph was dispatched. A dispatched agent
-cannot dispatch again, so scopes do not nest past one run, and since a spawned run's steps
+so a node's entry and a graph's call stay where the graph was dispatched, and so does the
+permission reviewer's `llm.call` (`llm.purpose` `permission_judge`), which the gate records
+under the call it reviews; a graph's scope holds only what its rounds produced. A dispatched
+agent cannot dispatch again, so scopes do not nest past one run, and since a spawned run's steps
 share the trace of the turn that spawned it and run alongside later turns, the scope is read
 from span ancestry alone, never from time. Three Trajectory Entry fields carry it:
 `subagent_scope`, the scope the entry belongs to (null for the main session);

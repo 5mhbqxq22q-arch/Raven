@@ -1056,6 +1056,39 @@ def test_a_dag_node_owns_its_steps_and_its_verdict_and_the_graph_opens_only_what
         assert _scope_fields(entries, "dag") == (None, None, None)
 
 
+@pytest.mark.parametrize("nodes", [True, False], ids=["rounds_in_node_spans", "rounds_before_node_spans"])
+def test_the_review_of_a_graph_call_is_the_main_agent_s_and_opens_no_scope_for_the_graph(state, nodes):
+    """The permission gate reviews a call inside its span, so the reviewer's call sits under the graph's."""
+    link = {"trace.dispatched_in_trace_id": "t", "trace.dispatched_by_span_id": "dag"}
+    spans = [
+        _turn_span(state, "t", "turn", start=0, end=60),
+        _tool_span(state, "t", "dag", "turn", "run_subagent_dag", start=1, end=30),
+        _step(state, "t", "review", "dag", start=2, purpose="permission_judge"),
+        _turn_span(state, "r", "report", start=31, end=35, extra=link),
+        _tool_span(state, "t", "spawn", "turn", "spawn", start=40),
+        _step(state, "t", "spawn-review", "spawn", start=41, purpose="permission_judge"),
+        _run_span("t", "run", "spawn", start=42, end=50),
+        _tool_span(state, "t", "inside", "run", "read_file", start=43),
+        _step(state, "t", "inside-review", "inside", start=44, purpose="permission_judge"),
+    ]
+    if nodes:
+        spans += [_attempt_span("t", "n1", "dag", start=3, end=10), _step(state, "t", "work", "n1", start=4)]
+    else:
+        spans.append(_step(state, "t", "work", "dag", start=4))
+    entries = tent.project_entries(spans, state=state, read=True).entries
+
+    # The review belongs where the call it reviews belongs: the main session, or a run's own call to its run.
+    assert _scope_fields(entries, "review") == _scope_fields(entries, "spawn-review") == (None, None, None)
+    assert _scope_fields(entries, "inside-review") == ("t:run", None, None)
+    if nodes:
+        assert _scope_fields(entries, "work") == ("t:n1", None, None)
+        assert _scope_fields(entries, "dag") == _scope_fields(entries, "report") == (None, None, None)
+    else:
+        assert _scope_fields(entries, "work") == ("t:dag", None, None)
+        assert _scope_fields(entries, "dag") == (None, "t:dag", None)
+        assert _scope_fields(entries, "report") == (None, None, "t:dag")
+
+
 def test_a_graph_recorded_without_node_spans_owns_every_step_under_its_call(state):
     spans = [
         _turn_span(state, "t", "turn", start=0, end=50),
