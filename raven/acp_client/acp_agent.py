@@ -209,11 +209,12 @@ def _agent_version(connection: Any) -> str:
     The live one, not a stored snapshot: a snapshot describes the build that
     was measured last, and a reader told "your agent is too old" out of a stale
     copy would keep hearing it after the upgrade that closed the gap.
+
+    A connection whose handshake cannot be read has no version to give, and
+    the handshake reader answers that on its own: it reads a missing answer
+    as a handshake that said nothing.
     """
-    try:
-        return handshake_of(connection.initialize).agent_version
-    except Exception:  # noqa: BLE001 - a version is a fact to add, never a reason to fail a turn
-        return ""
+    return handshake_of(getattr(connection, "initialize", None)).agent_version
 
 
 _RESULT_TEXT_CAP = 2000
