@@ -866,6 +866,20 @@ def test_trimmed_graph_calls_keep_their_tool_name_and_their_steps_scope(state, c
     assert scopes == {"work": "t:dag", "again": "t:resolve"}
 
 
+def test_a_span_log_with_crlf_line_ends_gives_the_same_scopes(state, clock):
+    """The trace store writes its log in text mode, so on Windows every record ends in CRLF."""
+    _log(state).parent.mkdir(parents=True, exist_ok=True)
+    with _log(state).open("wb") as fh:
+        for span in _spawned(_run_final()):
+            fh.write(json.dumps(span).encode() + b"\r\n")
+    index = _index(state, clock)
+    _refresh_until_ready(index, clock)
+
+    fields = {(e.span_id, e.subagent_scope, e.opens_subagent_scope) for e in index.entries()}
+    assert {("run", None, "t:run"), ("step", "t:run", None)} <= fields
+    assert ("turn", None, None) in fields
+
+
 # ── eviction, restart, refresh ─────────────────────────────────────────
 
 
