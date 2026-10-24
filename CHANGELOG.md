@@ -450,6 +450,21 @@ All notable changes to Raven are documented here.
   `attempt`, and the detail's relations block lists the three fields;
   `origin` is unchanged and still says only whether a trace was dispatched.
 
+- The trajectory view on the web page gives each sub-agent run a tab of its
+  own. The main session's tab no longer interleaves the steps of runs working
+  in the background: a run's entry stays where it was dispatched, says how the
+  run stands and for how long, and opens the run's tab on a double click, on
+  Enter, or from **Open trajectory** in the details head; the first row of a
+  turn a sub-agent's report started opens the run that sent it. A run's tab
+  lists and charges that run's steps alone, names the agent, the task, the
+  state and the turn that dispatched it, and leads back to the run's entry with
+  **Show in main**; the tab is marked while the run is running, has failed or
+  was cancelled, and the mark follows the run live. An external agent's tab
+  opens on its transcript, or on its frames for an ACP agent. Every tab keeps
+  its own selection, place, zoom and details pane, a link in the details moves
+  to the tab its entry is in, and another conversation starts on the main
+  session's tab alone.
+
 - An empty reply from a model behind OpenRouter (`content: " "`,
   `finish_reason: stop`) is no longer reported as an upstream transport
   failure and retried for minutes before the verdict's own sentence is
