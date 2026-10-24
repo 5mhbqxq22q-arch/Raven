@@ -2536,16 +2536,43 @@ unreadable expected payload always yields a record.
 _Avoid_: confusing with the session's conversation history — a Conversation
 Record derives from trace spans, not from session messages.
 
+**Sub-agent Run Span** (`raven/observability/semconv.py`, `raven/agent/subagent/manager.py`):
+The `subagent.run` span of one sub-agent run, opened by `SubagentManager._run_subagent` under
+the tool call that dispatched the run, in that call's trace, so the run's own model and tool
+calls nest under it. It is written when it opens -- its attributes and an in-progress
+checkpoint, as a turn's root is -- and again when it closes; both records share the span id
+and the same attributes: `subagent.task_id`, `subagent.task` (a 300-character preview),
+`subagent.label` (the Task summary), `subagent.origin_session`, `subagent.agent` (the
+canonical agent name), `subagent.instance` (the instance name, absent when the run has
+none), `subagent.handle` (the instance name, else the task id), `subagent.dispatch` (`spawn`;
+`dag` is reserved for a graph node's run) and `subagent.in_progress` (`true` in the
+checkpoint, `false` when it closes). The closing record also carries `subagent.outcome`:
+`completed`, `failed`, `aborted` (stopped on a terminal safety decision), `cancelled`, or
+`handed_off` (the process stopped and the run goes on on its registered machine). It is set
+beside the run record's own outcome and, like it, the first decision stands; a run that
+closes by cancellation or by an escaping exception before any branch decided reads
+`cancelled` or `failed`. A run cancelled before its task first ran records no span. Records
+written before these attributes existed carry only the first four and no outcome. The
+trajectory projection reads the run's entry status from them: `running` while the record is
+the checkpoint (evidence `subagent_in_progress`), `error` for `failed` / `aborted`
+(`subagent_failed` / `subagent_aborted`, the entry being the span's failure entry),
+`cancelled` (`subagent_cancelled`), `unknown` for `handed_off` (`subagent_handed_off`), and
+the span status otherwise.
+_Avoid_: reading the span's `status.code` as the run's result -- the run reports its own
+failures and returns, so the span is `OK` whatever the outcome.
+
 **Trajectory Entry** (`raven/trajectory/entries.py`):
 One row of the trajectory view, projected by `project_entries` from a logical
 span (`traceId + spanId`, checkpoints merged last-write-wins, an in-progress
-snapshot never overriding a terminal record) at a stable slot (`llm.input`,
+snapshot -- a turn's or a Sub-agent Run Span's -- never overriding a terminal record,
+nor the skeleton the index keeps of a trimmed one) at a stable slot (`llm.input`,
 `tool.output`, `artifact:<key>`, `summary`, `error`, …). Its id is
 `trace:span:slot` — never a sequence number, array index or text hash — so it
 survives re-reads, late inputs and checkpoint upgrades. It carries the owning
 operation's status (`running` / `ok` / `error` / `cancelled` / `unknown`) with the
 evidence codes that produced it, data-integrity codes kept separate from status,
-and the span's clock with a Timing Owner. A base span that expands to nothing
+and the span's clock with a Timing Owner; an in-progress snapshot's entries have no
+duration and are `running` unless the snapshot already records an error. A base span that expands to nothing
 gets a `summary` entry; a failed span with no completion slot gets an `error`
 entry, so exactly one entry per failed span is the `failure_entry`. A turn
 opens with `user.input` (slot `turn.input`) and closes with `turn.end` (slot
@@ -2563,6 +2590,8 @@ stays in the index and keeps its clock. While the recorder writes the turn's
 end as `{"content": null}` (`semconv.turn` reads `.content` off the tuple the
 turn returns), every ok turn end it records is `empty_reply` and
 `redundant_reply` cannot fire; the latter takes effect once that is fixed.
+A `subagent.run` entry's `meta` names the run: `label` and `task_id`, and `agent`,
+`instance`, `handle`, `dispatch` and `outcome` each only when recorded with a value.
 _Avoid_: calling a Conversation Record an entry — that is the CLI's text
 projection, without identity, structured status or timing.
 
