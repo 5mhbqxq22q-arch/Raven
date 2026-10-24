@@ -131,7 +131,7 @@ def unreachable(exc: BaseException) -> bool:
     repeat the answer or serve something the host has withdrawn. A certificate
     that fails verification does not either: whatever re-signs this host's
     traffic re-signs the mirror's too, so falling back would only hide the
-    reason.
+    reason. A proxy that could not be used at all counts: it was never asked.
 
     Through a proxy the same holds for the proxy, and its answer to the request
     for a tunnel speaks for the host. A 5xx says the proxy could not reach the
@@ -161,6 +161,12 @@ def unreachable(exc: BaseException) -> bool:
     # ConnectError, which on its own would read as a connection that failed.
     if any(is_untrusted_certificate(error) for error in chain):
         return False
+    # A SOCKS proxy whose support is not installed: httpx says so with an
+    # ImportError and never asks the proxy, so the host behind it was not
+    # reached. The copies that cannot use a SOCKS proxy at all -- urllib and
+    # the Windows PowerShell -- answer the same.
+    if any(isinstance(error, ImportError) and "socksio" in str(error).lower() for error in chain):
+        return True
     network: tuple[type[BaseException], ...] = (ConnectionError, TimeoutError, socket.gaierror, ssl.SSLError)
     httpx = sys.modules.get("httpx")
     if httpx is not None:

@@ -122,6 +122,16 @@ class TestWhatCountsAsUnreachable:
         and the mirror would be refused the same way."""
         assert mirrors.unreachable(urllib.error.URLError(OSError(errno.EPERM, "Operation not permitted")))
 
+    def test_a_socks_proxy_whose_support_is_not_installed_is_unreachable(self) -> None:
+        """httpx cannot use a SOCKS proxy without the socksio package, and says
+        so with an ImportError: the proxy was never asked, so the host behind
+        it was not reached. The copies that cannot use a SOCKS proxy at all
+        answer the same, and the rule holds one answer for every copy."""
+        error = ImportError("Using SOCKS proxy, but the 'socksio' package is not installed.")
+
+        assert mirrors.unreachable(error)
+        assert mirrors.unreachable(_raised_from(error, ModuleNotFoundError("No module named 'socksio'")))
+
     def test_a_refusal_of_a_file_of_our_own_is_not_unreachable(self) -> None:
         """The same error, but not from the network: a file we may not read is
         not a host we could not reach."""
