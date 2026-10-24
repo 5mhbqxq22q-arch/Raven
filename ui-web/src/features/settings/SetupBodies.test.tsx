@@ -407,6 +407,8 @@ describe('WebStepBody', () => {
     // default fetch vendor (jina) needs none, so that card reads ready.
     expect(screen.getByText('gui.settings.setup.unset')).toBeTruthy()
     expect(screen.getByText('gui.settings.setup.ready')).toBeTruthy()
+    // A search vendor that needs a key is asked for one: no optional tag.
+    expect(screen.getByLabelText('gui.settings.tools.vendor_key {"name":"Serper"}')).toBeTruthy()
   })
 
   it('a search vendor with a key on file reads as ready', async () => {
@@ -435,6 +437,19 @@ describe('WebStepBody', () => {
     await openBody(WebStepBody)
     expect(screen.getByLabelText('gui.settings.tools.vendor_key {"name":"Jina Reader"} · gui.settings.roles.optional')).toBeTruthy()
     expect(screen.getByText('gui.settings.setup.keyless_hint')).toBeTruthy()
+  })
+
+  it('the keyless search vendor (keenable) carries an optional tag and the keyless hint', async () => {
+    const data = snap()
+    // The fetch vendor is keyed here, so the one hint on the page is the
+    // search card's -- which is what says a search key is optional.
+    ;(data.raw.tools as Record<string, unknown>).web = { search: { provider: 'keenable' }, fetch: { provider: 'tavily' } }
+    install(data)
+    await openBody(WebStepBody)
+    expect(screen.getByLabelText('gui.settings.tools.vendor_key {"name":"Keenable"} · gui.settings.roles.optional')).toBeTruthy()
+    expect(screen.getAllByText('gui.settings.setup.keyless_hint')).toHaveLength(1)
+    // The keyed fetch vendor keeps the plain field, with no tag of its own.
+    expect(screen.getByLabelText('gui.settings.tools.vendor_key {"name":"Tavily"}')).toBeTruthy()
   })
 
   it('a keyed fetch vendor carries no optional tag and no hint', async () => {
