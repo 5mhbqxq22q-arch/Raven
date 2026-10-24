@@ -1,7 +1,7 @@
 """Web tools: ``web_search`` and ``web_fetch`` for the research flow.
 
 These replace the kernel's built-in tools of the same names. Both route through a
-vendor the deployment picks, the same seven search and five fetch backends the
+vendor the deployment picks, the same nine search and six fetch backends the
 built-ins offer, declared in :data:`SEARCH_PROVIDERS` and
 :data:`FETCH_PROVIDERS`; Serper and Jina remain the defaults and their wire
 traffic is byte-identical to what this pair has always sent. What the pair adds
