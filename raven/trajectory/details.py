@@ -939,6 +939,9 @@ def _d_relations(view: EntryView, attrs: dict[str, Any], loaded: _Loader) -> _De
         ("span_id", entry.span_id, "derived"),
         ("parent_span_id", entry.parent_span_id, "derived"),
         ("origin", entry.origin, "derived"),
+        ("subagent_scope", entry.subagent_scope, "derived"),
+        ("opens_subagent_scope", entry.opens_subagent_scope, "derived"),
+        ("dispatched_by_subagent_scope", entry.dispatched_by_subagent_scope, "derived"),
         ("sibling_entries", [sibling.entry_id for sibling in view.siblings], "derived"),
     ]
     items += _attr_pairs(attrs, ("trace.dispatched_by_span_id", "trace.dispatched_in_trace_id"))

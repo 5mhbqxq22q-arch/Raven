@@ -115,6 +115,9 @@ _SUBAGENT_RUN_META = (
     ("handle", "subagent.handle"),
     ("dispatch", "subagent.dispatch"),
     ("outcome", "subagent.outcome"),
+    ("dag_run_id", "subagent.dag_run_id"),
+    ("node_id", "subagent.node_id"),
+    ("attempt", "subagent.attempt"),
 )
 
 _IO_PAIR_SPANS = ("skill.rewrite", "skill.gate", "context.curate")

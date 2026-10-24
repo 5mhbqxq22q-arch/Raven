@@ -788,16 +788,33 @@ def _dag_attempt(state, outcome, reason=None):
 def test_a_dag_node_attempt_entry_names_the_node_in_its_meta(state):
     entries = tent.project_entries(_dag_attempt(state, "completed"), state=state, read=True).entries
 
-    meta = _one(entries, "attempt", "subagent.run").meta
-    assert {key: meta.get(key) for key in ("label", "task_id", "agent", "handle", "dispatch", "outcome")} == {
+    assert _one(entries, "attempt", "subagent.run").meta == {
         "label": "pull the feedback",
         "task_id": "pull",
         "agent": "researcher",
         "handle": "pull",
         "dispatch": "dag",
         "outcome": "completed",
+        "dag_run_id": "run-1",
+        "node_id": "pull",
+        "attempt": 1,
     }
-    assert "instance" not in meta
+
+
+@pytest.mark.parametrize("name", ["dag_run_id", "node_id", "attempt"])
+@pytest.mark.parametrize("recorded", ["absent", "null"])
+def test_a_dag_node_attempt_meta_leaves_out_a_name_it_has_no_value_for(state, name, recorded):
+    spans = _dag_attempt(state, "completed")
+    attempt = next(span for span in spans if span["spanId"] == "attempt")
+    if recorded == "absent":
+        del attempt["attributes"][f"subagent.{name}"]
+    else:
+        attempt["attributes"][f"subagent.{name}"] = None
+    entries = tent.project_entries(spans, state=state, read=True).entries
+
+    meta = _one(entries, "attempt", "subagent.run").meta
+    assert name not in meta
+    assert {"dag_run_id", "node_id", "attempt"} - {name} <= set(meta)
 
 
 @pytest.mark.parametrize(
