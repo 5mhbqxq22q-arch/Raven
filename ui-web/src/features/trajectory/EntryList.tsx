@@ -42,6 +42,8 @@ export const NARROW_WIDTH = 480
 const DEFAULT_ROWS = 20
 /** The integrity codes that mean the row's record is not there to read. */
 const MISSING_CODES = ['artifact_missing', 'artifact_unreadable', 'blob_missing']
+/** The least a sub-agent's door row leaves its preview, however narrow the list. */
+export const DOOR_PREVIEW_MIN = 72
 /** The column widths before any label was measured: the turn number, the mark, the kind tag. */
 const FALLBACK_COLS = { turn: 72, kind: 176 }
 
@@ -90,8 +92,8 @@ function Door({ entry }: { entry: TrajectoryEntry }): JSX.Element {
   const hint = t('gui.trajectory.scope.opens')
   return (
     <span className="trajectory-scope-door">
-      <span className={`trajectory-status-${entry.operation_status}`}>{key ? t(key) : entry.operation_status}</span>
-      {typeof entry.duration_ms === 'number' ? <span>{formatDuration(entry.duration_ms)}</span> : null}
+      <span className={`trajectory-scope-door-state trajectory-status-${entry.operation_status}`}>{key ? t(key) : entry.operation_status}</span>
+      {typeof entry.duration_ms === 'number' ? <span className="trajectory-scope-door-dur">{formatDuration(entry.duration_ms)}</span> : null}
       <span className="trajectory-scope-opens" role="img" aria-label={hint} title={hint}><Icon icon={ArrowUpRight01Icon} size={12} /></span>
     </span>
   )
@@ -181,9 +183,17 @@ export function EntryList(): JSX.Element {
   /* The column widths follow the words of the current language: the labels
      are the subscription's snapshot, joined so the value compares by content. */
   const labels = useSyncExternalStore(lang.subscribe, () => kindLabels().join('\n'))
+  /* A row that opens a sub-agent's tab has a fifth column for how the run
+     stands, and its kind column gives way down to its own tag's width when the
+     list is too narrow for both: the kind column is sized to the widest tag in
+     the language, and that room is the only room there is to give. The preview
+     keeps a floor, or the kind column would take that room first. */
   const cols = useMemo(() => {
     const measured = measureColumns(labels.split('\n'), fontOf('.trajectory-tag', '11px system-ui'), fontOf('.trajectory-turn', '11px monospace'))
-    return `${measured.turn}px 14px ${measured.kind}px minmax(0, 1fr)`
+    return {
+      all: `${measured.turn}px 14px ${measured.kind}px minmax(0, 1fr)`,
+      door: `${measured.turn}px 14px minmax(min-content, ${measured.kind}px) minmax(${DOOR_PREVIEW_MIN}px, 1fr) auto`,
+    }
   }, [labels])
 
   /* The selected row, brought into view when the window has scrolled past it. */
@@ -365,7 +375,7 @@ export function EntryList(): JSX.Element {
       aria-label={t('gui.trajectory.list_label')}
       aria-activedescendant={activeAt !== undefined ? `trajectory-row-${activeAt}` : undefined}
       data-narrow={size.width > 0 && size.width < NARROW_WIDTH ? '' : undefined}
-      style={{ '--trajectory-cols': cols } as CSSProperties}
+      style={{ '--trajectory-cols': cols.all, '--trajectory-cols-door': cols.door } as CSSProperties}
       onScroll={onScroll}
       onKeyDown={onKeyDown}
     >

@@ -4,12 +4,14 @@
    the keyboard, the overflow arrows, the line naming the run on screen, and
    the catalogue's words for all of it. */
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { useSyncExternalStore } from 'react'
 // @ts-expect-error Vitest provides Node built-ins without adding Node types to the browser bundle.
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetTranslator, setTranslator } from '../../i18n/t'
 import { absorb, resetCapabilities } from '../../rpc/capabilities'
+import * as lang from '../../state/lang'
 import { _resetFreshForTests, unpitch } from '../../state/session/conversation'
 import { resetSources, setSources } from '../../state/sources'
 import * as details from './detailStore'
@@ -18,6 +20,7 @@ import { ScopeInfo, ScopeTabs } from './ScopeTabs'
 import * as list from './store'
 
 import type { TrajectoryChangesResult, TrajectoryEntry, TrajectoryIndexState, TrajectorySource } from './types'
+import type { JSX } from 'react'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -238,6 +241,82 @@ describe('the strip', () => {
     act(() => { fireEvent.click(arrows()[1]!) })
     expect(strip.scrollLeft).toBe(240)
     expect(arrows().map((a) => a.disabled)).toEqual([false, false])
+  })
+})
+
+describe('the overflow arrows as the tabs change what they say', () => {
+  /* The strip's own box stays 300px wide; what is inside it is as wide as its
+     words, `per` pixels a character and ten for a state mark. */
+  function contentSized(per: number): HTMLElement {
+    const strip = q('.trajectory-scope-tabs') as HTMLElement
+    Object.defineProperty(strip, 'clientWidth', { get: () => 300, configurable: true })
+    Object.defineProperty(strip, 'scrollWidth', {
+      get: () => [...strip.querySelectorAll('.trajectory-scope-title')].reduce((n, el) => n + (el.textContent ?? '').length * per, 0)
+        + strip.querySelectorAll('.trajectory-scope-mark').length * 10,
+      configurable: true,
+    })
+    return strip
+  }
+  const arrows = (): number => document.querySelectorAll('.trajectory-scope-arrow').length
+  const renamed = (label: string, status: TrajectoryEntry['operation_status'] = 'ok'): TrajectoryChangesResult =>
+    batch({ upserts: [door('d', 0, A, { meta: { label }, operation_status: status })] })
+
+  beforeEach(() => {
+    vi.stubGlobal('ResizeObserver', class { observe(): void {} disconnect(): void {} })
+  })
+
+  it('brings the arrows when a tab\'s title grows, and takes them away when it shrinks, with the tabs and the tab on screen unchanged', async () => {
+    /* The main tab reads as its 25-character key here: 125px at five a character. */
+    rows = [door('d', 0, A, { meta: { label: 'Fix' } })]
+    await draw()
+    contentSized(5)
+    act(() => { list.openScope(A) })
+    expect(arrows()).toBe(0)
+    act(() => { list.applyChanges(renamed('Fix the parser and the flaky login test')) })
+    expect(arrows()).toBe(2)
+    act(() => { list.applyChanges({ ...renamed('Fix'), from_revision: 101, to_revision: 102 }) })
+    expect(arrows()).toBe(0)
+  })
+
+  it('measures again when a mark comes or goes', async () => {
+    /* 125px for the main tab and 170 for this one: the strip's 300 fit until a mark takes ten more. */
+    const label = 'Fix the parser and test it all now'
+    rows = [door('d', 0, A, { meta: { label } })]
+    await draw()
+    contentSized(5)
+    act(() => { list.openScope(A) })
+    expect(arrows()).toBe(0)
+    act(() => { list.applyChanges(renamed(label, 'running')) })
+    expect(arrows()).toBe(2)
+    act(() => { list.applyChanges({ ...renamed(label), from_revision: 101, to_revision: 102 }) })
+    expect(arrows()).toBe(0)
+  })
+
+  it('measures again in another language', async () => {
+    resetTranslator()
+    function Island(): JSX.Element {
+      useSyncExternalStore(lang.subscribe, lang.get)
+      return <ScopeTabs />
+    }
+    rows = [door('d', 0, A), door('e', 1, B)]
+    render(<Island />)
+    await act(async () => {
+      await list.refreshState()
+      list.setView('trajectory')
+      await list.load()
+    })
+    try {
+      act(() => { lang.set('en') })
+      contentSized(20)
+      act(() => { list.openScope(A); list.openScope(B) })
+      expect(arrows()).toBe(2)
+      act(() => { lang.set('zh') })
+      expect(arrows()).toBe(0)
+      act(() => { lang.set('en') })
+      expect(arrows()).toBe(2)
+    } finally {
+      act(() => { lang._resetForTests() })
+    }
   })
 })
 

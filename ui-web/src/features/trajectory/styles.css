@@ -165,9 +165,21 @@ html[data-theme="dark"] {
 .trajectory-text-missing { color: var(--chat-danger, var(--clay)); }
 /* A hidden row shown because something pointed at it: a dashed edge on the left. */
 .trajectory-row-revealed { box-shadow: inset 3px 0 0 var(--line); color: var(--muted); }
-/* A row that opens a sub-agent's tab has one more column: how the run stands, for how long, and that it opens. */
-.trajectory-row-door { grid-template-columns: var(--trajectory-cols) auto; }
+/* A row that opens a sub-agent's tab has one more column: how the run stands,
+   for how long, and that it opens. On a narrow list the state and the
+   duration stack in the row's height and the row gives up some of its gaps
+   and right margin, so the column stays whole and the preview keeps room. */
+.trajectory-row-door { grid-template-columns: var(--trajectory-cols-door, var(--trajectory-cols) auto); }
+.trajectory-list[data-narrow] .trajectory-row-door { column-gap: 6px; padding-right: 10px; }
 .trajectory-scope-door { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.trajectory-scope-door-state, .trajectory-scope-door-dur { font-variant-numeric: tabular-nums; }
+.trajectory-list[data-narrow] .trajectory-scope-door {
+  display: inline-grid; grid-template-columns: auto auto; gap: 0 4px; align-items: center; align-content: center;
+  font-size: 10.5px; line-height: 12px;
+}
+.trajectory-list[data-narrow] .trajectory-scope-door-state { grid-column: 1; grid-row: 1; }
+.trajectory-list[data-narrow] .trajectory-scope-door-dur { grid-column: 1; grid-row: 2; }
+.trajectory-list[data-narrow] .trajectory-scope-opens { grid-column: 2; grid-row: 1 / span 2; }
 .trajectory-scope-opens { display: inline-grid; place-items: center; color: var(--faint); }
 .trajectory-row-door:hover .trajectory-scope-opens { color: var(--text); }
 /* A turn a sub-agent's report started: the dot the dispatched turns carry, here an element so it can say so. */

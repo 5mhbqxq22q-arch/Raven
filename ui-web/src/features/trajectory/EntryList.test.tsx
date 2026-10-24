@@ -6,7 +6,7 @@ import { resetTranslator, setTranslator } from '../../i18n/t'
 import { absorb, resetCapabilities } from '../../rpc/capabilities'
 import { _resetFreshForTests, unpitch } from '../../state/session/conversation'
 import { resetSources, setSources } from '../../state/sources'
-import { EntryList, FOLLOW_SLACK, OVERSCAN, ROW_HEIGHT, measureColumns, windowOf } from './EntryList'
+import { DOOR_PREVIEW_MIN, EntryList, FOLLOW_SLACK, OVERSCAN, ROW_HEIGHT, measureColumns, windowOf } from './EntryList'
 import * as store from './store'
 
 import type { TrajectoryEntry, TrajectoryIndexState, TrajectoryListResult, TrajectorySource } from './types'
@@ -535,6 +535,10 @@ describe('the rows that lead to a Scope Tab', () => {
     expect(row('door').classList.contains('trajectory-row-door')).toBe(true)
     const cell = row('door').querySelector('.trajectory-scope-door') as HTMLElement
     expect([...cell.children].map((c) => c.textContent)).toEqual(['gui.trajectory.status.ok', '1m05s', ''])
+    expect([...cell.children].map((c) => c.classList[0])).toEqual(['trajectory-scope-door-state', 'trajectory-scope-door-dur', 'trajectory-scope-opens'])
+    /* The door's own columns: its kind column may give way to its tag, its preview keeps a floor, and the state takes the fifth. */
+    const cols = list().style.getPropertyValue('--trajectory-cols-door')
+    expect(cols).toMatch(new RegExp(`^\\d+px 14px minmax\\(min-content, \\d+px\\) minmax\\(${DOOR_PREVIEW_MIN}px, 1fr\\) auto$`))
     expect(cell.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('gui.trajectory.scope.opens')
     expect(row('plain').querySelector('.trajectory-scope-door')).toBeNull()
     expect(row('plain').classList.contains('trajectory-row-door')).toBe(false)

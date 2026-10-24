@@ -26,16 +26,27 @@ export function ScopeTabs(): JSX.Element | null {
   const tabs: Array<string | null> = [null, ...s.scopes.map((o) => o.id)]
   const current = tabs.indexOf(s.scope)
   const shown = Object.keys(s.doors).length > 0 || s.scopes.length > 0
+  /* What each tab says, mark included, in the language on screen: when any of
+     it changes the tabs change width while the strip's own box may not, which
+     no size observer on the strip reports. */
+  const labels = s.scopes.map((o) => {
+    const state = scopes.scopeState(s, o.id)
+    return `${scopes.scopeTitle(scopes.scopeDoor(s, o.id))}\u0000${scopes.scopeMark(state) ?? ''}`
+  })
+  const words = [t('gui.trajectory.scope.main'), ...labels].join('\u0001')
 
   /* Whether the strip has more than it shows on either side, re-read after
-     every scroll and whenever the strip or its contents change size. */
+     every scroll, whenever the strip changes size and whenever its tabs say
+     something else. */
   const measure = useCallback((): void => {
     const el = strip.current
     if (!el) return
     const over = el.scrollWidth > el.clientWidth + 1
-    setReach({ left: over && el.scrollLeft > 0, right: over && el.scrollLeft + el.clientWidth < el.scrollWidth - 1 })
+    const left = over && el.scrollLeft > 0
+    const right = over && el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setReach((was) => (was.left === left && was.right === right ? was : { left, right }))
   }, [])
-  useLayoutEffect(measure, [measure, tabs.length, shown])
+  useLayoutEffect(measure, [measure, words, shown])
   useEffect(() => {
     const el = strip.current
     if (!el || typeof ResizeObserver === 'undefined') return
@@ -44,10 +55,12 @@ export function ScopeTabs(): JSX.Element | null {
     return () => ro.disconnect()
   }, [measure, shown])
   const over = reach.left || reach.right
+  /* The tab on screen is kept in view, however it was chosen -- and again
+     when the arrows come or go, or a tab before it grows. */
   useLayoutEffect(() => {
     strip.current?.querySelector<HTMLElement>(`#${scopes.scopeTabId(current)}`)?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' })
     measure()
-  }, [current, over, measure])
+  }, [current, over, words, measure])
 
   if (!shown) return null
 
