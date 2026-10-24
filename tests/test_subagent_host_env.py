@@ -168,6 +168,59 @@ async def test_an_acp_child_starts_the_way_the_mirror_fallback_says(
     assert cwd == str(tmp_path), "and where it starts"
 
 
+async def test_an_acp_launch_asks_the_mirror_before_it_fetches_the_package(tmp_path, monkeypatch):
+    """The fetch goes to the default registry, the very one the mirror
+    fallback decides about: asked the other way round, the fetch fails
+    before the fallback can answer, and a launch on a machine that cannot
+    reach the registry never starts."""
+    from raven.acp_client import npx_fetch
+    from raven.utils import mirrors
+
+    observed = tmp_path / "observed.json"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import os, pathlib, sys, time\n"
+        "target = pathlib.Path(os.environ['OUTPUT'])\n"
+        "target.write_text(' '.join(sys.argv[1:]), encoding='utf-8')\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    started = [sys.executable, str(child)]
+    monkeypatch.setattr(backend_env, "login_shell_env", lambda: {"PATH": os.environ["PATH"], "OUTPUT": str(observed)})
+    asked: list[list[str]] = []
+
+    def package_launch(
+        argv: list[str],
+        env: dict[str, str],
+        cwd: str | None = None,
+        *,
+        local: bool = True,
+        deadline: float | None = None,
+        cache_root: Path | None = None,
+    ) -> list[str]:
+        asked.append(list(argv))
+        return [*started, "--as-the-answer-says"]
+
+    async def ensure_fetched(name, command, *, env, cwd) -> None:
+        asked.append([str(word) for word in command])
+
+    monkeypatch.setattr(mirrors, "package_launch", package_launch)
+    monkeypatch.setattr(npx_fetch, "ensure_fetched", ensure_fetched)
+
+    client = await AcpClient.launch(
+        name="mirror-probe", command="npx -y @scope/server", cwd=str(tmp_path), env={"FROM_ENTRY": "1"}
+    )
+    try:
+        arrived = await _reported(observed)
+    finally:
+        await client.close()
+
+    assert asked[0] == ["npx", "-y", "@scope/server"], "asked about the launch as it is configured"
+    assert asked[1] == [*started, "--as-the-answer-says"], (
+        "and the fetch is given the answer, so it does not go to the registry the fallback is about"
+    )
+
+
 @pytest.mark.parametrize("legacy", [True, False])
 async def test_acp_launch_preserves_stored_windows_path_quotes(tmp_path, monkeypatch, legacy):
     from types import SimpleNamespace
