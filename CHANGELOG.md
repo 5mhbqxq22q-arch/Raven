@@ -15,7 +15,8 @@ All notable changes to Raven are documented here.
   eight-section checkpoint that survives a restart. An opt-in
   `context.cache.compactionBreakpoint` (off by default) marks, on a
   breakpoint-style prompt cache (Anthropic), where the next summary is expected
-  to end. Memory and routed skills
+  to end; it costs a cache write of the history on every turn past the target
+  (1.07x to 2.0x the cost in review), so it stays off. Memory and routed skills
   move from the system prompt to the end of the turn's user message
   (`context.cache.turnScratch`), tool results are filed up to
   `context.toolResultMaxChars` (1,000,000 characters) instead of 16,000, and a
