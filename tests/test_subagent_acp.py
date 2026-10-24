@@ -2601,6 +2601,38 @@ async def test_an_empty_turn_is_a_failure_carrying_the_stderr_tail(tmp_path: Pat
     assert "HTTP 401" in str(excinfo.value)
 
 
+async def test_an_empty_turn_that_spent_nothing_says_so(tmp_path: Path) -> None:
+    """A turn that produced nothing and spent nothing never reached a model.
+
+    Measured on a live ``opencode acp``: its inference endpoint refused the call
+    with a 426, the agent swallowed the refusal, and the turn came back empty
+    with zero tokens and nothing on stderr -- so the one fact that separated
+    "the model refused" from "the agent had nothing to say" was the token
+    count, and it was in the answer all along.
+    """
+    backend = build_third_party_backend(stub_config("a", mode="empty_turn_no_tokens"))
+    with pytest.raises(AcpEmptyTurnError) as excinfo:
+        await backend.run("ping", task_id="t1", workspace=tmp_path, executor=None)
+    assert "no content" in str(excinfo.value)
+    assert "reported 0 tokens" in str(excinfo.value)
+    assert excinfo.value.tokens == 0
+    # The build that answered the handshake, for a floor to be read against.
+    assert excinfo.value.agent_version == "9.9.9"
+
+
+async def test_a_turn_that_reported_no_usage_is_not_read_as_one_that_spent_nothing(tmp_path: Path) -> None:
+    """The absence of a number is not a number.
+
+    The stub's plain ``empty_turn`` reports no usage at all, and an agent that
+    does not count its tokens says nothing about what it spent.
+    """
+    backend = build_third_party_backend(stub_config("a", mode="empty_turn"))
+    with pytest.raises(AcpEmptyTurnError) as excinfo:
+        await backend.run("ping", task_id="t1", workspace=tmp_path, executor=None)
+    assert "reported 0 tokens" not in str(excinfo.value)
+    assert excinfo.value.tokens is None
+
+
 async def test_an_empty_turn_names_a_request_raven_could_not_answer(tmp_path: Path) -> None:
     """The one cause the stderr tail cannot carry.
 
