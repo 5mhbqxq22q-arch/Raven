@@ -25,9 +25,11 @@ _TOKEN_BOUNDARY = re.compile(r"(?<=[\r\n])(?=\S)")
 # unbroken run of one character (padding, a row of ``=``, base64 of zeros, a
 # page of blank lines) is one piece: 200,000 of them hold the event loop for
 # about twenty seconds. A run of space or non-space longer than this is counted
-# in slices of it, which over-counts by a token or two a slice.
+# in slices of it, which moves the count by a token or two a slice, either way.
+# Space is cl100k's: Python's ``\s`` also takes U+001C..U+001F, which cl100k
+# glues to the text around them, so those four go with the non-space runs.
 _RUN_SLICE = 1_000
-_RUN = re.compile(r"\S+|\s+")
+_RUN = re.compile(r"[^\S\x1c-\x1f]+|[\S\x1c-\x1f]+")
 
 
 def _encoded_len(encoding: tiktoken.Encoding, text: str) -> int:

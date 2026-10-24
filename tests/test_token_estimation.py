@@ -7,6 +7,7 @@ import random
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import regex
 
 from raven.memory_engine.consolidate.consolidator import MemoryConsolidator
 from raven.session.manager import Session
@@ -498,19 +499,28 @@ def test_ordinary_text_counts_exactly_as_one_encode() -> None:
     assert tokens.estimate_message_tokens({"role": "tool", "content": text}) == len(enc.encode(text))
 
 
-@pytest.mark.parametrize("run", ["=", "A", "0", " ", "\n", "\t"])
+@pytest.mark.parametrize(
+    "run",
+    ["=", "A", "0", " ", "\n", "\t", "=" * 999 + chr(0x1F), "-" * 500 + chr(0x1C)],
+    ids=["equals", "letter", "digit", "space", "newline", "tab", "equals-glued-by-us", "dashes-glued-by-fs"],
+)
 def test_a_long_unbroken_run_never_reaches_the_encoder_whole(monkeypatch, run) -> None:
-    """tiktoken is quadratic in one piece's length; a 200K run held the loop for about twenty seconds."""
+    """tiktoken is quadratic in one piece's length; a 200K run held the loop for about twenty seconds.
+
+    Pieces are measured with the encoding's own pattern, not with ``tokens._RUN``:
+    the two disagree on what is space, and that disagreement is what escapes.
+    """
     real = tokens.tiktoken.get_encoding(tokens._ENCODING_NAME)
+    pieces = regex.compile(real._pat_str)
     longest: list[int] = []
 
     class Measured:
         def encode(self, text):
-            longest.append(max((len(m.group()) for m in tokens._RUN.finditer(text)), default=0))
+            longest.append(max((len(m.group()) for m in pieces.finditer(text)), default=0))
             return real.encode(text)
 
     monkeypatch.setattr(tokens.tiktoken, "get_encoding", lambda _name: Measured())
-    content = "head line\n" + run * 120_000 + "\ntail line"
+    content = "head line\n" + run * (120_000 // len(run)) + "\ntail line"
 
     estimate = tokens.estimate_message_tokens({"role": "tool", "content": content})
     with tokens.reuse_prompt_tokenization():
