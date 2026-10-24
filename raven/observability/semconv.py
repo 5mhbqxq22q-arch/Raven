@@ -451,6 +451,8 @@ __all__ = [
     "subagent_attrs",
     "subagent_open",
     "subagent_outcome",
+    "dag_node_open",
+    "dag_node",
 ]
 
 
@@ -519,10 +521,20 @@ def subagent(span, bound: dict[str, Any], result: Any, exc: BaseException | None
     one here.
     """
     span.set(_spawn_attrs(bound, in_progress=False))
+    _mark_escape(span, exc)
+
+
+def _mark_escape(span, exc: BaseException | None) -> bool:
+    """Record how an exception escaping a sub-agent run ended it; whether one did.
+
+    A cancellation is ``cancelled``, anything else ``failed``. Like any outcome it
+    stands only if the run recorded none first.
+    """
     if isinstance(exc, asyncio.CancelledError):
         subagent_outcome(span, "cancelled")
     elif exc is not None:
         subagent_outcome(span, "failed")
+    return exc is not None
 
 
 def subagent_outcome(span, outcome: str) -> None:
@@ -534,6 +546,64 @@ def subagent_outcome(span, outcome: str) -> None:
     """
     if span.get("subagent.outcome") is None:
         span.set({"subagent.outcome": outcome})
+
+
+# A DAG node attempt that did not complete its task: its span is an error, with why.
+_DAG_UNFINISHED = frozenset({"failed", "exception", "continued"})
+
+
+def _dag_node_attrs(bound: dict[str, Any], *, in_progress: bool) -> dict[str, Any]:
+    # Imported here so loading the conventions does not load the config package.
+    from raven.config.agent_names import canonical_agent_name
+
+    node = bound["node"]
+    attrs = subagent_attrs(
+        task_id=node.id,
+        task=node.prompt_template,
+        label=node.node_summary or node.id,
+        origin={
+            "session_key": bound.get("session_key"),
+            "agent": canonical_agent_name(node.subagent),
+            "instance": node.instance,
+            "handle": node.instance or node.id,
+        },
+        dispatch="dag",
+        in_progress=in_progress,
+    )
+    attrs.update(
+        {
+            "subagent.dag_run_id": bound["store"].run_id,
+            "subagent.node_id": node.id,
+            "subagent.attempt": bound.get("attempt"),
+        }
+    )
+    return attrs
+
+
+def dag_node_open(span, bound: dict[str, Any]) -> None:
+    """Describe one attempt of a DAG node (``dag_runner._attempt_node``) and checkpoint it.
+
+    One span per attempt: a node continued or sent a follow-up runs again under
+    a span of its own. Written before the attempt's first step, so a node still
+    working already has its entry and its steps have their parent on disk.
+    """
+    span.set(_dag_node_attrs(bound, in_progress=True))
+    span.checkpoint()
+
+
+def dag_node(span, bound: dict[str, Any], result: Any, exc: BaseException | None) -> None:
+    """Extractor for ``dag_runner._attempt_node``: the attempt's final record.
+
+    The attempt returns how it ended, and one that did not complete its task
+    marks the span an error carrying the reason -- unlike a spawned run, whose
+    span stays OK. A cancellation or an exception escaping the attempt gets its
+    outcome here.
+    """
+    span.set(_dag_node_attrs(bound, in_progress=False))
+    if not _mark_escape(span, exc) and result is not None:
+        subagent_outcome(span, result.outcome)
+        if result.outcome in _DAG_UNFINISHED:
+            span.error(result.reason or result.outcome)
 
 
 def plugin_load(contribution: str):
