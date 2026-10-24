@@ -746,10 +746,10 @@ pre-vendor leaf, in the order `WebToolsConfig.vendor_key` resolves them, and an 
 is a revocation rather than a miss; `web_fetch` is always offered, falling back to Jina,
 which reads pages without a key. The two sub-agent launchers inherit the host's selection
 differently: the in-process backend (`agent/subagent/backends/raven_loop.py`) takes it and
-then declines to *register* `web_search` when no key resolves, while the agent launcher
-(`agents/raven-research/run.py`, and the retired fork before it -- its snapshot sits in
-`tests/fixtures/vendored_fork/`) refuses to start without a search key, because its gate
-exits rather than degrading. Most vendors take the key
+then declines to *register* `web_search` when no key resolves and the vendor needs one, while
+the agent launcher (`agents/raven-research/run.py`, and the retired fork before it -- its
+snapshot sits in `tests/fixtures/vendored_fork/`) refuses to start without a search key unless
+the vendor needs none, because its gate exits rather than degrading. Most vendors take the key
 in a header; SerpApi takes it as a query parameter, so for that one the key travels inside
 every request URL and two surfaces have to keep it out -- the error path renders vendor plus
 status rather than the exception text, and the persisted log sink redacts a URL-borne

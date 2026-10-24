@@ -192,8 +192,9 @@ class SearchProviderSpec:
     ``label`` is what an error line names when it must identify a vendor without
     quoting the request.
 
-    ``needs_key`` is ``FetchProviderSpec``'s, for the one search vendor with an
-    anonymous tier: Keenable searches without a key at a lower rate limit.
+    ``needs_key`` decides whether the tool may be advertised without a key:
+    Keenable searches unauthenticated (at a lower rate limit), the others refuse
+    without one.
     """
 
     vendor: str
@@ -282,9 +283,9 @@ SEARCH_PROVIDERS: dict[str, SearchProviderSpec] = {
 class FetchProviderSpec:
     """One ``web_fetch`` backend.
 
-    ``needs_key`` decides whether the tool may be advertised at all: Jina reads
-    pages unauthenticated (at a lower rate limit), the others refuse without a
-    key. A tool that cannot run must not be registered - the model reaches for
+    ``needs_key`` decides whether the tool may be advertised at all: Jina and
+    Keenable read pages unauthenticated (at a lower rate limit), the others
+    refuse without a key. A tool that cannot run must not be registered - the model reaches for
     it, every call fails, and the error text naming a config path is relayed to
     whoever is on the other end of the channel.
 

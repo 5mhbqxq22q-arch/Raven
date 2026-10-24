@@ -30,9 +30,9 @@ from raven.security.network import guarded_fetch, validate_url_target
 class SearchProviderSpec:
     """One ``web_search`` backend: its name, its bare env var, its sign-up page.
 
-    ``needs_key`` is ``FetchProviderSpec``'s: Keenable searches unauthenticated
-    at a lower rate limit, so ``web_search`` on it is offered without a key;
-    the others refuse without one.
+    ``needs_key`` decides whether ``web_search`` is withheld while no key
+    resolves: Keenable searches unauthenticated at a lower rate limit, so it is
+    offered without one; the others refuse without a key.
     """
 
     vendor: str
@@ -50,11 +50,11 @@ class SearchProviderSpec:
 class FetchProviderSpec:
     """One ``web_fetch`` backend.
 
-    ``needs_key`` decides whether the backend can be offered at all: Jina reads
-    pages unauthenticated at a lower rate limit, the others refuse without a
-    key. ``extractor`` is what the fetch envelope reports as having served the
-    page; the backends are not interchangeable, so it is a measurement, not a
-    label.
+    ``needs_key`` decides whether the backend can be offered at all: Jina and
+    Keenable read pages unauthenticated at a lower rate limit, the others refuse
+    without a key. ``extractor`` is what the fetch envelope reports as having
+    served the page; the backends are not interchangeable, so it is a
+    measurement, not a label.
     """
 
     vendor: str

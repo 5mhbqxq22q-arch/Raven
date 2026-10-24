@@ -420,6 +420,16 @@ describe('WebStepBody', () => {
     expect(screen.queryByText('gui.settings.setup.unset')).toBeNull()
   })
 
+  it('a search vendor that needs no key reads as ready without one', async () => {
+    const data = snap()
+    ;(data.raw.tools as Record<string, unknown>).web = { search: { provider: 'keenable' } }
+    install(data)
+    await openBody(WebStepBody)
+    // The same answer the tools page's blocker gives: Keenable searches keyless.
+    expect(screen.getAllByText('gui.settings.setup.ready')).toHaveLength(2)
+    expect(screen.queryByText('gui.settings.setup.unset')).toBeNull()
+  })
+
   it('the keyless fetch vendor (jina) carries an optional tag and the keyless hint', async () => {
     install()
     await openBody(WebStepBody)

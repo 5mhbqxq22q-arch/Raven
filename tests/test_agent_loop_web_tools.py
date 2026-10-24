@@ -186,6 +186,8 @@ def test_the_subagent_loop_applies_the_same_rule(workspace, monkeypatch: pytest.
 
     without = asyncio.run(_names())
     with_key = asyncio.run(_names(search_api_key="sk-serper"))
+    # An exported Keenable key would register the tool on its own.
+    monkeypatch.delenv("KEENABLE_API_KEY", raising=False)
     keyless_vendor = asyncio.run(_names(web_search_provider="keenable"))
 
     # Baselines first: an empty list would satisfy the "not in" assertion below

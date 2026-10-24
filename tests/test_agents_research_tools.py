@@ -913,6 +913,40 @@ async def test_keenable_reads_a_page_on_its_public_path_without_a_key(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_keenable_searches_on_its_keyed_path_with_a_key(monkeypatch):
+    """A key moves the same request to the keyed path, in a header. The snippet
+    is page text, line breaks and all, so it is collapsed and cut to 300
+    characters before ``_snippet_line`` renders whatever it is handed."""
+    page = "# Heading\n\nA paragraph of page text.\n" * 200
+    transport = _CaptureTransport({"results": [{"title": "T", "url": "https://e.com/a", "snippet": page}]})
+    _patch_client(monkeypatch, transport)
+    set_current_session("t")
+
+    rendered = await WebSearchTool(api_key="K", provider="keenable").execute(query="q", count=3)
+
+    sent = transport.seen[0]
+    assert str(sent.url) == "https://api.keenable.ai/v1/search"
+    assert json.loads(sent.content) == {"query": "q", "max_results": 3}
+    assert sent.headers["X-Keenable-Title"] == "Raven" and sent.headers["x-api-key"] == "K"
+    snippet = rendered.split("https://e.com/a\n   ", 1)[1].split("\n", 1)[0]
+    assert len(snippet) == 300 and snippet.startswith("# Heading A paragraph of page text. # Heading")
+
+
+@pytest.mark.asyncio
+async def test_keenable_reads_a_page_on_its_keyed_path_with_a_key(monkeypatch):
+    transport = _CaptureTransport({"url": "https://example.com/a", "title": "T", "content": "page body"})
+    _patch_client(monkeypatch, transport)
+    set_current_session("t")
+
+    answer = json.loads(await WebFetchTool(api_key="K", provider="keenable").execute(url="https://example.com/a"))
+
+    assert answer["text"] == "page body"
+    sent = transport.seen[0]
+    assert sent.url.path == "/v1/fetch" and sent.url.params["url"] == "https://example.com/a"
+    assert sent.headers["X-Keenable-Title"] == "Raven" and sent.headers["x-api-key"] == "K"
+
+
+@pytest.mark.asyncio
 async def test_a_fetch_vendor_that_answers_without_a_page_is_an_error_not_an_empty_page(monkeypatch):
     """A 200 whose envelope reports the failure. Rendered as an error, because an
     empty page would be indistinguishable from a real one that had no text."""
