@@ -839,3 +839,69 @@ describe('the switches, the bands and the dots', () => {
     expect(hitTestExact(layout, b!.x + b!.w + 1)).toBeNull()
   })
 })
+
+describe('the bar in a Scope Tab', () => {
+  const A = 't:runA'
+  /* Turn 1 with its reply hidden, and a run it dispatched whose steps carry the turn's number. */
+  const ROWS = (): TrajectoryEntry[] => [
+    entry('ask', 0, { kind: 'user.input', charged_ms: 0, timing_basis: 'zero', turn_number: 1, turn_start: true }),
+    entry('door', 1, { kind: 'subagent.run', charged_ms: 0, timing_basis: 'zero', opens_subagent_scope: A }),
+    entry('out', 2, { kind: 'llm.output', charged_ms: 2000, turn_number: 1 }),
+    entry('reply', 3, { kind: 'turn.end', slot: 'turn.output', charged_ms: 5000, turn_number: 1, meta: { hidden: 'redundant_reply' } }),
+    entry('a0', 4, { kind: 'llm.output', charged_ms: 1000, turn_number: 1, subagent_scope: A }),
+    entry('a1', 5, { kind: 'tool.output', charged_ms: 1000, turn_number: 1, subagent_scope: A }),
+    entry('ah', 6, { kind: 'tool.output', charged_ms: 1000, turn_number: 1, subagent_scope: A, meta: { hidden: 'empty_internal' } }),
+    entry('ah2', 7, { kind: 'tool.output', charged_ms: 1000, turn_number: 1, subagent_scope: A, meta: { hidden: 'empty_internal' } }),
+  ]
+  const hiddenLabel = (): string | null => q('.trajectory-bar-switch[aria-label^="gui.trajectory.bar.show_hidden"]')?.getAttribute('aria-label') ?? null
+
+  it('draws the tab\'s rows alone, with no turn band, and counts the tab\'s hidden rows', async () => {
+    rows = ROWS()
+    await ready()
+    render(<DurationBar />)
+    await flush()
+    expect(canvas().getAttribute('aria-label')).toContain('"n":3')
+    expect(hiddenLabel()).toBe('gui.trajectory.bar.show_hidden {"n":1}')
+    pointer('pointermove', gapAfter(0))
+    expect(brief()).toContain('gui.trajectory.bar.turn_total')
+    act(() => { store.openScope(A) })
+    await flush()
+    expect(canvas().getAttribute('aria-label')).toBe('gui.trajectory.bar.canvas_label {"n":2,"known":"2s"}')
+    expect(hiddenLabel()).toBe('gui.trajectory.bar.show_hidden {"n":2}')
+    pointer('pointermove', gapAfter(0))
+    expect(brief()).not.toContain('gui.trajectory.bar.turn_total')
+    expect(brief()).toContain('gui.trajectory.bar.sum_known')
+  })
+
+  it('drops a click still waiting for its second when the reader moves to another tab', async () => {
+    rows = ROWS()
+    await ready()
+    render(<DurationBar />)
+    await flush()
+    await click(WIDTH - 10)
+    act(() => { store.openScope(A) })
+    await later(DBL_MS * 2)
+    expect(store.get().selectedId).toBeNull()
+    expect(details.get().open).toBe(false)
+  })
+
+  it('closes an open pick list on a move to another tab without pulling the focus to the bar', async () => {
+    rows = ROWS()
+    await ready()
+    render(<><button className="elsewhere">x</button><DurationBar /></>)
+    await flush()
+    act(() => { store.openBucket(['ask', 'out'], 10) })
+    const elsewhere = q('.elsewhere') as HTMLButtonElement
+    act(() => { elsewhere.focus() })
+    act(() => { store.openScope(A) })
+    await flush()
+    expect(store.get().timeline.bucket).toBeNull()
+    expect(q('.trajectory-bucket')).toBeNull()
+    expect(document.activeElement).toBe(elsewhere)
+    /* Closed any other way, the list still hands the focus back to the bar. */
+    act(() => { store.openBucket(['a0', 'a1'], 10) })
+    act(() => { store.closeBucket() })
+    await flush()
+    expect(document.activeElement).toBe(q('.trajectory-bar'))
+  })
+})

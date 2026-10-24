@@ -476,3 +476,106 @@ describe('the place of a Scope Tab', () => {
     localStorage.removeItem(store.PREFS_KEY)
   })
 })
+
+describe('the rows that lead to a Scope Tab', () => {
+  const A = 't:runA'
+  const run = (id: string, at: number, opens: string, over: Partial<TrajectoryEntry> = {}): TrajectoryEntry =>
+    entry(id, at, { kind: 'subagent.run', span_name: 'subagent.run', slot: 'subagent.run', opens_subagent_scope: opens, ...over })
+  const row = (id: string): HTMLElement => document.querySelector(`[data-entry="${id}"]`) as HTMLElement
+  /* A turn that spawned a run, the run's steps (one starting a turn of its own record), and the turn its report started. */
+  const ROWS = (): TrajectoryEntry[] => [
+    entry('ask', 0, { turn_start: true, kind: 'user.input', slot: 'turn.input' }),
+    run('door', 1, A, { operation_status: 'ok', duration_ms: 65_000 }),
+    entry('plain', 2),
+    entry('a0', 3, { subagent_scope: A, turn_start: true }),
+    entry('a1', 4, { subagent_scope: A }),
+    entry('back', 5, { turn_start: true, turn_number: 2, kind: 'user.input', slot: 'turn.input', origin: 'subagent', dispatched_by_subagent_scope: A }),
+    entry('backEnd', 6, { turn_number: 2, kind: 'turn.end', slot: 'turn.output', origin: 'subagent', dispatched_by_subagent_scope: A }),
+  ]
+
+  it('opens a door\'s tab or a report turn\'s source tab on a double click, and does nothing for any other row', async () => {
+    rows = ROWS()
+    await draw()
+    for (const id of ['plain', 'backEnd', 'ask']) act(() => { fireEvent.doubleClick(row(id)) })
+    expect([store.get().scope, store.get().scopes]).toEqual([null, []])
+    act(() => { fireEvent.doubleClick(row('door')) })
+    expect(store.get().scope).toBe(A)
+    act(() => { store.switchScope(null) })
+    act(() => { fireEvent.doubleClick(row('back')) })
+    expect(store.get().scope).toBe(A)
+  })
+
+  it('opens the same on Enter over the selected row, and leaves Enter alone on any other row', async () => {
+    rows = ROWS()
+    await draw()
+    const press = (): boolean => {
+      let prevented = false
+      act(() => { prevented = !fireEvent.keyDown(list(), { key: 'Enter' }) })
+      return prevented
+    }
+    for (const id of ['plain', 'backEnd']) {
+      act(() => { store.select(id, { source: 'click' }) })
+      expect(press()).toBe(false)
+    }
+    expect(store.get().scope).toBeNull()
+    act(() => { store.select('door', { source: 'click' }) })
+    expect(press()).toBe(true)
+    expect(store.get().scope).toBe(A)
+    act(() => { store.select('back', { source: 'click' }) })
+    act(() => { store.switchScope(A) })
+    act(() => { store.switchScope(null) })
+    expect(store.get().selectedId).toBe('back')
+    expect(press()).toBe(true)
+    expect(store.get().scope).toBe(A)
+  })
+
+  it('says how a door\'s run stands, for how long, and that it opens; no other row does', async () => {
+    rows = ROWS()
+    await draw()
+    expect(row('door').classList.contains('trajectory-row-door')).toBe(true)
+    const cell = row('door').querySelector('.trajectory-scope-door') as HTMLElement
+    expect([...cell.children].map((c) => c.textContent)).toEqual(['gui.trajectory.status.ok', '1m05s', ''])
+    expect(cell.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('gui.trajectory.scope.opens')
+    expect(row('plain').querySelector('.trajectory-scope-door')).toBeNull()
+    expect(row('plain').classList.contains('trajectory-row-door')).toBe(false)
+  })
+
+  it('marks a report turn\'s first row with a dot that says so, and keeps the bare mark on the rest of a dispatched turn', async () => {
+    rows = ROWS()
+    await draw()
+    const turn = row('back').querySelector('.trajectory-turn') as HTMLElement
+    expect(turn.classList.contains('trajectory-turn-sub')).toBe(false)
+    const dot = turn.querySelector('.trajectory-scope-from') as HTMLElement
+    expect([dot.getAttribute('aria-label'), dot.title]).toEqual(['gui.trajectory.scope.reported', 'gui.trajectory.scope.reported'])
+    expect(row('backEnd').querySelector('.trajectory-turn')?.classList.contains('trajectory-turn-sub')).toBe(true)
+    expect(row('backEnd').querySelector('.trajectory-scope-from')).toBeNull()
+  })
+
+  it('shows no turn number in a sub-agent tab', async () => {
+    rows = ROWS()
+    await draw()
+    expect(row('ask').querySelector('.trajectory-turn')?.textContent).toBe('1')
+    act(() => { store.openScope(A) })
+    expect(row('a0').querySelector('.trajectory-turn')?.textContent).toBe('')
+  })
+
+  it('says why a sub-agent tab is empty: still running, recorded nothing, or no longer on record', async () => {
+    rows = [run('d1', 0, 'x:run', { operation_status: 'running' }), run('d2', 1, 'x:done'), entry('g0', 2, { subagent_scope: 'x:gone' })]
+    await draw()
+    const empty = (): string => document.querySelector('.trajectory-empty')?.textContent ?? ''
+    act(() => { store.openScope('x:run') })
+    expect(empty()).toBe('gui.trajectory.scope.empty_running')
+    act(() => { store.openScope('x:done') })
+    expect(empty()).toBe('gui.trajectory.scope.empty_done')
+    act(() => { store.select('g0', { source: 'link' }) })
+    act(() => {
+      store.applyChanges({
+        epoch: 'e1', from_revision: 100, to_revision: 101, upserts: [], removed: [{ entry_id: 'g0', revision: 101, replaced_by: null }],
+        has_more: false, reset_required: false, index_state: READY,
+      })
+    })
+    expect(empty()).toBe('gui.trajectory.scope.gone')
+    act(() => { store.switchScope(null) })
+    expect(document.querySelector('.trajectory-empty')).toBeNull()
+  })
+})

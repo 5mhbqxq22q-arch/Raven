@@ -15,13 +15,17 @@
  * `select`, and the list only draws what it says.
  */
 
+import { ArrowUpRight01Icon } from '@hugeicons/core-free-icons'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
+import { Icon } from '../../components/Icon'
 import { t } from '../../i18n/t'
 import { formatDuration } from '../../lib/duration'
 import * as lang from '../../state/lang'
+import { statusKey } from './blocks'
 import * as details from './detailStore'
 import { isKnownKind, kindClass, kindLabel, kindLabels } from './palette'
+import * as scopes from './scopes'
 import * as store from './store'
 
 import type { TrajectoryEntry } from './types'
@@ -79,20 +83,39 @@ export function windowOf(scrollTop: number, height: number, count: number): Wind
   return { first, last }
 }
 
-function Row({ entry, at, selected, total, revealed, turnTotal }: {
-  entry: TrajectoryEntry; at: number; selected: boolean; total: number; revealed: boolean; turnTotal: number | null
+/* A row that opens a sub-agent's tab says how the run stands and for how
+   long, and that it can be opened. */
+function Door({ entry }: { entry: TrajectoryEntry }): JSX.Element {
+  const key = statusKey(entry.operation_status)
+  const hint = t('gui.trajectory.scope.opens')
+  return (
+    <span className="trajectory-scope-door">
+      <span className={`trajectory-status-${entry.operation_status}`}>{key ? t(key) : entry.operation_status}</span>
+      {typeof entry.duration_ms === 'number' ? <span>{formatDuration(entry.duration_ms)}</span> : null}
+      <span className="trajectory-scope-opens" role="img" aria-label={hint} title={hint}><Icon icon={ArrowUpRight01Icon} size={12} /></span>
+    </span>
+  )
+}
+
+function Row({ entry, at, selected, total, revealed, turnTotal, inScope }: {
+  entry: TrajectoryEntry; at: number; selected: boolean; total: number; revealed: boolean; turnTotal: number | null; inScope: boolean
 }): JSX.Element {
   const known = isKnownKind(entry.kind)
-  /* A sub-agent's turn carries a mark after its number; the main line does not. */
-  const turnClass = entry.origin === 'main' ? 'trajectory-turn' : 'trajectory-turn trajectory-turn-sub'
-  const turnShown = entry.turn_start && entry.turn_number !== null && entry.turn_number !== undefined
+  /* A turn a sub-agent's report started carries a mark after its number that
+     says so; any other dispatched turn carries the bare mark, the main line none. */
+  const reported = entry.turn_start && store.reportedFromOf(entry) !== null
+  const turnClass = entry.origin === 'main' || reported ? 'trajectory-turn' : 'trajectory-turn trajectory-turn-sub'
+  /* A sub-agent tab's rows all belong to the turn that dispatched it: no number to tell them apart by. */
+  const turnShown = !inScope && entry.turn_start && entry.turn_number !== null && entry.turn_number !== undefined
   const turnTitle = turnShown && turnTotal !== null
     ? t('gui.trajectory.turn_total', { n: entry.turn_number as number, dur: formatDuration(turnTotal) })
     : undefined
   const missing = isMissing(entry)
+  const door = store.opensOf(entry) !== null
   const classes = ['trajectory-row']
   if (selected) classes.push('trajectory-row-on')
   if (revealed) classes.push('trajectory-row-revealed')
+  if (door) classes.push('trajectory-row-door')
   return (
     <div
       className={classes.join(' ')}
@@ -106,9 +129,15 @@ function Row({ entry, at, selected, total, revealed, turnTotal }: {
       title={revealed ? t('gui.trajectory.revealed_row') : undefined}
       style={{ top: at * ROW_HEIGHT }}
       onClick={() => { store.select(entry.entry_id, { source: 'click' }); details.openDetails() }}
+      onDoubleClick={() => openFromList(entry)}
     >
       <span className={turnClass} title={turnTitle}>
         {turnShown ? entry.turn_number : ''}
+        {reported ? (
+          <span className="trajectory-scope-from" role="img" aria-label={t('gui.trajectory.scope.reported')} title={t('gui.trajectory.scope.reported')}>
+            {'\u2022'}
+          </span>
+        ) : null}
       </span>
       <span className="trajectory-fail">
         {entry.failure_entry ? <span className="trajectory-fail-dot" role="img" aria-label={t('gui.trajectory.failed')} /> : null}
@@ -123,8 +152,16 @@ function Row({ entry, at, selected, total, revealed, turnTotal }: {
         : entry.preview === null || entry.preview === ''
           ? <span className="trajectory-text trajectory-text-none">{t('gui.trajectory.no_preview')}</span>
           : <span className="trajectory-text" title={entry.preview}>{entry.preview}</span>}
+      {door ? <Door entry={entry} /> : null}
     </div>
   )
+}
+
+/* Opens the tab a row leads to. The list keeps the focus when the tab has
+   rows to show; a tab with none puts its empty state where the list was, and
+   the focus goes to the tab instead. */
+function openFromList(entry: TrajectoryEntry): void {
+  if (scopes.openFromEntry(entry) && !store.get().visible.length) scopes.focusTab()
 }
 
 export function EntryList(): JSX.Element {
@@ -164,7 +201,7 @@ export function EntryList(): JSX.Element {
   useLayoutEffect(() => {
     const closed = wasOpen.current && !paneOpen
     wasOpen.current = paneOpen
-    if (!closed) return
+    if (!closed || details.get().swapped) return
     reveal()
     box.current?.focus()
   }, [paneOpen, reveal])
@@ -267,6 +304,13 @@ export function EntryList(): JSX.Element {
     else if (e.key === 'ArrowUp') next = at === undefined ? count - 1 : Math.max(0, at - 1)
     else if (e.key === 'Home') next = 0
     else if (e.key === 'End') next = count - 1
+    else if (e.key === 'Enter') {
+      const target = selectedId !== null ? store.entry(selectedId) : null
+      if (!target || scopes.openTarget(target) === null) return
+      e.preventDefault()
+      openFromList(target)
+      return
+    }
     if (next === null) return
     e.preventDefault()
     const target = entries[next]
@@ -283,9 +327,11 @@ export function EntryList(): JSX.Element {
     const scanning = indexState !== null && indexState.phase !== 'ready'
     return (
       <div className="trajectory-empty" role="status">
-        {scanning
-          ? t('gui.trajectory.scanning', { done: mib(indexState.scanned_bytes), total: mib(indexState.total_bytes) })
-          : t('gui.trajectory.empty')}
+        {state.scope !== null
+          ? t(emptyScopeKey(scopes.scopeState(state, state.scope)))
+          : scanning
+            ? t('gui.trajectory.scanning', { done: mib(indexState.scanned_bytes), total: mib(indexState.total_bytes) })
+            : t('gui.trajectory.empty')}
       </div>
     )
   }
@@ -305,6 +351,7 @@ export function EntryList(): JSX.Element {
         total={count}
         revealed={store.hiddenOf(entry) !== null && !state.prefs.showHidden}
         turnTotal={turnTotal}
+        inScope={state.scope !== null}
       />,
     )
   }
@@ -326,6 +373,10 @@ export function EntryList(): JSX.Element {
     </div>
   )
 }
+
+/** What an empty sub-agent tab says: the run's records are gone, it has not recorded a step yet, or it recorded none. */
+const emptyScopeKey = (state: scopes.ScopeState): string =>
+  state === 'gone' ? 'gui.trajectory.scope.gone' : state === 'running' ? 'gui.trajectory.scope.empty_running' : 'gui.trajectory.scope.empty_done'
 
 /** Bytes as a mebibyte figure with one decimal, for the scan line. */
 export const mib = (bytes: number): string => (bytes / (1024 * 1024)).toFixed(1)

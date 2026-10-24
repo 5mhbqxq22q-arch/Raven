@@ -12555,6 +12555,66 @@
       "en": "Released to stay within memory; click to read it again",
       "zh": "内容已释放（内存上限），点击重新读取"
     },
+    "gui.trajectory.scope.strip": {
+      "en": "Trajectory tabs",
+      "zh": "轨迹页签"
+    },
+    "gui.trajectory.scope.main": {
+      "en": "Main",
+      "zh": "主会话"
+    },
+    "gui.trajectory.scope.untitled": {
+      "en": "Sub-agent",
+      "zh": "子智能体"
+    },
+    "gui.trajectory.scope.close_named": {
+      "en": "Close {title}",
+      "zh": "关闭 {title}"
+    },
+    "gui.trajectory.scope.open": {
+      "en": "Open trajectory",
+      "zh": "打开轨迹"
+    },
+    "gui.trajectory.scope.opens": {
+      "en": "Double-click or press Enter to open its trajectory",
+      "zh": "双击或按 Enter 打开轨迹"
+    },
+    "gui.trajectory.scope.from": {
+      "en": "From sub-agent: {title}",
+      "zh": "来自子智能体：{title}"
+    },
+    "gui.trajectory.scope.locate": {
+      "en": "Show in main",
+      "zh": "在主会话中定位"
+    },
+    "gui.trajectory.scope.dispatched_in": {
+      "en": "Dispatched in turn {n}",
+      "zh": "第 {n} 回合派出"
+    },
+    "gui.trajectory.scope.agent": {
+      "en": "Agent: {name}",
+      "zh": "智能体：{name}"
+    },
+    "gui.trajectory.scope.instance": {
+      "en": "Instance: {name}",
+      "zh": "实例：{name}"
+    },
+    "gui.trajectory.scope.reported": {
+      "en": "Started by a sub-agent's report",
+      "zh": "由子智能体回报触发"
+    },
+    "gui.trajectory.scope.empty_running": {
+      "en": "No steps recorded yet",
+      "zh": "还没有记录到步骤"
+    },
+    "gui.trajectory.scope.empty_done": {
+      "en": "No steps were recorded",
+      "zh": "没有记录到步骤"
+    },
+    "gui.trajectory.scope.gone": {
+      "en": "This sub-agent's records are no longer available",
+      "zh": "记录已不可用"
+    },
     "gui.settings.cloud.title": {
       "en": "Long-term memory: EverOS Cloud",
       "zh": "长期记忆：EverOS Cloud"
