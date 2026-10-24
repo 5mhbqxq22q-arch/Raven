@@ -2616,7 +2616,7 @@ export interface TrajectoryEntry {
    */
   origin: 'main' | 'subagent';
   /**
-   * The Sub-agent Scope the entry belongs to: trace_id:span_id of the nearest sub-agent boundary above its span (a subagent.run span, or a run_subagent_dag / resolve_dag_node tool call; a boundary's own entries look only for a subagent.run above). Null for the main session. Decided by span ancestry, never by time; kept when the boundary is trimmed to a skeleton.
+   * The Sub-agent Scope the entry belongs to: trace_id:span_id of the nearest sub-agent boundary above its span (a subagent.run span, or a run_subagent_dag / resolve_dag_node tool call; a boundary's own entries, and the permission reviewer's llm.call recorded under the call it reviews, look only for a subagent.run above). Null for the main session. Decided by span ancestry, never by time; kept when the boundary is trimmed to a skeleton.
    */
   subagent_scope?: string | null;
   /**

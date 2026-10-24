@@ -85,6 +85,10 @@ _RUN_BOUNDARY_SPANS = ("subagent.run",)
 _GRAPH_BOUNDARY_TOOLS = ("run_subagent_dag", "resolve_dag_node")
 _BOUNDARY_RUN = "run"
 _BOUNDARY_GRAPH = "graph"
+# The permission gate reviews a call inside that call's own span, so the
+# reviewer's model call sits under a graph's call without being a step of
+# the graph.
+_CALL_REVIEW_PURPOSES = ("permission_judge",)
 
 SLOT_SUMMARY = "summary"
 SLOT_ERROR = "error"
@@ -574,15 +578,21 @@ def _boundary_of(info: _conv._SpanInfo) -> str | None:
     return None
 
 
+def _reviews_its_call(info: _conv._SpanInfo) -> bool:
+    """Whether a span is the main agent's review of the tool call it was recorded under."""
+    return info.name == "llm.call" and info.attrs.get("llm.purpose") in _CALL_REVIEW_PURPOSES
+
+
 def _nearest_boundary(
     info: _conv._SpanInfo, by_key: Mapping[tuple[str, str], _conv._SpanInfo], *, runs_only: bool
 ) -> str | None:
     """The Sub-agent Scope above ``info``: its nearest boundary ancestor in its own trace, not itself.
 
-    ``runs_only`` passes over a graph's tool call, so a DAG node's own entry
-    lands where the graph was dispatched rather than in the graph. The walk
-    stops, unattributed, at a parent not on record yet, a repeated span or
-    the ancestry depth limit the turn lookup uses.
+    ``runs_only`` passes over a graph's tool call, so a DAG node's own entry,
+    and the review of the graph's call recorded under it, land where the
+    graph was dispatched rather than in the graph. The walk stops,
+    unattributed, at a parent not on record yet, a repeated span or the
+    ancestry depth limit the turn lookup uses.
     """
     seen = {info.span_id}
     parent = info.parent_id
@@ -606,7 +616,8 @@ def _span_scopes(
     """Every identified span by key, and the Sub-agent Scope each one belongs to."""
     by_key = {(info.trace_id, info.span_id): info for info in infos if not _broken(info)}
     scopes = {
-        key: _nearest_boundary(info, by_key, runs_only=_boundary_of(info) is not None) for key, info in by_key.items()
+        key: _nearest_boundary(info, by_key, runs_only=_boundary_of(info) is not None or _reviews_its_call(info))
+        for key, info in by_key.items()
     }
     return by_key, scopes
 

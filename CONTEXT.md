@@ -2609,8 +2609,10 @@ spawned run or one attempt of a DAG node -- or a **graph**: a `tool.call` whose 
 them (records written before node spans existed) and, for `resolve_dag_node`, the round a
 replan it chose started under it. An entry belongs to the nearest boundary above its span in
 its own trace, its own span not counted; a boundary's own entries look only for a run above,
-so a node's entry and a graph's call stay where the graph was dispatched. A dispatched agent
-cannot dispatch again, so scopes do not nest past one run, and since a spawned run's steps
+so a node's entry and a graph's call stay where the graph was dispatched, and so does the
+permission reviewer's `llm.call` (`llm.purpose` `permission_judge`), which the gate records
+under the call it reviews; a graph's scope holds only what its rounds produced. A dispatched
+agent cannot dispatch again, so scopes do not nest past one run, and since a spawned run's steps
 share the trace of the turn that spawned it and run alongside later turns, the scope is read
 from span ancestry alone, never from time. Three Trajectory Entry fields carry it:
 `subagent_scope`, the scope the entry belongs to (null for the main session);
