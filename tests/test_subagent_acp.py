@@ -502,6 +502,44 @@ async def test_a_start_that_runs_out_under_npx_is_named_a_download_that_may_stil
     assert quiet.remedy is None
 
 
+async def test_a_pi_older_than_its_adapter_needs_reads_alike_on_connect_test_and_the_roster(tmp_path: Path) -> None:
+    """pi-acp 0.0.34 refuses every session over a pi older than 0.81.0, with this one error.
+
+    Nothing else in it names pi, so the reader is told which program to upgrade and
+    how, rather than handed an internal error -- in the same words wherever the
+    refusal is seen: a connect, the Test button, and the roster showing what Test
+    recorded. Read for the preset only: the same words from another agent are passed
+    through as they came.
+    """
+    from raven.agent.subagent.presets import upgrade_hint_for
+    from raven.agent.subagent.probe import ping_agent, probe_one, run_test
+    from raven.agent.subagent.probe_state import Remedy
+    from raven.config.loader import shim_agent_floor
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "pi").write_text("#!/bin/sh\n")
+    (bin_dir / "pi").chmod(0o755)
+    pi = stub_config(mode="pi_needs_newer_pi", preset="pi")
+    pi = pi.model_copy(update={"env": {**pi.env, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}})
+    floor = shim_agent_floor("pi")
+    assert floor is not None
+    lead = f"its pi is older than {'.'.join(map(str, floor.oldest))}, the first pi that answers what its adapter asks"
+
+    connected = await ping_agent(pi)
+    tested = await run_test(pi, source="config")
+    listed = await probe_one(pi, source="config")
+
+    for seen in (connected.detail, tested.detail, listed.detail):
+        assert seen.startswith(lead), seen
+        assert "Unknown command: get_available_thinking_levels" in seen, "pi's own words are kept"
+    assert connected.remedy == tested.remedy == Remedy("upgrade", upgrade_hint_for(pi))
+    assert upgrade_hint_for(pi) == "npm install -g @earendil-works/pi-coding-agent@latest"
+
+    other = await ping_agent(stub_config(mode="pi_needs_newer_pi"))
+    assert other.remedy is None
+
+
 async def test_a_handshake_npx_could_not_fetch_is_not_recorded_as_an_absent_install(tmp_path: Path) -> None:
     """The Test button, the boot backfill and the roster read this snapshot.
 
