@@ -74,11 +74,14 @@ def opt_out(env: Mapping[str, str] | None = None) -> bool:
 
     The environment of the launch counts as well as this process's own: a user
     who sets the switch in an agent's own environment, or in the profile of the
-    machine an agent runs on, means it there.
+    machine an agent runs on, means it there. Both are read whatever the case
+    of the name: Windows does not tell one from the other, and a switch set in
+    another case turns the fallback off here as well as on the machine it
+    travels to.
     """
     if env is not None and _truthy(_env_value(env, OPT_OUT_ENV)):
         return True
-    return _truthy(os.environ.get(OPT_OUT_ENV))
+    return _truthy(_env_value(os.environ, OPT_OUT_ENV))
 
 
 def enabled(env: Mapping[str, str] | None = None) -> bool:

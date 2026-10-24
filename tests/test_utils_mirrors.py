@@ -67,6 +67,16 @@ class TestTheOptOut:
 
         assert not mirrors.enabled({name: "1"})
 
+    @pytest.mark.parametrize("name", ["RAVEN_NO_MIRROR", "raven_no_mirror"])
+    def test_our_own_environment_is_read_whatever_its_case(self, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+        """The switch set where Raven runs is read in either case too, so it
+        turns the fallback off here and travels to a node that runs the
+        launch."""
+        monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
+        monkeypatch.setenv(name, "1")
+
+        assert not mirrors.enabled()
+
     def test_the_switch_is_told_apart_from_the_launch_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("RAVEN_NO_MIRROR", raising=False)
 
