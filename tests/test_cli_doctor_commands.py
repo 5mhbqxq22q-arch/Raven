@@ -877,6 +877,10 @@ def test_doctor_tells_a_keyless_search_vendor_from_a_missing_key(
     start = next(i for i, line in enumerate(lines) if line.startswith("web_search:"))
     assert lines[start].startswith("web_search: ✓")
     assert not any("no key resolves" in line for line in lines[start : start + 4])
+    # The row says why the tick is there: nothing to set, and the key that
+    # would lift the rate limit.
+    assert any("no key needed" in line for line in lines[start : start + 4])
+    assert any("a key lifts the limit" in line for line in lines[start : start + 4])
 
 
 def test_doctor_names_the_key_of_the_provider_a_section_runs_on(tmp_config: Path, tmp_path: Path) -> None:

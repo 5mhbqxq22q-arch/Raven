@@ -792,6 +792,13 @@ def _render_tool_capabilities(tools: ToolsInfo) -> None:
                 console.print(f"{indent}[dim]set:[/dim] {cap.key_path}")
                 if cap.env_var:
                     console.print(f"{indent}[dim]or env:[/dim] {cap.env_var}")
+            elif cap.keyless:
+                # Configured with no key because the vendor needs none: the tick
+                # above is right, but a row that reads like a key in hand hides
+                # why there is nothing to set, so it says that instead.
+                console.print(f"{indent}[dim]no key needed; calls run unauthenticated at a lower rate limit[/dim]")
+                if cap.env_var:
+                    console.print(f"{indent}[dim]a key lifts the limit:[/dim] {cap.env_var}")
             continue
         glyph = "x" if cap.disabled else "-"
         console.print(f"{label}[dim]{glyph}  {cap.summary}[/dim]")
