@@ -766,6 +766,7 @@ class CompactingHistoryBuilder:
         else:
             keys, fresh = ((), ())
         if wants_summary and keys:
+            record = self.writer.reusable_record(memo.record, binding.model)
             return await self.writer.compact(
                 provider=binding.provider,
                 model=binding.model,
@@ -775,16 +776,10 @@ class CompactingHistoryBuilder:
                 previous=previous,
                 keys=keys,
                 fresh=fresh,
-                record=memo.record,
-                # The record's tools go with its messages: the writer drops a
-                # record taken under another model, and its tools with it.
-                tool_defs=(
-                    memo.record.tools
-                    if memo.record is not None
-                    and memo.record.tools is not None
-                    and memo.record.model == self.writer.summary_model(binding.model)
-                    else prefix.tool_defs
-                ),
+                record=record,
+                # The record's tools go with its messages, so a record the
+                # writer would not replay takes its tools with it.
+                tool_defs=record.tools if record is not None and record.tools is not None else prefix.tool_defs,
                 folded_messages=folded_messages,
                 folded_tokens=folded_tokens,
             )

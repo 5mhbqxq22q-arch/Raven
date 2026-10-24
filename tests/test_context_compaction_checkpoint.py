@@ -38,6 +38,7 @@ from raven.config.raven import (
     ContextSummaryConfig,
 )
 from raven.context_engine import headroom
+from raven.context_engine.assembler import ContextAssembler
 from raven.context_engine.history.compacting import CompactingHistoryBuilder
 from raven.context_engine.history.compacting.checkpoint import (
     SECTION_GUIDE,
@@ -532,6 +533,31 @@ class TestPrefixReuse:
         builder.note_request("s1", _request(segment.history), "stub", tools=sent_tools)
         await builder.build(_ctx(_session(OVER), tools=registry))
 
+        assert provider.tools == [sent_tools]
+
+    async def test_the_engine_hands_the_turns_tool_list_through_to_the_summary(self, tmp_path: Path) -> None:
+        """The loop reports to the engine, not to the strategy; the list has to survive that hop."""
+        provider = _RecordingProvider()
+        sent_tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+        registry = [*sent_tools, {"type": "function", "function": {"name": "tool_search", "parameters": {}}}]
+        builder = _builder(tmp_path, provider, tools=registry)
+        engine = ContextAssembler([builder], get_tool_definitions=lambda: registry)
+        segment = await builder.build(_ctx(_session(UNDER), tools=registry))
+        engine.note_request("s1", _request(segment.history), model="stub", tools=sent_tools)
+        await builder.build(_ctx(_session(OVER), tools=registry))
+
+        assert provider.tools == [sent_tools]
+
+    async def test_a_record_that_names_no_model_lends_its_messages_and_its_tools_together(self, tmp_path: Path) -> None:
+        provider = _RecordingProvider()
+        sent_tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+        registry = [*sent_tools, {"type": "function", "function": {"name": "tool_search", "parameters": {}}}]
+        builder = _builder(tmp_path, provider, tools=registry)
+        segment = await builder.build(_ctx(_session(UNDER), tools=registry))
+        builder.note_request("s1", _request(segment.history), "", tools=sent_tools)
+        second = await builder.build(_ctx(_session(OVER), tools=registry))
+
+        assert second.meta["byte_prefix_reused"] is True
         assert provider.tools == [sent_tools]
 
     async def test_a_record_without_a_tool_list_falls_back_to_the_registrys(self, tmp_path: Path) -> None:

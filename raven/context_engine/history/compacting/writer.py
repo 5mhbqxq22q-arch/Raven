@@ -403,6 +403,16 @@ class CheckpointWriter:
         """The model a summary for a turn on ``model`` is written by."""
         return self.cfg.model or model
 
+    def reusable_record(self, record: "RequestRecord | None", model: str) -> "RequestRecord | None":
+        """``record`` when a summary for a turn on ``model`` may replay it, else None.
+
+        A record taken under another model is not replayed; one that names no
+        model is.
+        """
+        if record is not None and record.model and record.model != self.summary_model(model):
+            return None
+        return record
+
     def prefers_summary(self, *, reached_target: bool, folded_messages: int) -> bool:
         """Whether this removal is worth a model call.
 
@@ -441,8 +451,7 @@ class CheckpointWriter:
         set, replaces the model and keeps the provider.
         """
         summary_model = self.summary_model(model)
-        if record is not None and record.model and record.model != summary_model:
-            record = None
+        record = self.reusable_record(record, model)
         prefix = reuse_prefix(keys, fresh, record)
         reply, prefix, cost, failure = await self._ask(provider, summary_model, prefix, tool_defs)
         if reply is None:
